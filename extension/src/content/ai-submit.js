@@ -285,13 +285,16 @@ function _clearRotateBusy() {
   }
 }
 
-function _armRotateBusy() {
+/** Stay busy until schedule-days returns (or timeout) — never clear on dropdown change alone. */
+function _armRotateBusy(label) {
   _rotateBusy = true;
   if (_rotateBusyClearTimer) vs.clear(_rotateBusyClearTimer);
+  updateAiStatus(`City Change — loading dates for ${label || "city"}… stay until result`);
   _rotateBusyClearTimer = vs.setTimeout(() => {
     _rotateBusyClearTimer = null;
-    noteCityRotateResponse();
-  }, 12_000);
+    // No schedule-days response — treat as failed load, then allow next city.
+    noteCityRotateResponse({ timedOut: true, label });
+  }, 25_000);
 }
 
 export function pauseCityRotateForWait(seconds) {
@@ -302,8 +305,29 @@ export function pauseCityRotateForWait(seconds) {
   _scheduleCityRotate();
 }
 
-export function noteCityRotateResponse() {
+/**
+ * Call only after schedule-days finishes (dates / "No slots") or busy timeout.
+ * Starts the 13–18s gap from this moment so we never switch mid-load.
+ */
+export function noteCityRotateResponse(info = {}) {
+  const wasBusy = _rotateBusy;
   _clearRotateBusy();
+  if (!wasBusy || !_rotateActive) return;
+
+  const now = Date.now();
+  _lastSwitchAt = now;
+  _armNextRotate(now);
+  if (info.timedOut) {
+    updateAiStatus(
+      `City Change — no date response for ${info.label || "city"}; next switch in 13–18s`
+    );
+  } else {
+    const gapSec = Math.ceil((_nextRotateAt - now) / 1000);
+    updateAiStatus(
+      `City Change — dates loaded; next city in ${Math.max(1, gapSec)}s`
+    );
+  }
+  _scheduleCityRotate();
 }
 
 export function haltCityRotateForBooking() {
@@ -515,8 +539,8 @@ async function _switchToCity(cityId, label) {
   if (String(select.value) === nextId) {
     return false;
   }
-  _armRotateBusy();
-  updateAiStatus(`Switching city → ${label || cityId}…`);
+  _armRotateBusy(label || cityId);
+  updateAiStatus(`Switching city → ${label || cityId}… waiting for dates`);
   vs.send({ action: "selectPost", postId: nextId });
   return true;
 }
@@ -526,9 +550,8 @@ function _bindPostSelectRotateWatch() {
   const select = document.querySelector("#post_select");
   if (!select) return;
   _postSelectRotateBound = true;
-  vs.on(select, "change", () => {
-    noteCityRotateResponse();
-  });
+  // Do NOT clear busy on change — that fired before dates loaded and caused
+  // mid-load city switches. Busy clears only in noteCityRotateResponse().
 }
 
 async function _rotateTick() {
@@ -558,8 +581,13 @@ async function _rotateTick() {
     }
 
     const waitMs = _msUntilNextRotate(now);
-    if (_rotateBusy || waitMs > 0) {
-      const showSec = Math.ceil((waitMs > 0 ? waitMs : (_nextRotateAt - now)) / 1000);
+    if (_rotateBusy) {
+      updateAiStatus("City Change — waiting for dates / no-slots result before next city…");
+      _scheduleCityRotate();
+      return;
+    }
+    if (waitMs > 0) {
+      const showSec = Math.ceil(waitMs / 1000);
       updateAiStatus(`City Change — slot ${slot} active, next switch in ${Math.max(1, showSec)}s`);
       _scheduleCityRotate();
       return;
@@ -590,13 +618,13 @@ async function _rotateTick() {
 
     const switched = await _switchToCity(next.id, next.name);
     if (switched) {
-      _lastSwitchAt = Date.now();
-      _armNextRotate(_lastSwitchAt);
-      updateAiStatus(`City Change — slot ${slot}: switched to ${next.name || next.id}, next in 13–18s`);
+      // Gap starts after dates load (noteCityRotateResponse), not at switch time.
+      updateAiStatus(`City Change — slot ${slot}: switched to ${next.name || next.id}, loading dates…`);
     } else {
       _armNextRotate(now);
+      _scheduleCityRotate();
     }
-    _scheduleCityRotate();
+    // If switched, stay busy — _scheduleCityRotate runs from noteCityRotateResponse.
   } finally {
     _rotateInFlight = false;
   }

@@ -39,22 +39,21 @@ export async function showLinks() {
 
 /** Paint available days as soon as CGI responds — no storage awaits. */
 export function showDates(parsed) {
-  if (parsed.response.HasError) {
-    return;
-  }
   const form = document.querySelector("#page_form");
   if (!form) return;
 
   const dateParsed = {};
-  for (let day of parsed.response.ScheduleDays || []) {
-    if (!day?.Date || day.Date.length < 10) continue;
-    const key = day.Date.slice(0, 7);
-    const dayNum = parseInt(day.Date.slice(8, 10), 10);
-    if (!dayNum) continue;
-    if (key in dateParsed) {
-      dateParsed[key].push(dayNum);
-    } else {
-      dateParsed[key] = [dayNum];
+  if (!parsed.response.HasError) {
+    for (let day of parsed.response.ScheduleDays || []) {
+      if (!day?.Date || day.Date.length < 10) continue;
+      const key = day.Date.slice(0, 7);
+      const dayNum = parseInt(day.Date.slice(8, 10), 10);
+      if (!dayNum) continue;
+      if (key in dateParsed) {
+        dateParsed[key].push(dayNum);
+      } else {
+        dateParsed[key] = [dayNum];
+      }
     }
   }
   document.querySelector(idSel(ID.datesCont))?.remove();
