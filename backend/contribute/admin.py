@@ -57,9 +57,11 @@ def _times_summary(days, times):
 
 @admin.register(Applicant)
 class ApplicantAdmin(admin.ModelAdmin):
-    list_display = ("applicant_id", "email", "name", "visa_class", "updated_ist")
+    list_display = ("applicant_id", "email", "name", "visa_class", "cities_summary", "timer_summary", "updated_ist")
     search_fields = ("applicant_id", "email", "name")
-    readonly_fields = ("created_at", "updated_at", "token_captured_at", "created_ist", "updated_ist")
+    readonly_fields = ("created_at", "updated_at", "token_captured_at", "created_ist", "updated_ist", "id_token")
+    list_select_related = ("city_prefs",)
+    inlines = []
 
     @admin.display(description="Updated (IST)", ordering="updated_at")
     def updated_ist(self, obj):
@@ -68,6 +70,73 @@ class ApplicantAdmin(admin.ModelAdmin):
     @admin.display(description="Created (IST)")
     def created_ist(self, obj):
         return _ist(obj.created_at)
+
+    @admin.display(description="Cities")
+    def cities_summary(self, obj):
+        prefs = getattr(obj, "city_prefs", None)
+        if not prefs or not isinstance(prefs.cities, list):
+            return "—"
+        names = [str(c.get("name") or c.get("id") or "") for c in prefs.cities if isinstance(c, dict)]
+        return ", ".join(n for n in names if n)[:80] or "—"
+
+    @admin.display(description="Timer")
+    def timer_summary(self, obj):
+        prefs = getattr(obj, "city_prefs", None)
+        if not prefs:
+            return "—"
+        return f"{prefs.rotate_min_sec:g}–{prefs.rotate_max_sec:g}s"
+
+
+class ApplicantCityPrefsInline(admin.StackedInline):
+    model = ApplicantCityPrefs
+    extra = 0
+    fields = (
+        "enabled",
+        "cities",
+        "rotate_min_gap_ms",
+        "rotate_max_gap_ms",
+        "last_post_id",
+        "last_switch_at",
+        "updated_at",
+    )
+    readonly_fields = ("updated_at", "last_switch_at")
+
+
+# Re-bind Applicant admin with inline
+ApplicantAdmin.inlines = [ApplicantCityPrefsInline]
+
+
+@admin.register(ApplicantCityPrefs)
+class ApplicantCityPrefsAdmin(admin.ModelAdmin):
+    list_display = (
+        "applicant",
+        "enabled",
+        "city_count",
+        "timer_display",
+        "last_post_id",
+        "updated_at",
+    )
+    search_fields = ("applicant__applicant_id", "applicant__email", "applicant__name")
+    list_filter = ("enabled",)
+    fields = (
+        "applicant",
+        "enabled",
+        "cities",
+        "rotate_min_gap_ms",
+        "rotate_max_gap_ms",
+        "last_post_id",
+        "last_switch_at",
+        "updated_at",
+    )
+    readonly_fields = ("updated_at", "last_switch_at")
+
+    @admin.display(description="Cities")
+    def city_count(self, obj):
+        return len(obj.cities) if isinstance(obj.cities, list) else 0
+
+    @admin.display(description="Timer (s)")
+    def timer_display(self, obj):
+        return f"{obj.rotate_min_sec:g}–{obj.rotate_max_sec:g}"
 
 
 @admin.register(Contribution)
@@ -165,17 +234,6 @@ class DashboardSnapshotAdmin(admin.ModelAdmin):
     @admin.display(description="Created (IST)", ordering="created_at")
     def created_ist(self, obj):
         return _ist(obj.created_at)
-
-
-@admin.register(ApplicantCityPrefs)
-class ApplicantCityPrefsAdmin(admin.ModelAdmin):
-    list_display = ("applicant", "enabled", "city_count", "last_post_id", "updated_at")
-    search_fields = ("applicant__applicant_id", "applicant__email", "applicant__name")
-    list_filter = ("enabled",)
-
-    @admin.display(description="Cities")
-    def city_count(self, obj):
-        return len(obj.cities) if isinstance(obj.cities, list) else 0
 
 
 @admin.register(ExtensionLicense)

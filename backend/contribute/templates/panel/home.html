@@ -1,0 +1,47 @@
+{% extends "panel/base.html" %}
+{% block content %}
+<div class="bar">
+  <form method="get" class="bar" style="margin:0">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search name, email, ID…" />
+    <button type="submit">Search</button>
+    {% if q %}<a class="btn secondary" href="{% url 'panel_home' %}">Clear</a>{% endif %}
+  </form>
+  <span class="muted">{{ rows|length }} shown · {{ total }} total · {{ now|date:"H:i:s" }} IST</span>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Applicant</th>
+      <th>Cities</th>
+      <th>Timer</th>
+      <th>City Change</th>
+      <th>Contribs</th>
+      <th>Updated</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      <td>
+        <strong>{{ row.applicant.name|default:"(no name)" }}</strong><br />
+        <span class="muted">{{ row.applicant.applicant_id|default:"—" }}</span><br />
+        <span class="muted">{{ row.applicant.email|default:"" }}</span>
+        {% if row.applicant.visa_class %}<br /><span class="muted">{{ row.applicant.visa_class }}</span>{% endif %}
+      </td>
+      <td>{{ row.city_names }}</td>
+      <td>{{ row.min_sec }}–{{ row.max_sec }}s</td>
+      <td>
+        {% if row.enabled %}<span class="pill on">ON</span>{% else %}<span class="pill off">OFF</span>{% endif %}
+      </td>
+      <td>{{ row.contrib_count }}</td>
+      <td class="muted">{{ row.updated|date:"Y-m-d H:i" }}</td>
+      <td><a class="btn" href="{% url 'panel_user' row.applicant.pk %}">Edit</a></td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="7" class="muted">No applicants yet. Data appears when the extension syncs.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

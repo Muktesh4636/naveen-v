@@ -89,4 +89,6 @@ CSRF_TRUSTED_ORIGINS = [
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+LOGIN_URL = "/admin/login/"
+LOGIN_REDIRECT_URL = "/panel/"
+LOGOUT_REDIRECT_URL = "/admin/login/"

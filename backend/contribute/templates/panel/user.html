@@ -1,0 +1,76 @@
+{% extends "panel/base.html" %}
+{% block content %}
+<p><a href="{% url 'panel_home' %}">← All users</a></p>
+
+<form method="post" class="card">
+  {% csrf_token %}
+  <h2 style="margin-top:0">{{ applicant.name|default:applicant.applicant_id|default:"Applicant" }}</h2>
+  <p class="muted">Last updated {{ updated|date:"Y-m-d H:i:s" }} IST</p>
+
+  <div class="grid2">
+    <div>
+      <label>Name</label>
+      <input type="text" name="name" value="{{ applicant.name }}" style="width:100%" />
+    </div>
+    <div>
+      <label>Applicant ID</label>
+      <input type="text" name="applicant_id" value="{{ applicant.applicant_id }}" style="width:100%" />
+    </div>
+    <div>
+      <label>Email</label>
+      <input type="email" name="email" value="{{ applicant.email }}" style="width:100%" />
+    </div>
+    <div>
+      <label>Visa class</label>
+      <input type="text" name="visa_class" value="{{ applicant.visa_class }}" style="width:100%" />
+    </div>
+  </div>
+
+  <label style="margin-top:1rem">
+    <input type="checkbox" name="enabled" {% if prefs.enabled %}checked{% endif %} />
+    City Change enabled for this user
+  </label>
+
+  <label>Cities (one per line: <code>postId|Display Name</code>)</label>
+  <textarea name="cities_text" placeholder="abc123|CHENNAI VAC&#10;def456|HYDERABAD VAC">{{ cities_text }}</textarea>
+  <p class="hint">Extension uses these cities from the server. Edit here to override what the user selected.</p>
+
+  <div class="grid2">
+    <div>
+      <label>Timer min (seconds between city switches)</label>
+      <input type="number" name="min_sec" step="0.5" min="1" value="{{ min_sec }}" style="width:100%" />
+    </div>
+    <div>
+      <label>Timer max (seconds)</label>
+      <input type="number" name="max_sec" step="0.5" min="1" value="{{ max_sec }}" style="width:100%" />
+    </div>
+  </div>
+  <p class="hint">Default is 13–18s. Example: 10 and 15 → server picks a random gap in that range for this user only.</p>
+
+  <div class="bar" style="margin-top:1rem">
+    <button type="submit">Save cities &amp; timer</button>
+    <a class="btn secondary" href="{% url 'panel_home' %}">Cancel</a>
+  </div>
+</form>
+
+<div class="card">
+  <h3 style="margin-top:0">Recent contributions</h3>
+  {% if recent %}
+  <table>
+    <thead><tr><th>When</th><th>Post</th><th>Days</th><th>Error</th></tr></thead>
+    <tbody>
+      {% for c in recent %}
+      <tr>
+        <td class="muted">{{ c.created_at|date:"Y-m-d H:i" }}</td>
+        <td>{{ c.post_name|default:c.post_id }}</td>
+        <td>{% if c.days %}{{ c.days|length }}{% else %}0{% endif %}</td>
+        <td>{% if c.has_error %}yes{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No contributions yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

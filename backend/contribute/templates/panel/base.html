@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VisaSlot Admin Panel</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --card: #1a2332;
+      --line: #2a3a4f;
+      --text: #e8eef6;
+      --muted: #8b9bb0;
+      --accent: #3d8bfd;
+      --ok: #3ecf8e;
+      --warn: #f0b429;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(1200px 600px at 10% -10%, #1b2a44, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--line);
+      background: rgba(0,0,0,.25);
+    }
+    header h1 { margin: 0; font-size: 1.15rem; font-weight: 650; }
+    header a { color: var(--accent); text-decoration: none; }
+    main { padding: 1.25rem 1.5rem 2.5rem; max-width: 1200px; margin: 0 auto; }
+    .bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .75rem;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    input[type=search], input[type=text], input[type=email], input[type=number], textarea {
+      background: #0d1520;
+      border: 1px solid var(--line);
+      color: var(--text);
+      border-radius: 8px;
+      padding: .55rem .7rem;
+      font: inherit;
+    }
+    input[type=search] { min-width: 240px; }
+    button, .btn {
+      background: var(--accent);
+      color: #fff;
+      border: 0;
+      border-radius: 8px;
+      padding: .55rem .9rem;
+      font: inherit;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-block;
+    }
+    button.secondary, .btn.secondary { background: #334155; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    th, td {
+      text-align: left;
+      padding: .7rem .8rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      font-size: .92rem;
+    }
+    th { color: var(--muted); font-weight: 600; background: #121a26; }
+    tr:last-child td { border-bottom: 0; }
+    .muted { color: var(--muted); }
+    .pill {
+      display: inline-block;
+      padding: .15rem .45rem;
+      border-radius: 999px;
+      font-size: .75rem;
+      font-weight: 600;
+    }
+    .pill.on { background: rgba(62,207,142,.15); color: var(--ok); }
+    .pill.off { background: rgba(240,180,41,.12); color: var(--warn); }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 1rem 1.1rem;
+      margin-bottom: 1rem;
+    }
+    label { display: block; color: var(--muted); font-size: .85rem; margin: .6rem 0 .3rem; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+    @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } table { font-size: .85rem; } }
+    .messages { list-style: none; padding: 0; margin: 0 0 1rem; }
+    .messages li {
+      background: rgba(62,207,142,.12);
+      border: 1px solid rgba(62,207,142,.35);
+      color: var(--ok);
+      padding: .6rem .8rem;
+      border-radius: 8px;
+      margin-bottom: .4rem;
+    }
+    textarea { width: 100%; min-height: 160px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; }
+    .hint { font-size: .8rem; color: var(--muted); margin-top: .35rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>VisaSlot Admin · Users</h1>
+    <div>
+      <a href="/admin/">Django admin</a>
+      &nbsp;·&nbsp;
+      <a href="/admin/logout/">Logout</a>
+    </div>
+  </header>
+  <main>
+    {% if messages %}
+      <ul class="messages">{% for m in messages %}<li>{{ m }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

@@ -59,9 +59,11 @@ def ms_until_slot_window(now: datetime | None = None) -> int:
     return (3600 - elapsed_sec) * 1000
 
 
-def _rotate_gap_ms() -> int:
-    lo = max(1000, ROTATE_MIN_GAP_MS)
-    hi = max(lo, ROTATE_MAX_GAP_MS)
+def _rotate_gap_ms(min_ms: int | None = None, max_ms: int | None = None) -> int:
+    lo = int(min_ms) if min_ms else ROTATE_MIN_GAP_MS
+    hi = int(max_ms) if max_ms else ROTATE_MAX_GAP_MS
+    lo = max(1000, lo)
+    hi = max(lo, hi)
     return random.randint(lo, hi)
 
 
@@ -101,6 +103,8 @@ def build_rotate_plan(
     current_city_id: str | None,
     last_switch_at_ms: int | None,
     now_ms: int | None = None,
+    min_gap_ms: int | None = None,
+    max_gap_ms: int | None = None,
 ) -> dict:
     """
     Internal plan dict (clear names). Call encode_plan_wire() before HTTP.
@@ -135,7 +139,7 @@ def build_rotate_plan(
             "citiesCount": len(cities),
         }
 
-    gap = _rotate_gap_ms()
+    gap = _rotate_gap_ms(min_gap_ms, max_gap_ms)
     earliest = now_ms
     if last_switch_at_ms:
         earliest = max(earliest, int(last_switch_at_ms) + gap)

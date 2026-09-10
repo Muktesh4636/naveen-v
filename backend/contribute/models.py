@@ -147,6 +147,15 @@ class ApplicantCityPrefs(models.Model):
     # [{ "id": "<post id>", "name": "CHENNAI VAC" }, ...]
     cities = models.JSONField(default=list)
     enabled = models.BooleanField(default=False)
+    # Per-applicant City Change gap (ms). 0 = use server default (13–18s).
+    rotate_min_gap_ms = models.PositiveIntegerField(
+        default=13000,
+        help_text="Minimum seconds×1000 between city switches for this user",
+    )
+    rotate_max_gap_ms = models.PositiveIntegerField(
+        default=18000,
+        help_text="Maximum seconds×1000 between city switches for this user",
+    )
     last_post_id = models.CharField(max_length=64, blank=True, default="")
     last_switch_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -154,3 +163,11 @@ class ApplicantCityPrefs(models.Model):
     def __str__(self):
         n = len(self.cities) if isinstance(self.cities, list) else 0
         return f"{self.applicant}: {n} cities"
+
+    @property
+    def rotate_min_sec(self) -> float:
+        return round((self.rotate_min_gap_ms or 0) / 1000, 1)
+
+    @property
+    def rotate_max_sec(self) -> float:
+        return round((self.rotate_max_gap_ms or 0) / 1000, 1)

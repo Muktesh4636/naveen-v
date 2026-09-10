@@ -308,6 +308,8 @@ def city_rotate_plan(request):
         cities=prefs.cities or [],
         current_city_id=current_id,
         last_switch_at_ms=_dt_to_ms(prefs.last_switch_at),
+        min_gap_ms=prefs.rotate_min_gap_ms,
+        max_gap_ms=prefs.rotate_max_gap_ms,
     )
     plan["enabled"] = prefs.enabled
     plan["citiesCount"] = len(prefs.cities or [])
