@@ -143,7 +143,6 @@ export async function syncCitiesToServer(cities, enabled) {
         p,
         l: (cities || []).map((c) => ({
           i: String(c.id),
-          n: String(c.name || c.id),
         })),
         y: enabled ? 1 : 0,
       }),

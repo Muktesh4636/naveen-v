@@ -226,8 +226,8 @@ def decode_plan_request(body: dict) -> dict:
 
 
 def encode_cities_wire(*, success: bool, cities: list, enabled: bool, applicant_id: str) -> dict:
-    # Response list uses opaque item keys i/n (not id/name).
-    opaque_list = [{"i": c["id"], "n": c["name"]} for c in _normalize_cities(cities)]
+    # Only ids on the wire — no display names.
+    opaque_list = [{"i": c["id"]} for c in _normalize_cities(cities)]
     return {
         "k": 1 if success else 0,
         "l": opaque_list,
