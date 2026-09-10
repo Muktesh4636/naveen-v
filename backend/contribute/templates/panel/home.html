@@ -7,18 +7,21 @@
 <div class="stats">
   <div class="stat"><b>{{ total }}</b><span>Total applicants</span></div>
   <div class="stat"><b>{{ on_count }}</b><span>City Change ON</span></div>
+  <div class="stat"><b>{{ paid_count }}</b><span>Paid</span></div>
   <div class="stat"><b>{{ shown }}</b><span>Showing now</span></div>
 </div>
 
 <div class="toolbar">
   <form method="get" class="toolbar" style="margin:0">
     <input type="hidden" name="status" value="{{ status }}" />
-    <input type="search" name="q" value="{{ q }}" placeholder="Search name, email, or ID" />
+    <input type="search" name="q" value="{{ q }}" placeholder="Search name, email, ID, payment" />
     <button class="btn" type="submit">Search</button>
     {% if q %}<a class="btn ghost" href="?status={{ status }}">Clear</a>{% endif %}
   </form>
   <div class="filters">
     <a class="chip-filter {% if status == 'all' %}active{% endif %}" href="?q={{ q|urlencode }}&status=all">All</a>
+    <a class="chip-filter {% if status == 'paid' %}active{% endif %}" href="?q={{ q|urlencode }}&status=paid">Paid</a>
+    <a class="chip-filter {% if status == 'unpaid' %}active{% endif %}" href="?q={{ q|urlencode }}&status=unpaid">Unpaid</a>
     <a class="chip-filter {% if status == 'on' %}active{% endif %}" href="?q={{ q|urlencode }}&status=on">City Change ON</a>
     <a class="chip-filter {% if status == 'off' %}active{% endif %}" href="?q={{ q|urlencode }}&status=off">City Change OFF</a>
     <a class="chip-filter {% if status == 'empty' %}active{% endif %}" href="?q={{ q|urlencode }}&status=empty">No cities</a>
@@ -31,12 +34,20 @@
   <article class="user-card">
     <div style="display:flex;justify-content:space-between;gap:.5rem;align-items:flex-start">
       <h3>{{ row.applicant.name|default:"Unnamed applicant" }}</h3>
-      {% if row.enabled %}<span class="pill on">On</span>{% else %}<span class="pill off">Off</span>{% endif %}
+      <div style="display:flex;gap:.35rem;flex-wrap:wrap;justify-content:flex-end">
+        {% if row.paid %}<span class="pill on">Paid</span>{% else %}<span class="pill off">Unpaid</span>{% endif %}
+        {% if row.enabled %}<span class="pill on">City ON</span>{% else %}<span class="pill off">City OFF</span>{% endif %}
+      </div>
     </div>
     <div class="meta">
       ID {{ row.applicant.applicant_id|default:"—" }}
       {% if row.applicant.email %} · {{ row.applicant.email }}{% endif %}
       {% if row.applicant.visa_class %} · {{ row.applicant.visa_class }}{% endif %}
+    </div>
+    <div class="meta">
+      Amount <strong style="color:var(--text)">₹{{ row.fee_amount }}</strong>
+      {% if row.payment_id %} · Pay ID {{ row.payment_id }}{% endif %}
+      {% if row.payment_user_id %} · By {{ row.payment_user_id }}{% endif %}
     </div>
     <div class="city-tags">
       {% for c in row.cities %}

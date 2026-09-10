@@ -6,6 +6,7 @@ preferred cities, and per-user city-change timers.
 from __future__ import annotations
 
 import json
+from decimal import Decimal, InvalidOperation
 
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
@@ -18,6 +19,19 @@ from django.views.decorators.http import require_http_methods
 
 from .city_rotate import _normalize_cities
 from .models import Applicant, ApplicantCityPrefs, Contribution
+
+
+def _parse_fee_amount(raw) -> Decimal:
+    text = (raw or "").strip().replace(",", "")
+    if not text:
+        return Decimal("0.00")
+    try:
+        value = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return Decimal("0.00")
+    if value < 0:
+        value = Decimal("0.00")
+    return value.quantize(Decimal("0.01"))
 
 TIMER_PRESETS = [
     {"id": "fast", "label": "Fast", "hint": "Checks cities quickly", "min": 8, "max": 12},
@@ -153,21 +167,31 @@ def panel_home(request):
             | Q(email__icontains=q)
             | Q(applicant_id__icontains=q)
             | Q(visa_class__icontains=q)
+            | Q(payment_id__icontains=q)
+            | Q(payment_user_id__icontains=q)
         )
 
     rows = []
     on_count = 0
+    paid_count = 0
     for a in applicants[:500]:
         prefs = getattr(a, "city_prefs", None)
         cities = _normalize_cities(prefs.cities) if prefs else []
         enabled = bool(prefs and prefs.enabled)
+        paid = a.is_paid
         if enabled:
             on_count += 1
+        if paid:
+            paid_count += 1
         if status == "on" and not enabled:
             continue
         if status == "off" and enabled:
             continue
         if status == "empty" and cities:
+            continue
+        if status == "paid" and not paid:
+            continue
+        if status == "unpaid" and paid:
             continue
         rows.append(
             {
@@ -177,6 +201,10 @@ def panel_home(request):
                 "city_names": ", ".join(c["name"] for c in cities) or "No cities yet",
                 "city_count": len(cities),
                 "enabled": enabled,
+                "paid": paid,
+                "fee_amount": a.fee_amount,
+                "payment_id": a.payment_id,
+                "payment_user_id": a.payment_user_id,
                 "min_sec": prefs.rotate_min_sec if prefs else 13,
                 "max_sec": prefs.rotate_max_sec if prefs else 18,
                 "preset": _preset_for(
@@ -198,6 +226,7 @@ def panel_home(request):
             "status": status,
             "total": total,
             "on_count": on_count,
+            "paid_count": paid_count,
             "shown": len(rows),
             "now": timezone.localtime(),
             "operator": request.user.get_username(),
@@ -218,6 +247,17 @@ def panel_user(request, pk: int):
         applicant.applicant_id = (
             (request.POST.get("applicant_id") or "").strip() or applicant.applicant_id
         )
+
+        applicant.fee_amount = _parse_fee_amount(request.POST.get("fee_amount"))
+        new_payment_id = (request.POST.get("payment_id") or "").strip()
+        prev_payment_id = (applicant.payment_id or "").strip()
+        applicant.payment_id = new_payment_id
+        applicant.payment_user_id = (request.POST.get("payment_user_id") or "").strip()
+        applicant.payment_note = (request.POST.get("payment_note") or "").strip()
+        if new_payment_id and not prev_payment_id:
+            applicant.payment_marked_at = timezone.now()
+        elif not new_payment_id:
+            applicant.payment_marked_at = None
         applicant.save()
 
         prefs.cities = _parse_cities_payload(request)
@@ -242,9 +282,15 @@ def panel_user(request, pk: int):
         prefs.save()
 
         who = applicant.name or applicant.applicant_id or "User"
+        pay_bit = (
+            f", paid ({applicant.payment_id})"
+            if applicant.is_paid
+            else ", unpaid"
+        )
         messages.success(
             request,
-            f"Saved settings for {who}: {len(prefs.cities)} preferred "
+            f"Saved settings for {who}: ₹{applicant.fee_amount}{pay_bit}; "
+            f"{len(prefs.cities)} preferred "
             f"cit{'y' if len(prefs.cities) == 1 else 'ies'}, "
             f"switch every {min_sec:g}–{max_sec:g} seconds"
             f"{', City Change ON' if prefs.enabled else ', City Change OFF'}.",

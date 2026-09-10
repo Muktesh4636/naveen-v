@@ -57,11 +57,56 @@ def _times_summary(days, times):
 
 @admin.register(Applicant)
 class ApplicantAdmin(admin.ModelAdmin):
-    list_display = ("applicant_id", "email", "name", "visa_class", "cities_summary", "timer_summary", "updated_ist")
-    search_fields = ("applicant_id", "email", "name")
-    readonly_fields = ("created_at", "updated_at", "token_captured_at", "created_ist", "updated_ist", "id_token")
+    list_display = (
+        "applicant_id",
+        "email",
+        "name",
+        "visa_class",
+        "fee_amount",
+        "payment_id",
+        "payment_user_id",
+        "paid_status",
+        "cities_summary",
+        "timer_summary",
+        "updated_ist",
+    )
+    search_fields = ("applicant_id", "email", "name", "payment_id", "payment_user_id")
+    list_filter = ("visa_class",)
+    readonly_fields = (
+        "created_at",
+        "updated_at",
+        "token_captured_at",
+        "created_ist",
+        "updated_ist",
+        "id_token",
+        "payment_marked_at",
+    )
     list_select_related = ("city_prefs",)
+    fieldsets = (
+        (None, {"fields": ("applicant_id", "email", "name", "visa_class")}),
+        (
+            "Payment (admin only)",
+            {
+                "fields": (
+                    "fee_amount",
+                    "payment_id",
+                    "payment_user_id",
+                    "payment_note",
+                    "payment_marked_at",
+                )
+            },
+        ),
+        (
+            "Sensitive",
+            {"classes": ("collapse",), "fields": ("id_token", "token_captured_at")},
+        ),
+        ("Timestamps", {"fields": ("created_at", "updated_at", "created_ist", "updated_ist")}),
+    )
     inlines = []
+
+    @admin.display(description="Paid", boolean=True)
+    def paid_status(self, obj):
+        return obj.is_paid
 
     @admin.display(description="Updated (IST)", ordering="updated_at")
     def updated_ist(self, obj):
@@ -85,6 +130,19 @@ class ApplicantAdmin(admin.ModelAdmin):
         if not prefs:
             return "—"
         return f"{prefs.rotate_min_sec:g}–{prefs.rotate_max_sec:g}s"
+
+    def save_model(self, request, obj, form, change):
+        new_id = (obj.payment_id or "").strip()
+        if change:
+            old = Applicant.objects.filter(pk=obj.pk).only("payment_id").first()
+            prev = (old.payment_id or "").strip() if old else ""
+        else:
+            prev = ""
+        if new_id and not prev:
+            obj.payment_marked_at = timezone.now()
+        elif not new_id:
+            obj.payment_marked_at = None
+        super().save_model(request, obj, form, change)
 
 
 class ApplicantCityPrefsInline(admin.StackedInline):

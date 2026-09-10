@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import models
 
 
@@ -12,6 +14,31 @@ class Applicant(models.Model):
     email = models.EmailField(blank=True, db_index=True)
     name = models.CharField(max_length=255, blank=True)
     visa_class = models.CharField(max_length=255, blank=True)
+
+    # Payment for Tik Tik / service — set only from the admin panel.
+    # fee_amount = what this ID owes; payment_id filled = marked paid.
+    # payment_user_id = which operator/customer paid (not device-bound).
+    fee_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Amount due for this applicant (admin panel only)",
+    )
+    payment_id = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="UPI/bank/ref ID entered by admin when payment is received",
+    )
+    payment_user_id = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        help_text="Which customer/user paid for this applicant ID",
+    )
+    payment_note = models.CharField(max_length=255, blank=True, default="")
+    payment_marked_at = models.DateTimeField(null=True, blank=True)
 
     # The Azure AD identity token captured at login.
     # Stored as the raw JWT string. Treat this as sensitive credential data.
@@ -28,6 +55,11 @@ class Applicant(models.Model):
 
     def __str__(self):
         return self.email or self.applicant_id or f"Applicant #{self.pk}"
+
+    @property
+    def is_paid(self) -> bool:
+        """Tik Tik unlock: admin entered a payment_id for this applicant."""
+        return bool((self.payment_id or "").strip())
 
 
 class Contribution(models.Model):

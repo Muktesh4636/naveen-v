@@ -35,6 +35,41 @@
   </section>
 
   <section class="card">
+    <h2>Payment (admin only)</h2>
+    <p class="meta" style="margin-top:-.35rem">
+      Set the fee and record payment here. Tik Tik unlocks when a Payment ID is saved —
+      same applicant on another laptop stays unlocked (not device-based).
+    </p>
+    <div class="two">
+      <div>
+        <div class="section-label">Amount (₹)</div>
+        <input type="number" name="fee_amount" min="0" step="0.01" value="{{ applicant.fee_amount }}" placeholder="0.00" />
+      </div>
+      <div>
+        <div class="section-label">Payment ID</div>
+        <input type="text" name="payment_id" value="{{ applicant.payment_id }}" placeholder="UPI / bank / receipt ref" />
+      </div>
+      <div>
+        <div class="section-label">Paid by (user ID)</div>
+        <input type="text" name="payment_user_id" value="{{ applicant.payment_user_id }}" placeholder="Customer / operator who paid" />
+      </div>
+      <div>
+        <div class="section-label">Note</div>
+        <input type="text" name="payment_note" value="{{ applicant.payment_note }}" placeholder="Optional note" />
+      </div>
+    </div>
+    <p class="field-hint">
+      Status:
+      {% if applicant.is_paid %}
+        <strong style="color:var(--ok, #1a7f4b)">Paid</strong>
+        {% if applicant.payment_marked_at %} · marked {{ applicant.payment_marked_at|date:"M j, Y H:i" }}{% endif %}
+      {% else %}
+        <strong style="color:var(--warn, #9a5b00)">Unpaid</strong> — leave Payment ID empty until you receive money
+      {% endif %}
+    </p>
+  </section>
+
+  <section class="card">
     <h2>City Change</h2>
     <label class="switch">
       <input type="checkbox" name="enabled" {% if prefs.enabled %}checked{% endif %} />
