@@ -1,6 +1,6 @@
 {
   "name": "visaslots-extension",
-  "version": "2.0.9",
+  "version": "2.0.10",
   "private": true,
   "description": "Chrome extension rebuilt from the shipped VisaSlots.info 2.0.2 package",
   "type": "module",

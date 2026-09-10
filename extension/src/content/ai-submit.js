@@ -294,7 +294,7 @@ function _armRotateBusy(label) {
     _rotateBusyClearTimer = null;
     // No schedule-days response — treat as failed load, then allow next city.
     noteCityRotateResponse({ timedOut: true, label });
-  }, 25_000);
+  }, 40_000);
 }
 
 export function pauseCityRotateForWait(seconds) {
