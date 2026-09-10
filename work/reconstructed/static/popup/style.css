@@ -1,0 +1,191 @@
+body {
+  color: #bbc6ce;
+  background-color: #11191f;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  margin: 0;
+  padding: 12px;
+}
+
+.popup-container {
+  width: 250px;
+  display: flex;
+  flex-direction: column;
+
+  h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 10px 0 6px 0;
+    text-align: center;
+    border-bottom: 1px solid #232e38;
+    padding-bottom: 6px;
+    &#title {
+      font-size: 16px;
+      margin-top: 0;
+    }
+  }
+
+  .status-card {
+    background-color: #1a232b;
+    border: 1px solid #232e38;
+    border-radius: 6px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+
+    .status-section {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+
+      .status-section-header {
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        color: #7b8e9b;
+        letter-spacing: 0.5px;
+        border-bottom: 1px solid #232e38;
+        padding-bottom: 2px;
+        margin-bottom: 2px;
+        text-align: left;
+      }
+
+      .status-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 11px;
+        line-height: 1.4;
+
+        .status-label {
+          color: #bbc6ce;
+          font-weight: 500;
+        }
+
+        .status-value {
+          font-weight: 500;
+          color: #e2e8f0;
+          text-align: right;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 180px;
+        }
+      }
+
+    }
+  }
+
+  .settings-card {
+    background-color: #1a232b;
+    border: 1px solid #232e38;
+    border-radius: 6px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+
+    .settings-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+
+      .settings-group-header {
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        color: #7b8e9b;
+        letter-spacing: 0.5px;
+        border-bottom: 1px solid #232e38;
+        padding-bottom: 2px;
+        margin-bottom: 2px;
+        text-align: left;
+      }
+    }
+
+    .setting-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      
+      .setting-label { font-size: 12px; font-weight: 500; color: #bbc6ce; }
+      .setting-text { display: flex; flex-direction: column; gap: 1px; }
+      .autofill-note { font-size: 10px; color: #7b8e9b; }
+      &.autofill-row { align-items: flex-start; }
+    }
+  }
+
+  .setting-select {
+    background-color: #1a232b;
+    border: 1px solid #2c3a47;
+    border-radius: 6px;
+    color: #bbc6ce;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 3px 6px;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+    &:hover { color: #ffffff; border-color: #1a4480; }
+    &:focus-visible { outline: 1px solid #1a4480; }
+  }
+
+  .switch {
+    position: relative;
+    display: inline-block;
+    min-width: 32px;
+    width: 32px;
+    height: 18px;
+
+    input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+      &:checked + .slider { background-color: #1a4480; }
+      &:checked + .slider:before { transform: translateX(14px); }
+      &:disabled + .slider { opacity: 0.4; cursor: not-allowed; }
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #2c3a47;
+      border-radius: 18px;
+      &:before {
+        position: absolute;
+        content: "";
+        height: 12px;
+        width: 12px;
+        left: 3px;
+        bottom: 3px;
+        background-color: #ffffff;
+        border-radius: 50%;
+      }
+    }
+
+    
+    &:hover .slider,
+    &:hover .slider:before,
+    input:focus + .slider,
+    input:focus + .slider:before,
+    input:active + .slider,
+    input:active + .slider:before {
+      transition: background-color 0.2s, transform 0.2s;
+    }
+  }
+
+  #version {
+    display: block;
+    margin-top: 10px;
+    padding-top: 6px;
+    border-top: 1px solid #232e38;
+    font-size: 10px;
+    color: #7b8e9b;
+    text-align: center;
+    text-decoration: none;
+    transition: color 0.15s ease;
+    &:hover { color: #e2e8f0; }
+  }
+}

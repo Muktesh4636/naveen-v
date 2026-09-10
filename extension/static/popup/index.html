@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>Visa Slot 6</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="popup-container">
+      <header>
+        <h3 id="title">Visa Slot 6</h3>
+      </header>
+
+      <section class="status-card">
+        <div class="status-section">
+          <div class="status-section-header">This device</div>
+          <div class="status-row">
+            <span class="status-label">Account email</span>
+            <span class="status-value" id="status-email">—</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Applicant ID</span>
+            <span class="status-value" id="status-applicant">—</span>
+          </div>
+        </div>
+        <div class="status-section">
+          <div class="status-section-header">Server sync</div>
+          <div class="status-row">
+            <span class="status-label">Contributions (24h)</span>
+            <span class="status-value" id="status-contribs">0</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Latest sync</span>
+            <span class="status-value" id="status-updated">—</span>
+          </div>
+          <p class="local-only-note">Slot checks sync to <a href="https://the.gopg.online" target="_blank" rel="noopener">the.gopg.online</a>. Telegram alerts go via ADB from your phone to Muktesh.</p>
+        </div>
+      </section>
+
+      <h3 id="settings-header">Settings</h3>
+
+      <section class="settings-card">
+        <div class="settings-group">
+          <div class="settings-group-header">Scheduling Page</div>
+          
+          <div class="setting-row">
+            <span class="setting-label">Wait Time</span>
+            <select class="setting-select" id="defaultWaitTime" aria-label="Wait time">
+              <option value="0">Off</option>
+              <option value="5">5s</option>
+              <option value="10">10s</option>
+              <option value="15">15s</option>
+              <option value="30">30s</option>
+              <option value="45">45s</option>
+              <option value="60">60s</option>
+              <option value="120">2m</option>
+              <option value="180">3m</option>
+              <option value="240">4m</option>
+              <option value="300">5m</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
+            <span class="setting-label">Recheck Button</span>
+            <label class="switch">
+              <input type="checkbox" id="recheckButton" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <span class="setting-label">Audio Alerts</span>
+            <label class="switch">
+              <input type="checkbox" id="audioAlert" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <span class="setting-label">Auto Select First Date</span>
+            <label class="switch">
+              <input type="checkbox" id="autoSelectFirstDate" />
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-header">Server</div>
+
+          <div class="setting-row">
+            <span class="setting-label">Sync slot checks to gopg.online</span>
+            <label class="switch">
+              <input type="checkbox" id="serverSync" />
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-header">Telegram Alerts</div>
+          <p class="local-only-note">Sends a message when any dates are found. Token and chat ID stay on this device.</p>
+
+          <p class="local-only-note">Alerts + <b>screenshot photos</b> sent via <b>the.gopg.online</b> server → @visabook_slots_bot → you + Muktesh. No phone/ADB needed.</p>
+
+          <div class="setting-row">
+            <span class="setting-label">Send via gopg.online server (bot + photos)</span>
+            <label class="switch">
+              <input type="checkbox" id="telegramViaServer" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <span class="setting-label">Send via ADB phone (optional fallback)</span>
+            <label class="switch">
+              <input type="checkbox" id="telegramViaAdb" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <span class="setting-label">Telegram screenshots to Muktesh</span>
+            <label class="switch">
+              <input type="checkbox" id="telegramScreenshots" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <label class="switch">
+              <input type="checkbox" id="telegramAlert" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-row telegram-field">
+            <span class="setting-label">Bot token</span>
+            <input type="password" id="telegramBotToken" class="setting-input" placeholder="123456:ABC..." autocomplete="off" />
+          </div>
+
+          <div class="setting-row telegram-field">
+            <span class="setting-label">Chat ID(s)</span>
+            <input type="text" id="telegramChatIds" class="setting-input" placeholder="-1001234567890" autocomplete="off" />
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-header">Security &amp; Login</div>
+
+          <article class="shield-card" id="cfShieldCard">
+            <div class="shield-card__glow" aria-hidden="true"></div>
+            <div class="shield-card__head">
+              <div class="shield-card__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 2.5l7.5 3v6.2c0 4.9-3.2 9.5-7.5 10.8-4.3-1.3-7.5-5.9-7.5-10.8V5.5L12 2.5z" stroke="currentColor" stroke-width="1.6"/>
+                  <path d="M9.2 12.1l1.8 1.8 3.8-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <div class="shield-card__titles">
+                <h4 class="shield-card__title">Cloudflare Shield</h4>
+                <p class="shield-card__subtitle">Auto verify + smart iframe click</p>
+              </div>
+              <span class="shield-card__badge" id="cfShieldStatus">Active</span>
+            </div>
+
+            <div class="shield-card__toggles">
+              <div class="shield-toggle">
+                <div class="shield-toggle__text">
+                  <span class="shield-toggle__label">Auto verify handler</span>
+                  <span class="shield-toggle__note">Watches and retries on challenge pages</span>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="autoCloudflareTick" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="shield-toggle shield-toggle--nested">
+                <div class="shield-toggle__text">
+                  <span class="shield-toggle__label">Advanced Turnstile click</span>
+                  <span class="shield-toggle__note">Precision click inside Cloudflare iframe</span>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="cloudflareDebuggerClick" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          </article>
+
+          <div class="setting-row autofill-row">
+            <div class="setting-text">
+              <span class="setting-label">Autofill Security Questions</span>
+              <span class="autofill-note">Passwords never leave your device</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="autofill" />
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <footer>
+        <a
+          id="version"
+          href="https://chromewebstore.google.com/detail/visaslotsinfo/oabehjadicgppcgikbggaoggnnhclhkp"
+          target="_blank"
+          rel="noopener"
+        ></a>
+      </footer>
+    </main>
+    <script src="script.js"></script>
+  </body>
+</html>

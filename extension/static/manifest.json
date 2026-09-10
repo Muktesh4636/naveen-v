@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Visa Slot 6",
+  "version": "2.0.8",
+  "description": "Crowdsourced Visa Slot Availability",
+  "permissions": ["storage", "scripting", "webRequest", "tabs", "debugger"],
+  "icons": {
+    "128": "images/icon-128.png"
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Visa Slot 6",
+    "default_popup": "popup/index.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.usvisascheduling.com/*"],
+      "js": ["scripts/content.js"]
+    },
+    {
+      "matches": ["https://atlasauth.b2clogin.com/*"],
+      "js": ["scripts/questions.js"]
+    }
+  ],
+  "host_permissions": [
+    "https://www.usvisascheduling.com/*",
+    "https://atlasauth.b2clogin.com/*",
+    "https://api.telegram.org/*",
+    "https://the.gopg.online/*",
+    "https://gopg.online/*",
+    "http://127.0.0.1:9333/*",
+    "http://localhost:9333/*"
+  ]
+}

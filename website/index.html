@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VisaBook — Crowdsourced Visa Slot Availability</title>
+    <meta
+      name="description"
+      content="Find US visa appointment slots through community-driven updates. Install the VisaBook Chrome extension and get alerts as soon as new slots open."
+    />
+    <link rel="icon" href="assets/icon-128.png" type="image/png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Manrope:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="atmosphere" aria-hidden="true"></div>
+
+    <header class="top">
+      <a class="brand" href="/">
+        <img src="assets/icon-128.png" alt="" width="36" height="36" />
+        <span>VisaBook</span>
+      </a>
+      <nav>
+        <a href="#how">How it works</a>
+        <a href="#install">Install</a>
+        <button type="button" class="nav-cta js-add-chrome" aria-haspopup="dialog">
+          Add to Chrome
+        </button>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <p class="brand-mark">VisaBook</p>
+        <h1>Crowdsourced visa slot availability</h1>
+        <p class="lede">
+          Install the Chrome extension, browse the scheduling portal as usual, and help surface
+          open appointment slots the moment they appear.
+        </p>
+        <div class="cta-row">
+          <button type="button" class="btn add-chrome js-add-chrome" aria-haspopup="dialog">
+            <span class="chrome-mark" aria-hidden="true">
+              <svg viewBox="0 0 48 48" width="22" height="22">
+                <circle cx="24" cy="24" r="20" fill="#fff" />
+                <circle cx="24" cy="24" r="8.5" fill="#fff" stroke="#1a73e8" stroke-width="3.5" />
+                <path fill="#ea4335" d="M24 4a20 20 0 0 1 17.32 10H24z" />
+                <path fill="#fbbc04" d="M41.32 14A20 20 0 0 1 31 41.32L24 24z" />
+                <path fill="#34a853" d="M31 41.32A20 20 0 0 1 6.68 14H24z" />
+                <circle cx="24" cy="24" r="6.2" fill="#1a73e8" />
+              </svg>
+            </span>
+            Add to Chrome
+          </button>
+          <a class="btn ghost" href="#install">Installation guide</a>
+        </div>
+        <p class="meta">v2.0.2 · Free · Works with USVisaScheduling.com</p>
+      </section>
+
+      <section class="how" id="how">
+        <h2>How it works</h2>
+        <p class="section-lede">
+          One quiet companion for the appointment portal — contribute while you check, benefit when others do the same.
+        </p>
+        <ol class="steps">
+          <li>
+            <span class="step-num">01</span>
+            <div>
+              <h3>Add to Chrome</h3>
+              <p>Click Add to Chrome, then finish the short developer-mode install.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-num">02</span>
+            <div>
+              <h3>Visit the scheduling site</h3>
+              <p>Log in to USVisaScheduling and check posts the way you already do.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-num">03</span>
+            <div>
+              <h3>Slots stay current</h3>
+              <p>Availability is shared so the community can react the moment openings appear.</p>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <section class="install" id="install">
+        <h2>Install on Chrome</h2>
+        <p class="section-lede">
+          Google only allows one-click install from the Chrome Web Store. VisaBook installs from this site in a few steps.
+        </p>
+        <div class="install-panel">
+          <ol>
+            <li>
+              Click <strong>Add to Chrome</strong> above — your browser downloads
+              <code>visa-book-extension.zip</code>. Unzip it.
+            </li>
+            <li>
+              Open <code>chrome://extensions</code> and turn on
+              <strong>Developer mode</strong> (top right).
+            </li>
+            <li>
+              Click <strong>Load unpacked</strong> and select the unzipped
+              <code>visa-book-extension</code> folder.
+            </li>
+            <li>
+              Open
+              <a href="https://www.usvisascheduling.com" target="_blank" rel="noopener">USVisaScheduling.com</a>
+              — the toolbar icon confirms it is active.
+            </li>
+          </ol>
+          <button type="button" class="btn add-chrome wide js-add-chrome" aria-haspopup="dialog">
+            <span class="chrome-mark" aria-hidden="true">
+              <svg viewBox="0 0 48 48" width="22" height="22">
+                <circle cx="24" cy="24" r="20" fill="#fff" />
+                <circle cx="24" cy="24" r="8.5" fill="#fff" stroke="#1a73e8" stroke-width="3.5" />
+                <path fill="#ea4335" d="M24 4a20 20 0 0 1 17.32 10H24z" />
+                <path fill="#fbbc04" d="M41.32 14A20 20 0 0 1 31 41.32L24 24z" />
+                <path fill="#34a853" d="M31 41.32A20 20 0 0 1 6.68 14H24z" />
+                <circle cx="24" cy="24" r="6.2" fill="#1a73e8" />
+              </svg>
+            </span>
+            Add to Chrome
+          </button>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div>
+        <strong>VisaBook</strong>
+        <span>Crowdsourced Visa Slot Availability</span>
+      </div>
+      <p>
+        Contributions help keep availability data accurate. Use only on accounts you own.
+        Your data is sent to <a href="https://the.gopg.online">the.gopg.online</a>.
+      </p>
+    </footer>
+
+    <div class="modal" id="install-modal" hidden>
+      <div class="modal-backdrop js-modal-close" tabindex="-1"></div>
+      <div
+        class="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title"
+      >
+        <button type="button" class="modal-x js-modal-close" aria-label="Close">&times;</button>
+        <h2 id="modal-title">Finish adding VisaBook</h2>
+        <p class="modal-lede">Your download started. Complete these steps in Chrome:</p>
+        <ol>
+          <li>Unzip <code>visa-book-extension.zip</code></li>
+          <li>Open <code>chrome://extensions</code></li>
+          <li>Enable <strong>Developer mode</strong></li>
+          <li>Click <strong>Load unpacked</strong> → select the <code>visa-book-extension</code> folder</li>
+        </ol>
+        <div class="modal-actions">
+          <a class="btn ghost" href="chrome://extensions" id="open-extensions">Open extensions page</a>
+          <button type="button" class="btn primary js-modal-close">Got it</button>
+        </div>
+        <p class="modal-note">
+          Chrome blocks links to <code>chrome://</code> from websites — paste
+          <code>chrome://extensions</code> in the address bar if the button does nothing.
+        </p>
+      </div>
+    </div>
+
+    <script src="script.js"></script>
+  </body>
+</html>
