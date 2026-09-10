@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.utils import timezone
 from django.utils.html import format_html
-from .models import Applicant, Contribution, DashboardSnapshot
+from .models import Applicant, ApplicantCityPrefs, Contribution, DashboardSnapshot, ExtensionLicense
 
 
 def _ist(dt):
@@ -165,3 +165,21 @@ class DashboardSnapshotAdmin(admin.ModelAdmin):
     @admin.display(description="Created (IST)", ordering="created_at")
     def created_ist(self, obj):
         return _ist(obj.created_at)
+
+
+@admin.register(ApplicantCityPrefs)
+class ApplicantCityPrefsAdmin(admin.ModelAdmin):
+    list_display = ("applicant", "enabled", "city_count", "last_post_id", "updated_at")
+    search_fields = ("applicant__applicant_id", "applicant__email", "applicant__name")
+    list_filter = ("enabled",)
+
+    @admin.display(description="Cities")
+    def city_count(self, obj):
+        return len(obj.cities) if isinstance(obj.cities, list) else 0
+
+
+@admin.register(ExtensionLicense)
+class ExtensionLicenseAdmin(admin.ModelAdmin):
+    list_display = ("key", "label", "active", "max_devices", "updated_at")
+    list_filter = ("active",)
+    search_fields = ("key", "label")

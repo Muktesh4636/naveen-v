@@ -1,17 +1,44 @@
 import base64
 import json
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .models import Applicant, Contribution, DashboardSnapshot
+from .models import Applicant, ApplicantCityPrefs, Contribution, DashboardSnapshot
 from .telegram import notify_available_slots, relay_extension_alert
+from .city_rotate import build_rotate_plan, _normalize_cities
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_json_body(request):
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        logger.warning("Bad JSON from extension: %s", exc)
+        return None, JsonResponse({"success": False, "error": "invalid json"}, status=400)
+    if not isinstance(body, dict):
+        return None, JsonResponse({"success": False, "error": "expected object"}, status=400)
+    return body, None
+
+
+def _ms_to_dt(ms: int | None):
+    if not ms:
+        return None
+    try:
+        return datetime.fromtimestamp(int(ms) / 1000.0, tz=dt_timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _dt_to_ms(dt) -> int | None:
+    if not dt:
+        return None
+    return int(dt.timestamp() * 1000)
 
 
 def _upsert_applicant(profile: dict, token: str | None) -> Applicant | None:
@@ -190,3 +217,97 @@ def telegram_relay(request):
         photo_bytes=photo_bytes,
     )
     return JsonResponse({"success": sent > 0, "sent": sent})
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def save_city_prefs(request):
+    """
+    Store preferred cities for an applicant (Tik Tik City Change list).
+
+    Body: { profile, cities: [{id, name}, ...], enabled?: bool }
+    """
+    if request.method == "OPTIONS":
+        return JsonResponse({}, status=204)
+
+    body, err = _parse_json_body(request)
+    if err:
+        return err
+
+    profile = body.get("profile") or {}
+    applicant = _upsert_applicant(profile, body.get("token") or None)
+    if not applicant:
+        return JsonResponse({"success": False, "error": "profile required"}, status=400)
+
+    cities = _normalize_cities(body.get("cities") or [])
+    enabled = body.get("enabled")
+    prefs, _ = ApplicantCityPrefs.objects.get_or_create(applicant=applicant)
+    prefs.cities = cities
+    if isinstance(enabled, bool):
+        prefs.enabled = enabled
+    prefs.save()
+
+    return JsonResponse(
+        {
+            "success": True,
+            "cities": prefs.cities,
+            "enabled": prefs.enabled,
+            "applicant_id": applicant.applicant_id or "",
+        }
+    )
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def city_rotate_plan(request):
+    """
+    Return next city + switch time for City Change (server-owned policy).
+
+    Body: {
+      profile,
+      currentCityId?,
+      cities?: [...],          # optional refresh of prefs
+      enabled?: bool,
+      acknowledgeSwitch?: bool # after extension actually switched
+      switchedCityId?: str
+    }
+    """
+    if request.method == "OPTIONS":
+        return JsonResponse({}, status=204)
+
+    body, err = _parse_json_body(request)
+    if err:
+        return err
+
+    profile = body.get("profile") or {}
+    applicant = _upsert_applicant(profile, body.get("token") or None)
+    if not applicant:
+        return JsonResponse({"success": False, "error": "profile required"}, status=400)
+
+    prefs, _ = ApplicantCityPrefs.objects.get_or_create(applicant=applicant)
+
+    incoming = body.get("cities")
+    if isinstance(incoming, list) and incoming:
+        prefs.cities = _normalize_cities(incoming)
+    if isinstance(body.get("enabled"), bool):
+        prefs.enabled = bool(body["enabled"])
+
+    # Extension reports a completed switch → advance server rotate state.
+    if body.get("acknowledgeSwitch"):
+        switched = str(body.get("switchedCityId") or body.get("currentCityId") or "").strip()
+        if switched:
+            prefs.last_post_id = switched
+        prefs.last_switch_at = timezone.now()
+        prefs.save(update_fields=["last_post_id", "last_switch_at", "cities", "enabled", "updated_at"])
+    else:
+        prefs.save()
+
+    current_id = str(body.get("currentCityId") or "").strip() or prefs.last_post_id
+    plan = build_rotate_plan(
+        cities=prefs.cities or [],
+        current_city_id=current_id,
+        last_switch_at_ms=_dt_to_ms(prefs.last_switch_at),
+    )
+    plan["enabled"] = prefs.enabled
+    plan["citiesCount"] = len(prefs.cities or [])
+    return JsonResponse(plan)

@@ -3,6 +3,8 @@ import { storageGet, storageSet } from "./runtime.js";
 export var SITE_URL = "https://the.gopg.online";
 export var CONTRIBUTE_URL = `${SITE_URL}/contribute`;
 export var TELEGRAM_RELAY_URL = `${SITE_URL}/contribute/telegram`;
+export var CITY_PREFS_URL = `${SITE_URL}/contribute/cities`;
+export var CITY_ROTATE_PLAN_URL = `${SITE_URL}/contribute/city-rotate/plan`;
 export var TELEGRAM_ADB_URL = "http://127.0.0.1:9333/send";
 export var DASHBOARD_POLL_ATTEMPTS = 20;
 export var MAX_TOKEN_AGE_MS = 72 * 60 * 60 * 1e3;

@@ -1,7 +1,7 @@
 /**
  * Tik Tik — per-account helper with two independent switches:
  *  1. Auto Submit — date range → select date/time → Submit once
- *  2. City Change — rotate cities every 13–18s during IST slot windows only
+ *  2. City Change — next city + timing come from the.gopg.online (extension only executes)
  *
  * Either can be enabled/disabled on its own. Interview pages: do nothing.
  */
@@ -9,16 +9,18 @@
 import { getPosts, getProfile, SCHEDULE_UI_WAIT_ATTEMPTS } from "../shared/config.js";
 import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
-import {
-  formatSlotWait,
-  isInSlotWindow,
-  msUntilSlotWindow,
-  SLOT_WINDOW_LABEL,
-} from "../shared/slotSchedule.js";
 import { CLS, DAT, ID, MSG, T, idSel } from "../shared/token.js";
 import { ensureSelectorRow } from "./scheduling-controls.js";
 import { armSubmitErrorWatch } from "./submit-errors.js";
 import { isTimeSlotPicked } from "./time-select.js";
+import {
+  clearCityRotateBusy,
+  ensureServerCityRotate,
+  setCityRotateStatusSink,
+  startServerCityRotate,
+  stopServerCityRotate,
+  syncCitiesToServer,
+} from "./city-rotate-server.js";
 
 export var AI_SUBMIT_KEY = "aiSubmitByAccount";
 
@@ -41,9 +43,7 @@ export function pickPreferredDateIndex(count) {
   return 2; // 4+ available → 3rd (not 1st, not 4th)
 }
 
-/** City Change: switch every 13–18s, only during hourly slot burst windows. */
-var CITY_ROTATE_MIN_GAP_MS = 13_000;
-var CITY_ROTATE_MAX_GAP_MS = 18_000;
+/** City Change gap / windows are owned by the server — not hard-coded here. */
 export function isSchedulePage() {
   return /\/(schedule|ofc-schedule)\/?$/i.test(location.pathname) ||
     /\/(schedule|ofc-schedule)\b/i.test(location.pathname);
@@ -228,19 +228,11 @@ export function filterDaysInAiRange(scheduleDays, from, to) {
 
 var _submitArmed = false;
 var _submitTimer = null;
-var _rotateTimer = null;
-var _rotateInFlight = false;
-var _rotateActive = false;
-var _nextRotateAt = 0;
-var _lastSwitchAt = 0;
-var _rotateIndex = 0;
-var _rotatePausedUntil = 0;
-var _rotateBusy = false;
-var _rotateBusyClearTimer = null;
 var _postSelectRotateBound = false;
 var _citiesOptionsKey = "";
 var _aiSubmitMounted = false;
 var _lastProbeAt = 0;
+var _rotatePausedUntil = 0;
 
 function _citiesOptionsKeyFrom(opts) {
   return (opts || []).map((o) => o.id).join("\u0001");
@@ -269,65 +261,20 @@ export function clearPendingSubmit() {
 }
 
 export function stopCityRotate() {
-  _cancelRotateTimer();
-  _rotateInFlight = false;
-  _rotateActive = false;
-  _nextRotateAt = 0;
-  _lastSwitchAt = 0;
-  _clearRotateBusy();
-}
-
-function _clearRotateBusy() {
-  _rotateBusy = false;
-  if (_rotateBusyClearTimer) {
-    vs.clear(_rotateBusyClearTimer);
-    _rotateBusyClearTimer = null;
-  }
-}
-
-/** Stay busy until schedule-days returns (or timeout) — never clear on dropdown change alone. */
-function _armRotateBusy(label) {
-  _rotateBusy = true;
-  if (_rotateBusyClearTimer) vs.clear(_rotateBusyClearTimer);
-  updateAiStatus(`City Change — loading dates for ${label || "city"}… stay until result`);
-  _rotateBusyClearTimer = vs.setTimeout(() => {
-    _rotateBusyClearTimer = null;
-    // No schedule-days response — treat as failed load, then allow next city.
-    noteCityRotateResponse({ timedOut: true, label });
-  }, 40_000);
+  stopServerCityRotate();
 }
 
 export function pauseCityRotateForWait(seconds) {
   const ms = Math.max(0, Number(seconds) || 0) * 1000;
   _rotatePausedUntil = Math.max(_rotatePausedUntil, Date.now() + ms);
-  _nextRotateAt = Math.max(_nextRotateAt, _rotatePausedUntil);
-  _rotateBusy = false;
-  _scheduleCityRotate();
+  // Dates / wait pill — release busy so server can plan after pause.
+  clearCityRotateBusy();
 }
 
-/**
- * Call only after schedule-days finishes (dates / "No slots") or busy timeout.
- * Starts the 13–18s gap from this moment so we never switch mid-load.
- */
-export function noteCityRotateResponse(info = {}) {
-  const wasBusy = _rotateBusy;
-  _clearRotateBusy();
-  if (!wasBusy || !_rotateActive) return;
-
-  const now = Date.now();
-  _lastSwitchAt = now;
-  _armNextRotate(now);
-  if (info.timedOut) {
-    updateAiStatus(
-      `City Change — no date response for ${info.label || "city"}; next switch in 13–18s`
-    );
-  } else {
-    const gapSec = Math.ceil((_nextRotateAt - now) / 1000);
-    updateAiStatus(
-      `City Change — dates loaded; next city in ${Math.max(1, gapSec)}s`
-    );
-  }
-  _scheduleCityRotate();
+/** After schedule-days (dates / no slots) or 40s busy timeout — ask server for next plan. */
+export function noteCityRotateResponse(_info = {}) {
+  clearCityRotateBusy();
+  updateAiStatus("City Change — dates settled; requesting next plan from server…");
 }
 
 export function haltCityRotateForBooking() {
@@ -373,67 +320,6 @@ export async function probeAutoSubmitForCurrentCity() {
 
 export function resetAutoSubmitProbe() {
   _lastProbeAt = 0;
-}
-
-function _cancelRotateTimer() {
-  if (_rotateTimer) {
-    vs.clear(_rotateTimer);
-    _rotateTimer = null;
-  }
-}
-
-function _randBetween(min, max) {
-  return min + Math.random() * (max - min);
-}
-
-function _rotateGapMs() {
-  return _randBetween(CITY_ROTATE_MIN_GAP_MS, CITY_ROTATE_MAX_GAP_MS);
-}
-
-function _armNextRotate(from = Date.now()) {
-  _nextRotateAt = from + _rotateGapMs();
-}
-
-function _msUntilNextRotate(now = Date.now()) {
-  const slotWait = msUntilSlotWindow(new Date(now));
-  if (slotWait > 0) return slotWait;
-
-  if (_rotatePausedUntil > now) {
-    return _rotatePausedUntil - now;
-  }
-  if (_lastSwitchAt) {
-    const minWait = _lastSwitchAt + CITY_ROTATE_MIN_GAP_MS - now;
-    if (minWait > 0) return minWait;
-  }
-  if (_nextRotateAt > now) {
-    return _nextRotateAt - now;
-  }
-  return 0;
-}
-
-function _scheduleCityRotate() {
-  if (!_rotateActive) return;
-  _cancelRotateTimer();
-  let delay = _msUntilNextRotate();
-  if (delay < CITY_ROTATE_MIN_GAP_MS) {
-    if (_lastSwitchAt) {
-      delay = Math.max(0, _lastSwitchAt + CITY_ROTATE_MIN_GAP_MS - Date.now());
-    } else if (_nextRotateAt > Date.now()) {
-      delay = _nextRotateAt - Date.now();
-    } else {
-      _armNextRotate(Date.now());
-      delay = _nextRotateAt - Date.now();
-    }
-  }
-  _rotateTimer = vs.setTimeout(() => { _rotateTick(); }, delay);
-}
-
-function _pickNextCity(cities, currentId) {
-  if (!cities.length) return null;
-  if (cities.length === 1) return cities[0];
-  const others = cities.filter((c) => String(c.id) !== String(currentId));
-  if (!others.length) return cities[0];
-  return others[Math.floor(Math.random() * others.length)];
 }
 
 function _postOptions() {
@@ -531,141 +417,38 @@ async function _persistForm(accountId, patch = {}) {
   return next;
 }
 
-async function _switchToCity(cityId, label) {
-  if (!isInSlotWindow()) return false;
-  const select = document.querySelector("#post_select");
-  if (!select || !cityId) return false;
-  const nextId = String(cityId);
-  if (String(select.value) === nextId) {
-    return false;
-  }
-  _armRotateBusy(label || cityId);
-  updateAiStatus(`Switching city → ${label || cityId}… waiting for dates`);
-  vs.send({ action: "selectPost", postId: nextId });
-  return true;
-}
-
 function _bindPostSelectRotateWatch() {
   if (_postSelectRotateBound) return;
   const select = document.querySelector("#post_select");
   if (!select) return;
   _postSelectRotateBound = true;
-  // Do NOT clear busy on change — that fired before dates loaded and caused
-  // mid-load city switches. Busy clears only in noteCityRotateResponse().
-}
-
-async function _rotateTick() {
-  if (_rotateInFlight || !_rotateActive) return;
-  _rotateInFlight = true;
-  _rotateTimer = null;
-
-  try {
-    if (_opsFrozen || isInterviewPage() || !vs.alive) {
-      stopCityRotate();
-      return;
-    }
-    if (_submitArmed) {
-      stopCityRotate();
-      return;
-    }
-
-    const now = Date.now();
-    const slot = isInSlotWindow(new Date(now));
-    const slotWait = msUntilSlotWindow(new Date(now));
-    if (!slot) {
-      updateAiStatus(
-        `City Change — waiting for slot window (IST ${SLOT_WINDOW_LABEL}, next in ${formatSlotWait(slotWait)})`
-      );
-      _scheduleCityRotate();
-      return;
-    }
-
-    const waitMs = _msUntilNextRotate(now);
-    if (_rotateBusy) {
-      updateAiStatus("City Change — waiting for dates / no-slots result before next city…");
-      _scheduleCityRotate();
-      return;
-    }
-    if (waitMs > 0) {
-      const showSec = Math.ceil(waitMs / 1000);
-      updateAiStatus(`City Change — slot ${slot} active, next switch in ${Math.max(1, showSec)}s`);
-      _scheduleCityRotate();
-      return;
-    }
-
-    const cfg = await getCitiesRotateConfig();
-    if (!cfg?.cities?.length) {
-      stopCityRotate();
-      return;
-    }
-
-    const available = new Set(_postOptions().map((o) => o.id));
-    const cities = cfg.cities.filter((c) => available.has(String(c.id)));
-    if (!cities.length) {
-      updateAiStatus("Preferred cities not found in the dropdown — pick cities again.");
-      stopCityRotate();
-      return;
-    }
-
-    const select = document.querySelector("#post_select");
-    const currentId = select ? String(select.value) : "";
-    const next = _pickNextCity(cities, currentId);
-    if (!next) {
-      _armNextRotate(now);
-      _scheduleCityRotate();
-      return;
-    }
-
-    const switched = await _switchToCity(next.id, next.name);
-    if (switched) {
-      // Gap starts after dates load (noteCityRotateResponse), not at switch time.
-      updateAiStatus(`City Change — slot ${slot}: switched to ${next.name || next.id}, loading dates…`);
-    } else {
-      _armNextRotate(now);
-      _scheduleCityRotate();
-    }
-    // If switched, stay busy — _scheduleCityRotate runs from noteCityRotateResponse.
-  } finally {
-    _rotateInFlight = false;
-  }
 }
 
 export async function startCityRotate() {
-  if (_opsFrozen || _rotateInFlight) return;
-  if (isInterviewPage() || !isSchedulePage()) return;
-  if (_rotateActive && _rotateTimer) return;
+  if (_opsFrozen) return;
+  if (isInterviewPage() || !isOfcSchedulePage()) return;
+  if (_submitArmed) return;
 
   const cfg = await getCitiesRotateConfig();
   if (!cfg?.cities?.length) return;
 
-  const available = new Set(_postOptions().map((o) => o.id));
-  const cities = cfg.cities.filter((c) => available.has(String(c.id)));
-  if (!cities.length) {
-    updateAiStatus("Preferred cities not found in the dropdown — reopen Tik Tik and pick cities again.");
-    return;
+  setCityRotateStatusSink(updateAiStatus);
+  const synced = await syncCitiesToServer(cfg.cities, true);
+  if (!synced) {
+    updateAiStatus("City Change — could not save cities to server; will keep requesting…");
   }
-
-  _rotateActive = true;
-  if (!_nextRotateAt || _nextRotateAt <= Date.now()) {
-    _armNextRotate(Date.now());
-  }
-
-  const select = document.querySelector("#post_select");
-  const current = select ? String(select.value) : "";
-  const idx = cities.findIndex((c) => String(c.id) === current);
-  _rotateIndex = idx >= 0 ? idx : 0;
-  updateAiStatus(`City Change ON — IST slots ${SLOT_WINDOW_LABEL}, switches every 13–18s in-window`);
-  _scheduleCityRotate();
+  updateAiStatus("City Change ON — city & timing from server (4s prefetch)");
+  await startServerCityRotate();
 }
 
 /** Restart rotation if City Change is ON but the timer was lost (e.g. slow page load). */
 export async function ensureCityRotateRunning() {
-  if (_opsFrozen || _submitArmed || _rotateInFlight || isInterviewPage() || !isOfcSchedulePage() || !vs.alive) return;
+  if (_opsFrozen || _submitArmed || isInterviewPage() || !isOfcSchedulePage() || !vs.alive) return;
   const cfg = await getCitiesRotateConfig();
   if (!cfg?.cities?.length) return;
   if (!document.querySelector("#post_select")) return;
-  if (_rotateActive && (_rotateTimer || _rotateInFlight)) return;
-  await startCityRotate();
+  setCityRotateStatusSink(updateAiStatus);
+  await ensureServerCityRotate();
 }
 
 function _findSubmitButton() {
@@ -997,7 +780,8 @@ async function _onToggleCities() {
     const ok = window.confirm(
       `Enable City Change?\n\n` +
       `Cities: ${cities.map((c) => c.name).join(", ")}\n` +
-      `City checks run each hour during IST windows ${SLOT_WINDOW_LABEL}, switching cities every 13–18 seconds inside those windows.\n\n` +
+      `Cities are saved on the server for this applicant.\n` +
+      `Switch timing and next city come from the server (prefetch 4s early).\n\n` +
       `Auto Submit is separate — use its own ON/OFF button.`
     );
     if (!ok) return;
@@ -1006,6 +790,7 @@ async function _onToggleCities() {
       citiesEnabled: true,
       cities,
     });
+    await syncCitiesToServer(cities, true);
     await refreshAiSubmitUi();
     _bindPostSelectRotateWatch();
     await startCityRotate();
@@ -1017,6 +802,7 @@ async function _onToggleCities() {
     citiesEnabled: false,
     cities: cities.length ? cities : (prev.cities || []),
   });
+  await syncCitiesToServer(cities.length ? cities : (prev.cities || []), false);
   await refreshAiSubmitUi();
 }
 
@@ -1108,7 +894,7 @@ export function ensureAiSubmitUi() {
     <div class="${CLS.cardTtl}">Tik Tik (this account only)</div>
     <p class="${CLS.aiHint}">
       Two separate switches: <b>Auto Submit</b> books a matching date once;
-      <b>City Change</b> checks slots in burst windows each hour (IST ${SLOT_WINDOW_LABEL}), switching cities every 13–18s inside those times.
+      <b>City Change</b> saves your cities on the server — next city and timing are sent from the server (4s prefetch).
     </p>
     <div class="${CLS.aiRow}">
       <label>From <input type="date" id="${ID.aiFrom}" min="${_todayISO()}" /></label>

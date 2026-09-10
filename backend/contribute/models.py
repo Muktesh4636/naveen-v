@@ -91,3 +91,66 @@ class DashboardSnapshot(models.Model):
 
     def __str__(self):
         return f"Dashboard for {self.applicant} @ {self.created_at:%Y-%m-%d %H:%M}"
+
+
+class ExtensionLicense(models.Model):
+    """
+    One license key per customer. Bound to a limited number of install IDs
+    so a copied extension zip alone will not run on another machine.
+    """
+
+    key = models.CharField(max_length=64, unique=True, db_index=True)
+    label = models.CharField(max_length=255, blank=True, help_text="Customer / note")
+    active = models.BooleanField(default=True)
+    max_devices = models.PositiveSmallIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.key} ({'on' if self.active else 'off'})"
+
+
+class LicenseDevice(models.Model):
+    """A single Chrome install (random installId) activated with a license."""
+
+    license = models.ForeignKey(
+        ExtensionLicense,
+        on_delete=models.CASCADE,
+        related_name="devices",
+    )
+    install_id = models.CharField(max_length=64, db_index=True)
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("license", "install_id")]
+        indexes = [
+            models.Index(fields=["install_id"]),
+        ]
+
+    def __str__(self):
+        return f"{self.install_id[:8]}… → {self.license.key}"
+
+
+class ApplicantCityPrefs(models.Model):
+    """
+    Preferred OFC/consular cities for City Change, stored per applicant.
+    Extension syncs selections here; rotate plan (timing + next city) is
+    served from the API so strategy is not hard-coded only in the zip.
+    """
+
+    applicant = models.OneToOneField(
+        Applicant,
+        on_delete=models.CASCADE,
+        related_name="city_prefs",
+    )
+    # [{ "id": "<post id>", "name": "CHENNAI VAC" }, ...]
+    cities = models.JSONField(default=list)
+    enabled = models.BooleanField(default=False)
+    last_post_id = models.CharField(max_length=64, blank=True, default="")
+    last_switch_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        n = len(self.cities) if isinstance(self.cities, list) else 0
+        return f"{self.applicant}: {n} cities"

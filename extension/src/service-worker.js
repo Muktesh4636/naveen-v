@@ -1194,7 +1194,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     runInTab(tabId, clickSubmitButton, [message.prefix || ""]);
   }
   if (message.action === "selectPost" && tabId) {
-    if (!isInSlotWindow()) return;
     runInTab(tabId, selectConsularPost, [message.postId]);
   }
   if (message.action === "registerAlertGuard" && tabId) {
