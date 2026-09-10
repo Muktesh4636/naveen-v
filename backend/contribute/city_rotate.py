@@ -73,11 +73,11 @@ def _normalize_cities(raw) -> list[dict]:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        cid = str(item.get("id") or "").strip()
+        cid = str(item.get("id") or item.get("i") or "").strip()
         if not cid or cid in seen:
             continue
         seen.add(cid)
-        name = str(item.get("name") or cid).strip()
+        name = str(item.get("name") or item.get("n") or cid).strip()
         out.append({"id": cid, "name": name})
     return out
 
@@ -103,29 +103,22 @@ def build_rotate_plan(
     now_ms: int | None = None,
 ) -> dict:
     """
-    Return a plan the extension can execute locally.
-
-    Fields:
-      success, inWindow, slot, switchAt (epoch ms), waitMs, cityId, cityName,
-      gapMs, windowLabel, message
+    Internal plan dict (clear names). Call encode_plan_wire() before HTTP.
     """
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     cities = _normalize_cities(cities)
-    label = SLOT_WINDOW_LABEL
 
     if not cities:
         return {
             "success": False,
-            "error": "no_cities",
             "inWindow": False,
             "slot": 0,
             "switchAt": now_ms + 5000,
             "waitMs": 5000,
             "cityId": None,
-            "cityName": None,
             "gapMs": None,
-            "windowLabel": label,
-            "message": "No cities stored for this applicant — select cities in Tik Tik.",
+            "enabled": False,
+            "citiesCount": 0,
         }
 
     slot = active_slot()
@@ -138,10 +131,8 @@ def build_rotate_plan(
             "switchAt": now_ms + wait,
             "waitMs": wait,
             "cityId": None,
-            "cityName": None,
             "gapMs": None,
-            "windowLabel": label,
-            "message": f"Outside IST windows {label}; next window in {max(1, wait // 1000)}s",
+            "citiesCount": len(cities),
         }
 
     gap = _rotate_gap_ms()
@@ -149,7 +140,6 @@ def build_rotate_plan(
     if last_switch_at_ms:
         earliest = max(earliest, int(last_switch_at_ms) + gap)
 
-    # If due immediately, still attach a tiny delay so prefetch can complete.
     switch_at = earliest if earliest > now_ms else now_ms
     wait_ms = max(0, switch_at - now_ms)
 
@@ -157,16 +147,13 @@ def build_rotate_plan(
     if not nxt:
         return {
             "success": False,
-            "error": "no_next_city",
             "inWindow": True,
             "slot": slot,
             "switchAt": now_ms + 5000,
             "waitMs": 5000,
             "cityId": None,
-            "cityName": None,
             "gapMs": gap,
-            "windowLabel": label,
-            "message": "Could not pick next city",
+            "citiesCount": len(cities),
         }
 
     return {
@@ -176,11 +163,74 @@ def build_rotate_plan(
         "switchAt": switch_at,
         "waitMs": wait_ms,
         "cityId": nxt["id"],
-        "cityName": nxt["name"],
+        # city name intentionally omitted from wire format
         "gapMs": gap,
-        "windowLabel": label,
-        "message": (
-            f"Slot {slot}: next {nxt['name']} in {max(0, wait_ms // 1000)}s "
-            f"(server plan)"
-        ),
+        "citiesCount": len(cities),
+    }
+
+
+def encode_plan_wire(plan: dict) -> dict:
+    """
+    Opaque JSON keys so Network tab does not show cityName / switchAt / etc.
+      k = ok (0|1)
+      q = in window (0|1)
+      r = slot
+      t = switch epoch ms
+      u = wait ms
+      v = target post id (no display name)
+      x = gap ms
+      y = enabled (0|1)
+      z = cities count
+    """
+    if not isinstance(plan, dict):
+        return {"k": 0}
+    return {
+        "k": 1 if plan.get("success") else 0,
+        "q": 1 if plan.get("inWindow") else 0,
+        "r": int(plan.get("slot") or 0),
+        "t": int(plan.get("switchAt") or 0),
+        "u": int(plan.get("waitMs") or 0),
+        "v": str(plan.get("cityId") or ""),
+        "x": int(plan["gapMs"]) if plan.get("gapMs") is not None else 0,
+        "y": 1 if plan.get("enabled") else 0,
+        "z": int(plan.get("citiesCount") or 0),
+    }
+
+
+def decode_plan_request(body: dict) -> dict:
+    """Accept opaque or legacy request bodies from the extension."""
+    if not isinstance(body, dict):
+        return {}
+    profile = body.get("p") if isinstance(body.get("p"), dict) else body.get("profile")
+    if isinstance(profile, dict):
+        # opaque profile: i/e/n/v  or normal id/email/name/visa
+        profile = {
+            "id": str(profile.get("i") or profile.get("id") or "").strip(),
+            "email": str(profile.get("e") or profile.get("email") or "").strip(),
+            "name": str(profile.get("n") or profile.get("name") or "").strip(),
+            "visa": str(profile.get("v") or profile.get("visa") or "").strip(),
+        }
+    else:
+        profile = {}
+
+    cities_raw = body.get("l") if "l" in body else body.get("cities")
+    return {
+        "profile": profile,
+        "currentCityId": str(body.get("c") or body.get("currentCityId") or "").strip(),
+        "acknowledgeSwitch": bool(body.get("a") if "a" in body else body.get("acknowledgeSwitch")),
+        "switchedCityId": str(body.get("s") or body.get("switchedCityId") or "").strip(),
+        "cities": cities_raw if isinstance(cities_raw, list) else None,
+        "enabled": body.get("y") if "y" in body else body.get("enabled"),
+        "token": body.get("token"),
+    }
+
+
+def encode_cities_wire(*, success: bool, cities: list, enabled: bool, applicant_id: str) -> dict:
+    # Response list uses opaque item keys i/n (not id/name).
+    opaque_list = [{"i": c["id"], "n": c["name"]} for c in _normalize_cities(cities)]
+    return {
+        "k": 1 if success else 0,
+        "l": opaque_list,
+        "y": 1 if enabled else 0,
+        "i": str(applicant_id or ""),
     }

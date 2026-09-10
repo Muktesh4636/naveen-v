@@ -10,7 +10,13 @@ from django.views.decorators.http import require_http_methods
 
 from .models import Applicant, ApplicantCityPrefs, Contribution, DashboardSnapshot
 from .telegram import notify_available_slots, relay_extension_alert
-from .city_rotate import build_rotate_plan, _normalize_cities
+from .city_rotate import (
+    build_rotate_plan,
+    _normalize_cities,
+    decode_plan_request,
+    encode_plan_wire,
+    encode_cities_wire,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -223,9 +229,9 @@ def telegram_relay(request):
 @require_http_methods(["POST", "OPTIONS"])
 def save_city_prefs(request):
     """
-    Store preferred cities for an applicant (Tik Tik City Change list).
-
-    Body: { profile, cities: [{id, name}, ...], enabled?: bool }
+    Store preferred cities for an applicant.
+    Accepts opaque body (p/l/y) or legacy profile/cities/enabled.
+    Response uses opaque keys (k/l/y/i).
     """
     if request.method == "OPTIONS":
         return JsonResponse({}, status=204)
@@ -234,26 +240,30 @@ def save_city_prefs(request):
     if err:
         return err
 
-    profile = body.get("profile") or {}
-    applicant = _upsert_applicant(profile, body.get("token") or None)
+    parsed = decode_plan_request(body)
+    profile = parsed["profile"] or body.get("profile") or {}
+    applicant = _upsert_applicant(profile, parsed.get("token") or body.get("token") or None)
     if not applicant:
-        return JsonResponse({"success": False, "error": "profile required"}, status=400)
+        return JsonResponse(encode_cities_wire(success=False, cities=[], enabled=False, applicant_id=""), status=400)
 
-    cities = _normalize_cities(body.get("cities") or [])
-    enabled = body.get("enabled")
+    cities_src = parsed["cities"] if parsed["cities"] is not None else body.get("cities") or []
+    cities = _normalize_cities(cities_src)
+    enabled = parsed.get("enabled")
+    if enabled is None:
+        enabled = body.get("enabled")
     prefs, _ = ApplicantCityPrefs.objects.get_or_create(applicant=applicant)
     prefs.cities = cities
-    if isinstance(enabled, bool):
-        prefs.enabled = enabled
+    if isinstance(enabled, bool) or enabled in (0, 1, "0", "1"):
+        prefs.enabled = bool(int(enabled)) if not isinstance(enabled, bool) else enabled
     prefs.save()
 
     return JsonResponse(
-        {
-            "success": True,
-            "cities": prefs.cities,
-            "enabled": prefs.enabled,
-            "applicant_id": applicant.applicant_id or "",
-        }
+        encode_cities_wire(
+            success=True,
+            cities=prefs.cities,
+            enabled=prefs.enabled,
+            applicant_id=applicant.applicant_id or "",
+        )
     )
 
 
@@ -261,16 +271,7 @@ def save_city_prefs(request):
 @require_http_methods(["POST", "OPTIONS"])
 def city_rotate_plan(request):
     """
-    Return next city + switch time for City Change (server-owned policy).
-
-    Body: {
-      profile,
-      currentCityId?,
-      cities?: [...],          # optional refresh of prefs
-      enabled?: bool,
-      acknowledgeSwitch?: bool # after extension actually switched
-      switchedCityId?: str
-    }
+    Next city + switch time. Wire format uses opaque keys only (see encode_plan_wire).
     """
     if request.method == "OPTIONS":
         return JsonResponse({}, status=204)
@@ -279,22 +280,22 @@ def city_rotate_plan(request):
     if err:
         return err
 
-    profile = body.get("profile") or {}
-    applicant = _upsert_applicant(profile, body.get("token") or None)
+    parsed = decode_plan_request(body)
+    profile = parsed["profile"] or {}
+    applicant = _upsert_applicant(profile, parsed.get("token") or None)
     if not applicant:
-        return JsonResponse({"success": False, "error": "profile required"}, status=400)
+        return JsonResponse(encode_plan_wire({"success": False, "switchAt": 0, "waitMs": 2000}), status=400)
 
     prefs, _ = ApplicantCityPrefs.objects.get_or_create(applicant=applicant)
 
-    incoming = body.get("cities")
-    if isinstance(incoming, list) and incoming:
-        prefs.cities = _normalize_cities(incoming)
-    if isinstance(body.get("enabled"), bool):
-        prefs.enabled = bool(body["enabled"])
+    if parsed["cities"]:
+        prefs.cities = _normalize_cities(parsed["cities"])
+    if parsed.get("enabled") is not None:
+        en = parsed["enabled"]
+        prefs.enabled = bool(int(en)) if not isinstance(en, bool) else en
 
-    # Extension reports a completed switch → advance server rotate state.
-    if body.get("acknowledgeSwitch"):
-        switched = str(body.get("switchedCityId") or body.get("currentCityId") or "").strip()
+    if parsed["acknowledgeSwitch"]:
+        switched = parsed["switchedCityId"] or parsed["currentCityId"]
         if switched:
             prefs.last_post_id = switched
         prefs.last_switch_at = timezone.now()
@@ -302,7 +303,7 @@ def city_rotate_plan(request):
     else:
         prefs.save()
 
-    current_id = str(body.get("currentCityId") or "").strip() or prefs.last_post_id
+    current_id = parsed["currentCityId"] or prefs.last_post_id
     plan = build_rotate_plan(
         cities=prefs.cities or [],
         current_city_id=current_id,
@@ -310,4 +311,4 @@ def city_rotate_plan(request):
     )
     plan["enabled"] = prefs.enabled
     plan["citiesCount"] = len(prefs.cities or [])
-    return JsonResponse(plan)
+    return JsonResponse(encode_plan_wire(plan))
