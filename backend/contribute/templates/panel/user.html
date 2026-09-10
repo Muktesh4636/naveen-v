@@ -1,76 +1,205 @@
 {% extends "panel/base.html" %}
+{% block title %}{{ applicant.name|default:applicant.applicant_id|default:"Applicant" }} · VisaSlot Admin{% endblock %}
 {% block content %}
-<p><a href="{% url 'panel_home' %}">← All users</a></p>
+<p class="meta" style="margin-top:0"><a href="{% url 'panel_home' %}">← All applicants</a></p>
+<h1 class="hero-line">{{ applicant.name|default:"Applicant settings" }}</h1>
+<p class="lede">Set who they are, which cities to check, and how fast City Change should move. Changes apply from the server on the next plan.</p>
 
-<form method="post" class="card">
+<form method="post" id="user-form">
   {% csrf_token %}
-  <h2 style="margin-top:0">{{ applicant.name|default:applicant.applicant_id|default:"Applicant" }}</h2>
-  <p class="muted">Last updated {{ updated|date:"Y-m-d H:i:s" }} IST</p>
+  <input type="hidden" name="cities_json" id="cities_json" value="" />
+  <input type="hidden" name="timer_preset" id="timer_preset" value="{{ timer_preset }}" />
+  {{ cities|json_script:"initial-cities" }}
 
-  <div class="grid2">
-    <div>
-      <label>Name</label>
-      <input type="text" name="name" value="{{ applicant.name }}" style="width:100%" />
+  <section class="card">
+    <h2>Profile</h2>
+    <div class="two">
+      <div>
+        <div class="section-label">Full name</div>
+        <input type="text" name="name" value="{{ applicant.name }}" placeholder="Applicant name" />
+      </div>
+      <div>
+        <div class="section-label">Applicant ID</div>
+        <input type="text" name="applicant_id" value="{{ applicant.applicant_id }}" placeholder="Portal ID" />
+      </div>
+      <div>
+        <div class="section-label">Email</div>
+        <input type="email" name="email" value="{{ applicant.email }}" placeholder="email@example.com" />
+      </div>
+      <div>
+        <div class="section-label">Visa class</div>
+        <input type="text" name="visa_class" value="{{ applicant.visa_class }}" placeholder="e.g. B1/B2" />
+      </div>
     </div>
-    <div>
-      <label>Applicant ID</label>
-      <input type="text" name="applicant_id" value="{{ applicant.applicant_id }}" style="width:100%" />
-    </div>
-    <div>
-      <label>Email</label>
-      <input type="email" name="email" value="{{ applicant.email }}" style="width:100%" />
-    </div>
-    <div>
-      <label>Visa class</label>
-      <input type="text" name="visa_class" value="{{ applicant.visa_class }}" style="width:100%" />
-    </div>
-  </div>
+    <p class="field-hint">Last updated {{ updated|date:"M j, Y H:i" }} IST</p>
+  </section>
 
-  <label style="margin-top:1rem">
-    <input type="checkbox" name="enabled" {% if prefs.enabled %}checked{% endif %} />
-    City Change enabled for this user
-  </label>
+  <section class="card">
+    <h2>City Change</h2>
+    <label class="switch">
+      <input type="checkbox" name="enabled" {% if prefs.enabled %}checked{% endif %} />
+      <div>
+        <strong>Turn City Change on for this person</strong>
+        <div class="meta">When on, the extension asks the server which city to open next.</div>
+      </div>
+    </label>
+  </section>
 
-  <label>Cities (one per line: <code>postId|Display Name</code>)</label>
-  <textarea name="cities_text" placeholder="abc123|CHENNAI VAC&#10;def456|HYDERABAD VAC">{{ cities_text }}</textarea>
-  <p class="hint">Extension uses these cities from the server. Edit here to override what the user selected.</p>
-
-  <div class="grid2">
-    <div>
-      <label>Timer min (seconds between city switches)</label>
-      <input type="number" name="min_sec" step="0.5" min="1" value="{{ min_sec }}" style="width:100%" />
+  <section class="card">
+    <h2>Preferred cities</h2>
+    <p class="meta" style="margin-top:-.35rem">Tap a suggestion or add a city. These are saved on the server for this applicant.</p>
+    <div class="section-label">Selected</div>
+    <div class="chip-box" id="selected-cities" aria-live="polite"></div>
+    <div class="section-label">Quick add</div>
+    <div class="suggest" id="suggest-cities">
+      {% for c in known_cities %}
+        <button type="button" class="suggest-btn" data-id="{{ c.id }}" data-name="{{ c.name }}">+ {{ c.name }}</button>
+      {% empty %}
+        <span class="meta">Suggestions appear after users sync cities.</span>
+      {% endfor %}
     </div>
-    <div>
-      <label>Timer max (seconds)</label>
-      <input type="number" name="max_sec" step="0.5" min="1" value="{{ max_sec }}" style="width:100%" />
+    <div class="section-label">Add manually</div>
+    <div class="add-row">
+      <input type="text" id="new-city-id" placeholder="Post ID (from portal dropdown)" />
+      <input type="text" id="new-city-name" placeholder="Display name (e.g. CHENNAI VAC)" />
+      <button type="button" class="btn ghost" id="add-city-btn">Add city</button>
     </div>
-  </div>
-  <p class="hint">Default is 13–18s. Example: 10 and 15 → server picks a random gap in that range for this user only.</p>
+    <p class="field-hint">Use the real post ID from the OFC dropdown when possible. Name is only for display here.</p>
+    <details class="advanced">
+      <summary>Advanced: paste city list</summary>
+      <textarea name="cities_text" id="cities_text" rows="4" placeholder="id|CHENNAI VAC">{{ cities_text }}</textarea>
+    </details>
+  </section>
 
-  <div class="bar" style="margin-top:1rem">
-    <button type="submit">Save cities &amp; timer</button>
-    <a class="btn secondary" href="{% url 'panel_home' %}">Cancel</a>
+  <section class="card">
+    <h2>How often to change city</h2>
+    <p class="meta" style="margin-top:-.35rem">Pick a speed. The server chooses a random wait in that range before the next city.</p>
+    <div class="preset-grid" id="preset-grid">
+      {% for p in timer_presets %}
+      <button type="button" class="preset {% if timer_preset == p.id %}active{% endif %}" data-preset="{{ p.id }}" data-min="{{ p.min }}" data-max="{{ p.max }}">
+        <strong>{{ p.label }}</strong>
+        <span>{{ p.min }}–{{ p.max }} seconds · {{ p.hint }}</span>
+      </button>
+      {% endfor %}
+      <button type="button" class="preset {% if timer_preset == 'custom' %}active{% endif %}" data-preset="custom">
+        <strong>Custom</strong>
+        <span>Set your own range</span>
+      </button>
+    </div>
+    <div class="two" id="custom-timer" style="margin-top:.85rem; {% if timer_preset != 'custom' %}display:none{% endif %}">
+      <div>
+        <div class="section-label">Minimum seconds</div>
+        <input type="number" name="min_sec" id="min_sec" step="0.5" min="1" value="{{ min_sec }}" />
+      </div>
+      <div>
+        <div class="section-label">Maximum seconds</div>
+        <input type="number" name="max_sec" id="max_sec" step="0.5" min="1" value="{{ max_sec }}" />
+      </div>
+    </div>
+  </section>
+
+  <div class="toolbar">
+    <button class="btn" type="submit">Save settings</button>
+    <a class="btn ghost" href="{% url 'panel_home' %}">Cancel</a>
   </div>
 </form>
 
-<div class="card">
-  <h3 style="margin-top:0">Recent contributions</h3>
+<section class="card">
+  <h3>Recent slot checks</h3>
   {% if recent %}
   <table>
-    <thead><tr><th>When</th><th>Post</th><th>Days</th><th>Error</th></tr></thead>
+    <thead><tr><th>When</th><th>Location</th><th>Dates found</th><th>Issue</th></tr></thead>
     <tbody>
       {% for c in recent %}
       <tr>
-        <td class="muted">{{ c.created_at|date:"Y-m-d H:i" }}</td>
+        <td class="meta">{{ c.created_at|date:"M j, H:i" }}</td>
         <td>{{ c.post_name|default:c.post_id }}</td>
         <td>{% if c.days %}{{ c.days|length }}{% else %}0{% endif %}</td>
-        <td>{% if c.has_error %}yes{% else %}—{% endif %}</td>
+        <td>{% if c.has_error %}Yes{% else %}—{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% else %}
-  <p class="muted">No contributions yet.</p>
+  <p class="meta">No slot checks recorded yet for this applicant.</p>
   {% endif %}
-</div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  let cities = [];
+  try {
+    const boot = document.getElementById("initial-cities");
+    cities = boot ? JSON.parse(boot.textContent || "[]") : [];
+  } catch (e) { cities = []; }
+  if (!Array.isArray(cities)) cities = [];
+  const jsonInput = document.getElementById("cities_json");
+  const textInput = document.getElementById("cities_text");
+  const presetInput = document.getElementById("timer_preset");
+  const customWrap = document.getElementById("custom-timer");
+  const minInput = document.getElementById("min_sec");
+  const maxInput = document.getElementById("max_sec");
+  const selectedEl = document.getElementById("selected-cities");
+
+  function sync() {
+    jsonInput.value = JSON.stringify(cities);
+    textInput.value = cities.map((c) => c.id + "|" + c.name).join("\n");
+    selectedEl.innerHTML = "";
+    if (!cities.length) {
+      selectedEl.innerHTML = '<span class="meta">No cities selected</span>';
+      return;
+    }
+    cities.forEach((c, idx) => {
+      const chip = document.createElement("span");
+      chip.className = "city-chip";
+      chip.innerHTML = '<span></span><button type="button" aria-label="Remove">&times;</button>';
+      chip.querySelector("span").textContent = c.name || c.id;
+      chip.querySelector("button").addEventListener("click", () => {
+        cities.splice(idx, 1);
+        sync();
+      });
+      selectedEl.appendChild(chip);
+    });
+  }
+
+  function addCity(id, name) {
+    id = String(id || "").trim();
+    name = String(name || id).trim();
+    if (!name) return;
+    if (!id) id = name;
+    if (cities.some((c) => String(c.id) === id || String(c.name).toUpperCase() === name.toUpperCase())) return;
+    cities.push({ id, name });
+    sync();
+  }
+
+  document.querySelectorAll(".suggest-btn").forEach((btn) => {
+    btn.addEventListener("click", () => addCity(btn.dataset.id, btn.dataset.name));
+  });
+  document.getElementById("add-city-btn").addEventListener("click", () => {
+    addCity(document.getElementById("new-city-id").value, document.getElementById("new-city-name").value);
+    document.getElementById("new-city-id").value = "";
+    document.getElementById("new-city-name").value = "";
+  });
+
+  document.querySelectorAll("#preset-grid .preset").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#preset-grid .preset").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      const preset = btn.dataset.preset;
+      presetInput.value = preset;
+      if (preset === "custom") {
+        customWrap.style.display = "";
+      } else {
+        customWrap.style.display = "none";
+        minInput.value = btn.dataset.min;
+        maxInput.value = btn.dataset.max;
+      }
+    });
+  });
+
+  sync();
+})();
+</script>
 {% endblock %}
