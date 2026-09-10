@@ -1,16 +1,26 @@
 /**
  * Tik Tik unlock — payment status from server (admin panel).
- * Paid when admin entered payment_id for this applicant_id (any laptop).
+ * Shows UPI/QR/offer; user submits UTR; admin Accept unlocks (any laptop).
  */
-import { PAYMENT_STATUS_URL, getProfile } from "../shared/config.js";
+import { PAYMENT_STATUS_URL, PAYMENT_UTR_URL, getProfile } from "../shared/config.js";
 import { vs } from "../shared/lifecycle.js";
 
 export var PAYMENT_POLL_MS = 15_000;
+export var PAYMENT_POLL_PENDING_MS = 5_000;
 
 var _cache = {
   checkedAt: 0,
   paid: false,
   amount: "0.00",
+  listAmount: "0.00",
+  offerLabel: "",
+  offerActive: false,
+  upiId: "",
+  qrUrl: "",
+  instructions: "",
+  pending: false,
+  pendingUtr: "",
+  message: "",
   ok: false,
 };
 var _pollTimer = null;
@@ -35,6 +45,30 @@ function _emit() {
   }
 }
 
+function _applyWire(data, now = Date.now()) {
+  const paid = Number(data.w) === 1;
+  const status = Number(data.s);
+  const pending = !paid && (status === 1 || !!(data.f && String(data.f).trim()));
+  _cache = {
+    checkedAt: now,
+    paid,
+    amount: data.m != null ? String(data.m) : "0.00",
+    listAmount: data.n != null ? String(data.n) : (data.m != null ? String(data.m) : "0.00"),
+    offerLabel: data.o != null ? String(data.o) : "",
+    offerActive: Number(data.b) === 1,
+    upiId: data.g != null ? String(data.g) : "",
+    qrUrl: data.h != null ? String(data.h) : "",
+    instructions: data.d != null ? String(data.d) : "",
+    pending,
+    pendingUtr: data.f != null ? String(data.f) : "",
+    message: data.e != null ? String(data.e) : "",
+    ok: Number(data.k) === 1,
+  };
+  _emit();
+  _retunePoll();
+  return getCachedPayment();
+}
+
 async function _profilePayload() {
   const profile = (await getProfile()) || {};
   return {
@@ -47,13 +81,27 @@ async function _profilePayload() {
 
 export async function fetchPaymentStatus({ force = false } = {}) {
   const now = Date.now();
-  if (!force && _cache.ok && now - _cache.checkedAt < 4_000) {
+  if (!force && _cache.ok && now - _cache.checkedAt < 3_000) {
     return getCachedPayment();
   }
   try {
     const p = await _profilePayload();
     if (!p.i && !p.e) {
-      _cache = { checkedAt: now, paid: false, amount: "0.00", ok: false };
+      _cache = {
+        checkedAt: now,
+        paid: false,
+        amount: "0.00",
+        listAmount: "0.00",
+        offerLabel: "",
+        offerActive: false,
+        upiId: "",
+        qrUrl: "",
+        instructions: "",
+        pending: false,
+        pendingUtr: "",
+        message: "",
+        ok: false,
+      };
       _emit();
       return getCachedPayment();
     }
@@ -68,18 +116,7 @@ export async function fetchPaymentStatus({ force = false } = {}) {
       return getCachedPayment();
     }
     const data = await res.json().catch(() => ({}));
-    const paid = Number(data.w) === 1;
-    const amount = data.m != null ? String(data.m) : "0.00";
-    const prevPaid = _cache.paid;
-    _cache = {
-      checkedAt: now,
-      paid,
-      amount,
-      ok: Number(data.k) === 1,
-    };
-    if (prevPaid !== paid || force) _emit();
-    else _emit();
-    return getCachedPayment();
+    return _applyWire(data, now);
   } catch {
     _cache = { ..._cache, checkedAt: Date.now(), ok: false };
     _emit();
@@ -87,13 +124,45 @@ export async function fetchPaymentStatus({ force = false } = {}) {
   }
 }
 
-export function startPaymentPolling() {
-  if (_pollTimer) return;
-  fetchPaymentStatus({ force: true });
+export async function submitPaymentUtr(utr) {
+  const p = await _profilePayload();
+  const res = await fetch(PAYMENT_UTR_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      p,
+      r: String(utr || "").trim(),
+      g: p.n || "",
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  _applyWire(data);
+  if (!res.ok || Number(data.k) !== 1) {
+    const err = data.e || "Could not submit UTR. Try again.";
+    throw new Error(err);
+  }
+  return getCachedPayment();
+}
+
+function _retunePoll() {
+  if (!_pollTimer) return;
+  vs.clear(_pollTimer);
+  _pollTimer = null;
+  const ms = (!_cache.paid) ? PAYMENT_POLL_PENDING_MS : PAYMENT_POLL_MS;
   _pollTimer = vs.setInterval(() => {
     if (!vs.alive) return;
     fetchPaymentStatus({ force: true });
-  }, PAYMENT_POLL_MS);
+  }, ms);
+}
+
+export function startPaymentPolling() {
+  if (_pollTimer) return;
+  fetchPaymentStatus({ force: true });
+  const ms = (!_cache.paid) ? PAYMENT_POLL_PENDING_MS : PAYMENT_POLL_MS;
+  _pollTimer = vs.setInterval(() => {
+    if (!vs.alive) return;
+    fetchPaymentStatus({ force: true });
+  }, ms);
 }
 
 export function stopPaymentPolling() {
@@ -110,10 +179,15 @@ export function notePaymentFromWire(raw) {
   const amount = raw.m != null ? String(raw.m) : _cache.amount;
   const changed = paid !== _cache.paid || amount !== _cache.amount;
   _cache = {
+    ..._cache,
     checkedAt: Date.now(),
     paid,
     amount,
     ok: true,
+    pending: paid ? false : _cache.pending,
   };
-  if (changed) _emit();
+  if (changed) {
+    _emit();
+    _retunePoll();
+  }
 }

@@ -1,5 +1,7 @@
 from django.contrib import admin
 from django.urls import path, include
+from django.conf import settings
+from django.conf.urls.static import static
 from contribute import panel_views
 
 urlpatterns = [
@@ -25,3 +27,6 @@ urlpatterns = [
     path("panel/user/<int:pk>/", panel_views.panel_user, name="panel_user"),
     path("", include("contribute.urls")),
 ]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -1,0 +1,180 @@
+{% extends "panel/base.html" %}
+{% block title %}Payments · VisaSlot Admin{% endblock %}
+{% block content %}
+<h1 class="hero-line">Payments</h1>
+<p class="lede">Set UPI / QR / offers for Tik Tik. When users submit a UTR, Accept to unlock them immediately.</p>
+
+<div class="stats">
+  <div class="stat"><b>{{ counts.pending }}</b><span>Pending UTR</span></div>
+  <div class="stat"><b>{{ counts.accepted }}</b><span>Accepted</span></div>
+  <div class="stat"><b>{{ counts.rejected }}</b><span>Rejected</span></div>
+  <div class="stat"><b>{{ counts.all }}</b><span>All claims</span></div>
+</div>
+
+<section class="card">
+  <h2>Tik Tik pay settings (UPI / QR / offer)</h2>
+  <p class="meta" style="margin-top:-.35rem">Shown inside Tik Tik when the applicant is unpaid.</p>
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="settings" />
+    <div class="two">
+      <div>
+        <div class="section-label">UPI ID</div>
+        <input type="text" name="upi_id" value="{{ pay_settings.upi_id }}" placeholder="name@upi" />
+      </div>
+      <div>
+        <div class="section-label">Default amount (₹)</div>
+        <input type="number" name="default_amount" min="0" step="0.01" value="{{ pay_settings.default_amount }}" />
+      </div>
+      <div>
+        <div class="section-label">QR image upload</div>
+        <input type="file" name="qr_image" accept="image/*" />
+        <label class="field-hint" style="display:flex;gap:.4rem;align-items:center;margin-top:.4rem">
+          <input type="checkbox" name="clear_qr" style="width:auto" /> Clear uploaded QR
+        </label>
+      </div>
+      <div>
+        <div class="section-label">Or QR image URL</div>
+        <input type="url" name="qr_image_url" value="{{ pay_settings.qr_image_url }}" placeholder="https://…" />
+      </div>
+    </div>
+    {% if qr_preview %}
+    <div style="margin:.9rem 0">
+      <div class="section-label">QR preview</div>
+      <img src="{{ qr_preview }}" alt="Payment QR" style="max-width:160px;border-radius:12px;border:1px solid var(--line);background:#fff;padding:6px" />
+    </div>
+    {% endif %}
+    <div class="two" style="margin-top:.8rem">
+      <div>
+        <label class="switch">
+          <input type="checkbox" name="offer_enabled" {% if pay_settings.offer_enabled %}checked{% endif %} />
+          <div>
+            <strong>Enable offer price</strong>
+            <div class="meta">Show discounted amount in Tik Tik</div>
+          </div>
+        </label>
+      </div>
+      <div>
+        <div class="section-label">Offer amount (₹)</div>
+        <input type="number" name="offer_amount" min="0" step="0.01" value="{{ pay_settings.offer_amount }}" />
+      </div>
+      <div>
+        <div class="section-label">Offer label</div>
+        <input type="text" name="offer_label" value="{{ pay_settings.offer_label }}" placeholder="Festival offer" />
+      </div>
+      <div>
+        <div class="section-label">Instructions</div>
+        <input type="text" name="pay_instructions" value="{{ pay_settings.pay_instructions }}" />
+      </div>
+    </div>
+    <div style="margin-top:1rem"><button class="btn" type="submit">Save pay settings</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Add payment claim manually</h2>
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="create" />
+    <div class="three">
+      <div>
+        <div class="section-label">Applicant ID paid for</div>
+        <input type="text" name="target_applicant_id" required placeholder="e.g. 12345678" />
+      </div>
+      <div>
+        <div class="section-label">Payer / customer</div>
+        <input type="text" name="payer_name" placeholder="Who paid" />
+      </div>
+      <div>
+        <div class="section-label">Amount (₹)</div>
+        <input type="text" name="amount" placeholder="0.00" />
+      </div>
+    </div>
+    <div class="two" style="margin-top:.8rem">
+      <div>
+        <div class="section-label">UTR / payment reference</div>
+        <input type="text" name="payment_ref" placeholder="UTR from UPI" />
+      </div>
+      <div>
+        <div class="section-label">Note</div>
+        <input type="text" name="note" placeholder="Optional note" />
+      </div>
+    </div>
+    <div style="margin-top:1rem"><button class="btn" type="submit">Create pending claim</button></div>
+  </form>
+</section>
+
+<div class="toolbar">
+  <form method="get" class="toolbar" style="margin:0">
+    <input type="hidden" name="status" value="{{ status }}" />
+    <input type="search" name="q" value="{{ q }}" placeholder="Search ID, payer, UTR" />
+    <button class="btn" type="submit">Search</button>
+  </form>
+  <div class="filters">
+    <a class="chip-filter {% if status == 'pending' %}active{% endif %}" href="?status=pending&q={{ q|urlencode }}">Pending</a>
+    <a class="chip-filter {% if status == 'accepted' %}active{% endif %}" href="?status=accepted&q={{ q|urlencode }}">Accepted</a>
+    <a class="chip-filter {% if status == 'rejected' %}active{% endif %}" href="?status=rejected&q={{ q|urlencode }}">Rejected</a>
+    <a class="chip-filter {% if status == 'all' %}active{% endif %}" href="?status=all&q={{ q|urlencode }}">All</a>
+  </div>
+</div>
+
+<section class="card">
+  {% if claims %}
+  <table>
+    <thead>
+      <tr>
+        <th>When</th>
+        <th>Applicant ID</th>
+        <th>Payer</th>
+        <th>UTR</th>
+        <th>Amount</th>
+        <th>Source</th>
+        <th>Status</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for c in claims %}
+      <tr>
+        <td class="meta">{{ c.created_at|date:"M j, H:i" }}</td>
+        <td>
+          <strong>{{ c.target_applicant_id }}</strong>
+          {% if c.applicant %}<div class="meta"><a href="{% url 'panel_user' c.applicant.pk %}">Open profile</a></div>{% endif %}
+        </td>
+        <td>{{ c.payer_name|default:"—" }}</td>
+        <td><code>{{ c.payment_ref|default:"—" }}</code></td>
+        <td>₹{{ c.amount }}</td>
+        <td class="meta">{{ c.source|default:"admin" }}</td>
+        <td>
+          {% if c.status == "accepted" %}<span class="pill on">Accepted</span>
+          {% elif c.status == "rejected" %}<span class="pill bad">Rejected</span>
+          {% else %}<span class="pill off">Pending</span>{% endif %}
+          {% if c.reviewed_by %}<div class="meta">by {{ c.reviewed_by }}</div>{% endif %}
+        </td>
+        <td>
+          {% if c.status == "pending" %}
+          <div class="actions-inline">
+            <form method="post" action="{% url 'panel_payment_action' c.pk %}">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="accept" />
+              <button class="btn ok" type="submit">Accept → unlock</button>
+            </form>
+            <form method="post" action="{% url 'panel_payment_action' c.pk %}">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="reject" />
+              <button class="btn danger" type="submit">Reject</button>
+            </form>
+          </div>
+          {% else %}
+          <span class="meta">{{ c.note|default:"—" }}</span>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty"><strong>No payment claims</strong>UTR submissions from Tik Tik appear here for Accept / Reject.</div>
+  {% endif %}
+</section>
+{% endblock %}

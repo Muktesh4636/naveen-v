@@ -1,7 +1,15 @@
 from django.contrib import admin
 from django.utils import timezone
 from django.utils.html import format_html
-from .models import Applicant, ApplicantCityPrefs, Contribution, DashboardSnapshot, ExtensionLicense
+from .models import (
+    Applicant,
+    ApplicantCityPrefs,
+    Contribution,
+    DashboardSnapshot,
+    ExtensionLicense,
+    PaymentClaim,
+    PaymentSettings,
+)
 
 
 def _ist(dt):
@@ -299,3 +307,22 @@ class ExtensionLicenseAdmin(admin.ModelAdmin):
     list_display = ("key", "label", "active", "max_devices", "updated_at")
     list_filter = ("active",)
     search_fields = ("key", "label")
+
+
+@admin.register(PaymentClaim)
+class PaymentClaimAdmin(admin.ModelAdmin):
+    list_display = (
+        "target_applicant_id",
+        "payment_ref",
+        "amount",
+        "status",
+        "source",
+        "created_at",
+    )
+    list_filter = ("status", "source")
+    search_fields = ("target_applicant_id", "payment_ref", "payer_name")
+
+
+@admin.register(PaymentSettings)
+class PaymentSettingsAdmin(admin.ModelAdmin):
+    list_display = ("upi_id", "default_amount", "offer_enabled", "offer_amount", "updated_at")

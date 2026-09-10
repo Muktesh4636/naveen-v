@@ -240,21 +240,56 @@ def encode_cities_wire(*, success: bool, cities: list, enabled: bool, applicant_
     }
 
 
-def encode_payment_wire(*, success: bool, paid: bool, amount, applicant_id: str = "") -> dict:
+def encode_payment_wire(
+    *,
+    success: bool,
+    paid: bool,
+    amount,
+    applicant_id: str = "",
+    list_amount=None,
+    offer_label: str = "",
+    offer_active: bool = False,
+    upi_id: str = "",
+    qr_url: str = "",
+    instructions: str = "",
+    pending: bool = False,
+    pending_utr: str = "",
+) -> dict:
     """
     Opaque payment / Tik Tik unlock status.
       k = ok
-      w = paid / unlocked (0|1) — true when admin entered payment_id
-      m = fee amount string (from admin panel)
+      w = paid / unlocked (0|1)
+      m = amount to pay now
+      n = list / original amount (may equal m)
+      o = offer label
+      b = offer active (0|1)
+      g = UPI id
+      h = QR image URL
+      d = instructions
+      s = 0 unpaid, 1 pending UTR, 2 paid
+      f = pending UTR (if any)
       i = applicant id
     """
     try:
         amt = f"{amount:.2f}" if amount is not None else "0.00"
     except (TypeError, ValueError):
         amt = "0.00"
+    try:
+        list_amt = f"{list_amount:.2f}" if list_amount is not None else amt
+    except (TypeError, ValueError):
+        list_amt = amt
+    status = 2 if paid else (1 if pending else 0)
     return {
         "k": 1 if success else 0,
         "w": 1 if paid else 0,
         "m": amt,
+        "n": list_amt,
+        "o": str(offer_label or ""),
+        "b": 1 if offer_active else 0,
+        "g": str(upi_id or ""),
+        "h": str(qr_url or ""),
+        "d": str(instructions or ""),
+        "s": status,
+        "f": str(pending_utr or ""),
         "i": str(applicant_id or ""),
     }

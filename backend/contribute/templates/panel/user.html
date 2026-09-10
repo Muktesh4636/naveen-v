@@ -1,7 +1,7 @@
 {% extends "panel/base.html" %}
 {% block title %}{{ applicant.name|default:applicant.applicant_id|default:"Applicant" }} · VisaSlot Admin{% endblock %}
 {% block content %}
-<p class="meta" style="margin-top:0"><a href="{% url 'panel_home' %}">← All applicants</a></p>
+<p class="meta" style="margin-top:0"><a href="{% url 'panel_applicants' %}">← All applicants</a></p>
 <h1 class="hero-line">{{ applicant.name|default:"Applicant settings" }}</h1>
 <p class="lede">Set who they are, which cities to check, and how fast City Change should move. Changes apply from the server on the next plan.</p>
 
@@ -37,8 +37,8 @@
   <section class="card">
     <h2>Payment (admin only)</h2>
     <p class="meta" style="margin-top:-.35rem">
-      Set the fee and record payment here. Tik Tik unlocks when a Payment ID is saved —
-      same applicant on another laptop stays unlocked (not device-based).
+      Fee / offer for this ID. Users pay via QR/UPI in Tik Tik and submit UTR;
+      Accept on Payments to unlock (or paste accepted UTR here).
     </p>
     <div class="two">
       <div>
@@ -46,7 +46,15 @@
         <input type="number" name="fee_amount" min="0" step="0.01" value="{{ applicant.fee_amount }}" placeholder="0.00" />
       </div>
       <div>
-        <div class="section-label">Payment ID</div>
+        <div class="section-label">Offer amount (₹, optional)</div>
+        <input type="number" name="offer_amount" min="0" step="0.01" value="{{ applicant.offer_amount }}" placeholder="0 = use global" />
+      </div>
+      <div>
+        <div class="section-label">Offer label</div>
+        <input type="text" name="offer_label" value="{{ applicant.offer_label }}" placeholder="e.g. Festival deal" />
+      </div>
+      <div>
+        <div class="section-label">Payment ID / accepted UTR</div>
         <input type="text" name="payment_id" value="{{ applicant.payment_id }}" placeholder="UPI / bank / receipt ref" />
       </div>
       <div>
@@ -64,7 +72,12 @@
         <strong style="color:var(--ok, #1a7f4b)">Paid — Tik Tik unlocked</strong>
         {% if applicant.payment_marked_at %} · marked {{ applicant.payment_marked_at|date:"M j, Y H:i" }}{% endif %}
       {% else %}
-        <strong style="color:var(--warn, #9a5b00)">Unpaid — Tik Tik locked</strong> — enter Payment ID after you receive money to unlock automatically
+        <strong style="color:var(--warn, #9a5b00)">Unpaid — Tik Tik locked</strong>
+        {% if applicant.pending_utr %}
+          · pending UTR <code>{{ applicant.pending_utr }}</code> — Accept it on Payments to unlock
+        {% else %}
+          — user pays via QR/UPI in Tik Tik and submits UTR
+        {% endif %}
       {% endif %}
     </p>
   </section>

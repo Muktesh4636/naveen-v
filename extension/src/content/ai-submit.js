@@ -31,6 +31,7 @@ import {
   getCachedPayment,
   onPaymentChange,
   startPaymentPolling,
+  submitPaymentUtr,
 } from "./payment-status.js";
 
 export var AI_SUBMIT_KEY = "aiSubmitByAccount";
@@ -671,24 +672,96 @@ function _paintPaymentLock() {
   }
   if (controls) controls.classList.add(CLS.hidden);
   box.classList.remove(CLS.hidden);
-  const amt = pay.amount && pay.amount !== "0.00" ? `₹${pay.amount}` : "the fee set by your operator";
+
+  const amt = pay.amount && pay.amount !== "0.00" ? `₹${pay.amount}` : "—";
+  const listAmt = pay.listAmount && pay.listAmount !== pay.amount
+    ? `<span style="text-decoration:line-through;opacity:.65;margin-right:6px">₹${pay.listAmount}</span>`
+    : "";
+  const offer = pay.offerActive && pay.offerLabel
+    ? `<div style="color:#b45309;font-weight:700;margin:4px 0 8px">${pay.offerLabel}</div>`
+    : "";
+  const qr = pay.qrUrl
+    ? `<img src="${pay.qrUrl.replace(/"/g, "")}" alt="UPI QR" style="width:148px;height:148px;object-fit:contain;background:#fff;border-radius:8px;border:1px solid #fed7aa;display:block;margin:8px auto" />`
+    : `<div style="font-size:12px;color:#9a3412;text-align:center;margin:8px 0">QR not configured yet — use UPI ID</div>`;
+  const upi = pay.upiId
+    ? `<div style="text-align:center;margin:6px 0 10px">
+         UPI: <b id="${ID.aiPayCopy}" style="user-select:all">${pay.upiId}</b>
+         <button type="button" data-copy-upi="1" style="margin-left:6px">Copy</button>
+       </div>`
+    : "";
+  const pendingBlock = pay.pending
+    ? `<div style="background:#ecfdf5;border:1px solid #6ee7b7;padding:8px;border-radius:8px;margin:8px 0;line-height:1.4">
+         UTR submitted: <b>${pay.pendingUtr || "—"}</b><br/>
+         Waiting for admin to <b>Accept</b> — Tik Tik unlocks automatically (checks every few seconds).
+       </div>`
+    : "";
+
   box.innerHTML = `
-    <div style="font-weight:700;color:#9a3412;margin-bottom:6px">Complete payment to unlock Tik Tik</div>
-    <div style="margin-bottom:8px;line-height:1.4">
-      Amount due: <b>${amt}</b>. Pay your operator. When they <b>accept</b> payment in the admin panel,
-      Tik Tik unlocks automatically on this account (any laptop).
+    <div style="font-weight:700;color:#9a3412;margin-bottom:4px">Complete payment to unlock Tik Tik</div>
+    ${offer}
+    <div style="margin-bottom:6px;font-size:15px">Pay ${listAmt}<b>${amt}</b></div>
+    <div style="font-size:12px;line-height:1.4;margin-bottom:6px">${pay.instructions || "Scan QR or pay UPI, then enter UTR below."}</div>
+    ${qr}
+    ${upi}
+    ${pendingBlock}
+    <div style="margin-top:8px">
+      <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">UTR / UPI reference</label>
+      <input type="text" id="${ID.aiPayUtr}" placeholder="Enter UTR after payment" value="${pay.pendingUtr || ""}" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #fdba74;border-radius:6px" />
     </div>
-    <button type="button" id="${ID.aiPayRefresh}">Check payment status</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+      <button type="button" id="${ID.aiPaySubmit}">Submit UTR</button>
+      <button type="button" id="${ID.aiPayRefresh}">Check status</button>
+    </div>
+    <div style="font-size:11px;color:#78716c;margin-top:8px;line-height:1.35">
+      Same visa account on another laptop unlocks too — payment is tied to this applicant ID, not the device.
+    </div>
   `;
-  const btn = box.querySelector(idSel(ID.aiPayRefresh));
-  if (btn) {
-    vs.on(btn, "click", async () => {
-      btn.disabled = true;
-      btn.textContent = "Checking…";
+
+  const copyBtn = box.querySelector("[data-copy-upi]");
+  if (copyBtn && pay.upiId) {
+    vs.on(copyBtn, "click", async () => {
+      try {
+        await navigator.clipboard.writeText(pay.upiId);
+        copyBtn.textContent = "Copied";
+      } catch {
+        copyBtn.textContent = "Select & copy";
+      }
+    });
+  }
+
+  const submitBtn = box.querySelector(idSel(ID.aiPaySubmit));
+  if (submitBtn) {
+    vs.on(submitBtn, "click", async () => {
+      const input = box.querySelector(idSel(ID.aiPayUtr));
+      const utr = (input?.value || "").trim();
+      if (utr.length < 6) {
+        updateAiStatus("Enter a valid UTR (at least 6 characters).");
+        return;
+      }
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Submitting…";
+      try {
+        await submitPaymentUtr(utr);
+        updateAiStatus("UTR submitted — waiting for admin Accept.");
+        await _applyPaymentGate();
+      } catch (e) {
+        updateAiStatus(e?.message || "UTR submit failed.");
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Submit UTR";
+      }
+    });
+  }
+
+  const refreshBtn = box.querySelector(idSel(ID.aiPayRefresh));
+  if (refreshBtn) {
+    vs.on(refreshBtn, "click", async () => {
+      refreshBtn.disabled = true;
+      refreshBtn.textContent = "Checking…";
       await fetchPaymentStatus({ force: true });
       await _applyPaymentGate();
-      btn.disabled = false;
-      btn.textContent = "Check payment status";
+      refreshBtn.disabled = false;
+      refreshBtn.textContent = "Check status";
     });
   }
 }
@@ -738,7 +811,11 @@ function _paintStatus(cfg, accountId) {
 
   if (!unlocked) {
     const amt = pay.amount && pay.amount !== "0.00" ? `₹${pay.amount}` : "fee";
-    status.textContent = `Account ${accountId || "—"}: payment pending (${amt}) — unlocks when admin accepts.`;
+    if (pay.pending) {
+      status.textContent = `Account ${accountId || "—"}: UTR pending admin Accept (${pay.pendingUtr || amt}).`;
+    } else {
+      status.textContent = `Account ${accountId || "—"}: pay ${amt} via QR/UPI, then submit UTR.`;
+    }
     return;
   }
 

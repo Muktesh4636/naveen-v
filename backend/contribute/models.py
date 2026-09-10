@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from decimal import Decimal
 
 from django.db import models
@@ -24,6 +26,14 @@ class Applicant(models.Model):
         default=Decimal("0.00"),
         help_text="Amount due for this applicant (admin panel only)",
     )
+    # Optional per-ID offer (overrides global offer when > 0).
+    offer_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Special offer price for this ID (0 = use global / full fee)",
+    )
+    offer_label = models.CharField(max_length=128, blank=True, default="")
     payment_id = models.CharField(
         max_length=128,
         blank=True,
@@ -39,6 +49,9 @@ class Applicant(models.Model):
     )
     payment_note = models.CharField(max_length=255, blank=True, default="")
     payment_marked_at = models.DateTimeField(null=True, blank=True)
+    # Last UTR submitted from Tik Tik (pending admin accept).
+    pending_utr = models.CharField(max_length=128, blank=True, default="", db_index=True)
+    pending_utr_at = models.DateTimeField(null=True, blank=True)
 
     # The Azure AD identity token captured at login.
     # Stored as the raw JWT string. Treat this as sensitive credential data.
@@ -250,6 +263,12 @@ class PaymentClaim(models.Model):
         db_index=True,
     )
     note = models.CharField(max_length=255, blank=True, default="")
+    source = models.CharField(
+        max_length=32,
+        blank=True,
+        default="admin",
+        help_text="admin | extension",
+    )
     reviewed_by = models.CharField(max_length=128, blank=True, default="")
     reviewed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -263,4 +282,104 @@ class PaymentClaim(models.Model):
 
     def __str__(self):
         return f"{self.target_applicant_id} · {self.payment_ref or 'no-ref'} · {self.status}"
+
+
+class PaymentSettings(models.Model):
+    """
+    Singleton (pk=1): UPI / QR shown in Tik Tik, default fee, and optional offer.
+    """
+
+    upi_id = models.CharField(max_length=128, blank=True, default="")
+    qr_image = models.ImageField(upload_to="payment_qr/", blank=True, null=True)
+    qr_image_url = models.URLField(
+        blank=True,
+        default="",
+        help_text="Optional public QR image URL if not uploading a file",
+    )
+    default_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Default fee when applicant has no amount set",
+    )
+    offer_enabled = models.BooleanField(default=False)
+    offer_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Special offer price when offer is enabled",
+    )
+    offer_label = models.CharField(
+        max_length=128,
+        blank=True,
+        default="Limited offer",
+        help_text="Shown in Tik Tik when offer is on",
+    )
+    pay_instructions = models.CharField(
+        max_length=255,
+        blank=True,
+        default="Pay via UPI / scan QR, then enter the UTR number below.",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Payment settings"
+        verbose_name_plural = "Payment settings"
+
+    def __str__(self):
+        return "Payment settings"
+
+    @classmethod
+    def load(cls) -> "PaymentSettings":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def resolved_qr_url(self) -> str:
+        if self.qr_image:
+            try:
+                return self.qr_image.url
+            except ValueError:
+                pass
+        return (self.qr_image_url or "").strip()
+
+
+def resolve_pay_amount(applicant: Applicant | None = None) -> dict:
+    """
+    Returns list_amount, pay_amount, offer_label, offer_active for Tik Tik / claims.
+    Per-applicant fee_amount / offer_amount override global settings when set (>0).
+    """
+    settings = PaymentSettings.load()
+    list_amount = settings.default_amount or Decimal("0.00")
+    if applicant and applicant.fee_amount and applicant.fee_amount > 0:
+        list_amount = applicant.fee_amount
+
+    offer_active = False
+    offer_label = ""
+    pay_amount = list_amount
+
+    # Per-applicant offer (fee_amount kept as list; store offer in payment_note? better add field)
+    # Use applicant.offer_amount if we add it — for now check PaymentSettings + applicant fee.
+    if applicant is not None and getattr(applicant, "offer_amount", None):
+        oa = applicant.offer_amount
+        if oa is not None and oa > 0 and oa < list_amount:
+            pay_amount = oa
+            offer_active = True
+            offer_label = (getattr(applicant, "offer_label", None) or "").strip() or "Special offer"
+        elif oa is not None and oa > 0:
+            pay_amount = oa
+
+    if not offer_active and settings.offer_enabled and settings.offer_amount and settings.offer_amount > 0:
+        pay_amount = settings.offer_amount
+        offer_active = settings.offer_amount < list_amount or bool(settings.offer_label)
+        offer_label = (settings.offer_label or "").strip() or "Limited offer"
+
+    return {
+        "list_amount": list_amount.quantize(Decimal("0.01")),
+        "pay_amount": pay_amount.quantize(Decimal("0.01")),
+        "offer_active": bool(offer_active and pay_amount != list_amount),
+        "offer_label": offer_label,
+        "upi_id": (settings.upi_id or "").strip(),
+        "qr_url": settings.resolved_qr_url(),
+        "instructions": (settings.pay_instructions or "").strip(),
+    }
 

@@ -78,6 +78,9 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATIC_ROOT = os.path.join(os.path.dirname(BASE_DIR), "staticfiles")
 
+MEDIA_URL = "/media/"
+MEDIA_ROOT = os.path.join(os.path.dirname(BASE_DIR), "media")
+
 CSRF_TRUSTED_ORIGINS = [
     o.strip()
     for o in os.environ.get(

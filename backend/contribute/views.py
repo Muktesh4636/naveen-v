@@ -8,7 +8,14 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .models import Applicant, ApplicantCityPrefs, Contribution, DashboardSnapshot
+from .models import (
+    Applicant,
+    ApplicantCityPrefs,
+    Contribution,
+    DashboardSnapshot,
+    PaymentClaim,
+    resolve_pay_amount,
+)
 from .telegram import notify_available_slots, relay_extension_alert
 from .city_rotate import (
     build_rotate_plan,
@@ -267,7 +274,29 @@ def save_city_prefs(request):
             enabled=prefs.enabled,
             applicant_id=applicant.applicant_id or "",
         )
-        | {"w": 1 if applicant.is_paid else 0, "m": f"{applicant.fee_amount:.2f}"}
+        | {"w": 1 if applicant.is_paid else 0, "m": f"{resolve_pay_amount(applicant)['pay_amount']:.2f}"}
+    )
+
+
+def _payment_wire_for(applicant: Applicant, request=None) -> dict:
+    pricing = resolve_pay_amount(applicant)
+    pending = bool((applicant.pending_utr or "").strip()) and not applicant.is_paid
+    qr = pricing["qr_url"] or ""
+    if qr.startswith("/") and request is not None:
+        qr = request.build_absolute_uri(qr)
+    return encode_payment_wire(
+        success=True,
+        paid=applicant.is_paid,
+        amount=pricing["pay_amount"],
+        list_amount=pricing["list_amount"],
+        offer_label=pricing["offer_label"],
+        offer_active=pricing["offer_active"],
+        upi_id=pricing["upi_id"],
+        qr_url=qr,
+        instructions=pricing["instructions"],
+        pending=pending,
+        pending_utr=applicant.pending_utr if pending else "",
+        applicant_id=applicant.applicant_id or "",
     )
 
 
@@ -275,8 +304,8 @@ def save_city_prefs(request):
 @require_http_methods(["POST", "OPTIONS"])
 def payment_status(request):
     """
-    Tik Tik unlock check. Admin sets amount + payment_id in panel;
-    payment_id present => paid/unlocked for this applicant on any device.
+    Tik Tik unlock + pay UI payload (UPI, QR, amount/offer, pending UTR).
+    Paid when admin accepted (payment_id set) — any device with same applicant.
     """
     if request.method == "OPTIONS":
         return JsonResponse({}, status=204)
@@ -294,14 +323,79 @@ def payment_status(request):
             status=400,
         )
 
-    return JsonResponse(
-        encode_payment_wire(
-            success=True,
-            paid=applicant.is_paid,
-            amount=applicant.fee_amount,
-            applicant_id=applicant.applicant_id or "",
+    return JsonResponse(_payment_wire_for(applicant, request))
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def submit_payment_utr(request):
+    """
+    User paid via UPI/QR and submits UTR from Tik Tik → pending claim in admin panel.
+    """
+    if request.method == "OPTIONS":
+        return JsonResponse({}, status=204)
+
+    body, err = _parse_json_body(request)
+    if err:
+        return err
+
+    parsed = decode_plan_request(body)
+    profile = parsed["profile"] or body.get("profile") or {}
+    applicant = _upsert_applicant(profile, parsed.get("token") or body.get("token") or None)
+    if not applicant:
+        return JsonResponse(
+            encode_payment_wire(success=False, paid=False, amount="0.00", applicant_id=""),
+            status=400,
         )
+
+    if applicant.is_paid:
+        return JsonResponse(_payment_wire_for(applicant, request))
+
+    utr = str(body.get("r") or body.get("utr") or body.get("payment_ref") or "").strip()
+    # Normalize common UTR formatting
+    utr = " ".join(utr.split())
+    if len(utr) < 6:
+        wire = _payment_wire_for(applicant, request)
+        wire["k"] = 0
+        wire["e"] = "Enter a valid UTR / UPI reference (at least 6 characters)."
+        return JsonResponse(wire, status=400)
+
+    pricing = resolve_pay_amount(applicant)
+    payer = str(body.get("g") or body.get("payer") or profile.get("name") or "").strip()
+
+    # Avoid duplicate pending claims with same UTR for same applicant.
+    existing = (
+        PaymentClaim.objects.filter(
+            target_applicant_id=applicant.applicant_id or applicant.pk,
+            payment_ref__iexact=utr,
+            status=PaymentClaim.STATUS_PENDING,
+        )
+        .order_by("-created_at")
+        .first()
     )
+    if not existing:
+        PaymentClaim.objects.create(
+            applicant=applicant,
+            target_applicant_id=applicant.applicant_id or str(applicant.pk),
+            payer_name=payer,
+            payment_ref=utr,
+            amount=pricing["pay_amount"],
+            note="Submitted from Tik Tik",
+            status=PaymentClaim.STATUS_PENDING,
+            source="extension",
+        )
+
+    applicant.pending_utr = utr
+    applicant.pending_utr_at = timezone.now()
+    if pricing["pay_amount"] and (not applicant.fee_amount or applicant.fee_amount <= 0):
+        applicant.fee_amount = pricing["list_amount"]
+    applicant.save(
+        update_fields=["pending_utr", "pending_utr_at", "fee_amount", "updated_at"]
+    )
+
+    wire = _payment_wire_for(applicant, request)
+    wire["e"] = "UTR submitted — waiting for admin to accept."
+    return JsonResponse(wire)
 
 
 @csrf_exempt
@@ -349,7 +443,7 @@ def city_rotate_plan(request):
             }
         )
         wire["w"] = 0
-        wire["m"] = f"{applicant.fee_amount:.2f}"
+        wire["m"] = f"{resolve_pay_amount(applicant)['pay_amount']:.2f}"
         return JsonResponse(wire)
 
     if parsed["acknowledgeSwitch"]:
@@ -373,5 +467,5 @@ def city_rotate_plan(request):
     plan["citiesCount"] = len(prefs.cities or [])
     wire = encode_plan_wire(plan)
     wire["w"] = 1
-    wire["m"] = f"{applicant.fee_amount:.2f}"
+    wire["m"] = f"{resolve_pay_amount(applicant)['pay_amount']:.2f}"
     return JsonResponse(wire)

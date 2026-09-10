@@ -1,0 +1,68 @@
+{% extends "panel/base.html" %}
+{% block title %}Slots · VisaSlot Admin{% endblock %}
+{% block content %}
+<h1 class="hero-line">Slots</h1>
+<p class="lede">Appointment date checks collected from the extension.</p>
+
+<div class="stats">
+  <div class="stat"><b>{{ total }}</b><span>All checks</span></div>
+  <div class="stat"><b>{{ checks_24h }}</b><span>Checks (24h)</span></div>
+  <div class="stat"><b>{{ with_dates_24h }}</b><span>With dates (24h)</span></div>
+</div>
+
+<div class="toolbar">
+  <form method="get" class="toolbar" style="margin:0">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search city / applicant" />
+    <label class="chip-filter {% if only_dates %}active{% endif %}" style="cursor:pointer">
+      <input type="checkbox" name="dates" value="1" {% if only_dates %}checked{% endif %} onchange="this.form.submit()" style="width:auto;margin-right:.35rem" />
+      Only with dates
+    </label>
+    <button class="btn" type="submit">Search</button>
+  </form>
+</div>
+
+<section class="card">
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>When</th>
+        <th>City</th>
+        <th>Applicant</th>
+        <th>Dates found</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for row in rows %}
+      <tr>
+        <td class="meta">{{ row.when|date:"M j, Y H:i" }}</td>
+        <td>{{ row.obj.post_name|default:row.obj.post_id|default:"—" }}</td>
+        <td>
+          {% if row.obj.applicant %}
+            <a href="{% url 'panel_user' row.obj.applicant.pk %}">{{ row.obj.applicant.name|default:row.obj.applicant.applicant_id|default:"Profile" }}</a>
+            <div class="meta">{{ row.obj.applicant.applicant_id }}</div>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if row.date_count %}
+            <strong>{{ row.date_count }}</strong>
+            <div class="meta">{{ row.date_preview }}</div>
+          {% else %}
+            <span class="meta">None</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if row.has_error %}<span class="pill bad">Error</span>
+          {% elif row.date_count %}<span class="pill on">Dates</span>
+          {% else %}<span class="pill off">Empty</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty"><strong>No slot data</strong>Checks appear after users open the scheduling page with the extension.</div>
+  {% endif %}
+</section>
+{% endblock %}

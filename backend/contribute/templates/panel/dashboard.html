@@ -1,0 +1,90 @@
+{% extends "panel/base.html" %}
+{% block title %}Dashboard · VisaSlot Admin{% endblock %}
+{% block content %}
+<h1 class="hero-line">Dashboard</h1>
+<p class="lede">Live snapshot of applicants, payments, and slot activity from the extension.</p>
+
+<div class="stats">
+  <div class="stat"><b>{{ total_applicants }}</b><span>Total applicants</span></div>
+  <div class="stat"><b>{{ active_users }}</b><span>Active (24h)</span></div>
+  <div class="stat"><b>{{ city_on }}</b><span>City Change ON</span></div>
+  <div class="stat"><b>{{ paid_count }}</b><span>Paid</span></div>
+  <div class="stat"><b>{{ unpaid_count }}</b><span>Unpaid</span></div>
+  <div class="stat"><b>{{ pending_payments }}</b><span>Pending payments</span></div>
+  <div class="stat"><b>{{ customers }}</b><span>License customers</span></div>
+  <div class="stat"><b>{{ slot_checks_24h }}</b><span>Slot checks (24h)</span></div>
+  <div class="stat"><b>{{ slots_with_dates }}</b><span>Checks with dates (24h)</span></div>
+</div>
+
+<div class="grid-2">
+  <section class="card">
+    <h2>Recent applicants</h2>
+    {% if recent_applicants %}
+    <table>
+      <thead><tr><th>Name</th><th>ID</th><th>Paid</th><th>Updated</th></tr></thead>
+      <tbody>
+      {% for a in recent_applicants %}
+        <tr>
+          <td><a href="{% url 'panel_user' a.pk %}">{{ a.name|default:"Unnamed" }}</a></td>
+          <td>{{ a.applicant_id|default:"—" }}</td>
+          <td>{% if a.is_paid %}<span class="pill on">Paid</span>{% else %}<span class="pill off">Unpaid</span>{% endif %}</td>
+          <td class="meta">{{ a.updated_at|date:"M j, H:i" }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty"><strong>No applicants yet</strong>Data appears when the extension syncs.</div>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Recent payments</h2>
+    {% if recent_payments %}
+    <table>
+      <thead><tr><th>Applicant ID</th><th>Amount</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for p in recent_payments %}
+        <tr>
+          <td>{{ p.target_applicant_id }}</td>
+          <td>₹{{ p.amount }}</td>
+          <td>
+            {% if p.status == "accepted" %}<span class="pill on">Accepted</span>
+            {% elif p.status == "rejected" %}<span class="pill bad">Rejected</span>
+            {% else %}<span class="pill off">Pending</span>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty"><strong>No payment claims</strong>Add one from the Payments page.</div>
+    {% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <h2>Latest slot dates</h2>
+  {% if slot_rows %}
+  <table>
+    <thead><tr><th>When</th><th>City</th><th>Applicant</th><th>Dates</th></tr></thead>
+    <tbody>
+    {% for row in slot_rows %}
+      <tr>
+        <td class="meta">{{ row.when|date:"M j, H:i" }}</td>
+        <td>{{ row.obj.post_name|default:row.obj.post_id|default:"—" }}</td>
+        <td>
+          {% if row.obj.applicant %}
+            <a href="{% url 'panel_user' row.obj.applicant.pk %}">{{ row.obj.applicant.name|default:row.obj.applicant.applicant_id }}</a>
+          {% else %}—{% endif %}
+        </td>
+        <td>{% if row.date_preview %}{{ row.date_preview }}{% else %}<span class="meta">No dates</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty"><strong>No slot checks yet</strong></div>
+  {% endif %}
+</section>
+{% endblock %}

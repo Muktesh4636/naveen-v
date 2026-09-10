@@ -24,8 +24,9 @@ from .models import (
     ApplicantCityPrefs,
     Contribution,
     ExtensionLicense,
-    LicenseDevice,
     PaymentClaim,
+    PaymentSettings,
+    resolve_pay_amount,
 )
 
 TIMER_PRESETS = [
@@ -316,29 +317,52 @@ def panel_customer_detail(request, pk: int):
 @_staff
 @require_http_methods(["GET", "POST"])
 def panel_payments(request):
-    if request.method == "POST" and request.POST.get("action") == "create":
-        target_id = (request.POST.get("target_applicant_id") or "").strip()
-        if not target_id:
-            messages.error(request, "Applicant ID is required.")
+    settings_obj = PaymentSettings.load()
+
+    if request.method == "POST":
+        action = (request.POST.get("action") or "").strip()
+        if action == "settings":
+            settings_obj.upi_id = (request.POST.get("upi_id") or "").strip()
+            settings_obj.qr_image_url = (request.POST.get("qr_image_url") or "").strip()
+            settings_obj.default_amount = _parse_fee_amount(request.POST.get("default_amount"))
+            settings_obj.offer_enabled = request.POST.get("offer_enabled") == "on"
+            settings_obj.offer_amount = _parse_fee_amount(request.POST.get("offer_amount"))
+            settings_obj.offer_label = (request.POST.get("offer_label") or "").strip() or "Limited offer"
+            settings_obj.pay_instructions = (
+                request.POST.get("pay_instructions") or ""
+            ).strip() or settings_obj.pay_instructions
+            if request.FILES.get("qr_image"):
+                settings_obj.qr_image = request.FILES["qr_image"]
+            if request.POST.get("clear_qr") == "on":
+                settings_obj.qr_image = None
+            settings_obj.save()
+            messages.success(request, "Payment settings saved — Tik Tik will show the new UPI / QR / offer.")
             return redirect("panel_payments")
 
-        applicant = (
-            Applicant.objects.filter(applicant_id=target_id).order_by("-updated_at").first()
-        )
-        claim = PaymentClaim.objects.create(
-            applicant=applicant,
-            target_applicant_id=target_id,
-            payer_name=(request.POST.get("payer_name") or "").strip(),
-            payment_ref=(request.POST.get("payment_ref") or "").strip(),
-            amount=_parse_fee_amount(request.POST.get("amount")),
-            note=(request.POST.get("note") or "").strip(),
-            status=PaymentClaim.STATUS_PENDING,
-        )
-        messages.success(
-            request,
-            f"Payment claim #{claim.pk} created for applicant ID {target_id} — pending review.",
-        )
-        return redirect("panel_payments")
+        if action == "create":
+            target_id = (request.POST.get("target_applicant_id") or "").strip()
+            if not target_id:
+                messages.error(request, "Applicant ID is required.")
+                return redirect("panel_payments")
+
+            applicant = (
+                Applicant.objects.filter(applicant_id=target_id).order_by("-updated_at").first()
+            )
+            claim = PaymentClaim.objects.create(
+                applicant=applicant,
+                target_applicant_id=target_id,
+                payer_name=(request.POST.get("payer_name") or "").strip(),
+                payment_ref=(request.POST.get("payment_ref") or "").strip(),
+                amount=_parse_fee_amount(request.POST.get("amount")),
+                note=(request.POST.get("note") or "").strip(),
+                status=PaymentClaim.STATUS_PENDING,
+                source="admin",
+            )
+            messages.success(
+                request,
+                f"Payment claim #{claim.pk} created for applicant ID {target_id} — pending review.",
+            )
+            return redirect("panel_payments")
 
     status = (request.GET.get("status") or "pending").strip().lower()
     q = (request.GET.get("q") or "").strip()
@@ -367,6 +391,8 @@ def panel_payments(request):
             "status": status,
             "q": q,
             "counts": counts,
+            "pay_settings": settings_obj,
+            "qr_preview": settings_obj.resolved_qr_url(),
         }
     )
     return render(request, "panel/payments.html", ctx)
@@ -407,11 +433,13 @@ def panel_payment_action(request, pk: int):
         if claim.note:
             applicant.payment_note = claim.note
         applicant.payment_marked_at = timezone.now()
+        applicant.pending_utr = ""
+        applicant.pending_utr_at = None
         applicant.save()
         messages.success(
             request,
-            f"Accepted payment for ID {claim.target_applicant_id}"
-            f" (ref {applicant.payment_id}).",
+            f"Accepted — Tik Tik unlocked for ID {claim.target_applicant_id}"
+            f" (UTR {applicant.payment_id}).",
         )
     elif action == "reject":
         claim.status = PaymentClaim.STATUS_REJECTED
@@ -419,6 +447,11 @@ def panel_payment_action(request, pk: int):
         claim.reviewed_at = timezone.now()
         claim.note = (request.POST.get("note") or claim.note or "").strip()
         claim.save(update_fields=["status", "reviewed_by", "reviewed_at", "note"])
+        applicant = claim.applicant
+        if applicant and (applicant.pending_utr or "").strip() == (claim.payment_ref or "").strip():
+            applicant.pending_utr = ""
+            applicant.pending_utr_at = None
+            applicant.save(update_fields=["pending_utr", "pending_utr_at", "updated_at"])
         messages.info(request, f"Rejected payment claim for ID {claim.target_applicant_id}.")
     else:
         messages.error(request, "Unknown payment action.")
@@ -524,6 +557,8 @@ def panel_user(request, pk: int):
         )
 
         applicant.fee_amount = _parse_fee_amount(request.POST.get("fee_amount"))
+        applicant.offer_amount = _parse_fee_amount(request.POST.get("offer_amount"))
+        applicant.offer_label = (request.POST.get("offer_label") or "").strip()
         new_payment_id = (request.POST.get("payment_id") or "").strip()
         prev_payment_id = (applicant.payment_id or "").strip()
         applicant.payment_id = new_payment_id
@@ -531,6 +566,8 @@ def panel_user(request, pk: int):
         applicant.payment_note = (request.POST.get("payment_note") or "").strip()
         if new_payment_id and not prev_payment_id:
             applicant.payment_marked_at = timezone.now()
+            applicant.pending_utr = ""
+            applicant.pending_utr_at = None
         elif not new_payment_id:
             applicant.payment_marked_at = None
         applicant.save()

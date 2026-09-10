@@ -1,0 +1,46 @@
+{% extends "panel/base.html" %}
+{% block title %}{{ license.label|default:license.key }} · Customer{% endblock %}
+{% block content %}
+<p class="meta"><a href="{% url 'panel_customers' %}">← Customers</a></p>
+<h1 class="hero-line">{{ license.label|default:"Customer" }}</h1>
+<p class="lede">License key <code>{{ license.key }}</code></p>
+
+<form method="post" class="card">
+  {% csrf_token %}
+  <div class="two">
+    <div>
+      <div class="section-label">Customer name</div>
+      <input type="text" name="label" value="{{ license.label }}" placeholder="Customer / shop name" />
+    </div>
+    <div>
+      <div class="section-label">Max devices</div>
+      <input type="number" name="max_devices" min="1" value="{{ license.max_devices }}" />
+    </div>
+  </div>
+  <div class="switch" style="margin-top:.9rem">
+    <input type="checkbox" name="active" id="active" {% if license.active %}checked{% endif %} />
+    <label for="active">License active</label>
+  </div>
+  <div style="margin-top:1rem"><button class="btn" type="submit">Save customer</button></div>
+</form>
+
+<section class="card">
+  <h2>Devices</h2>
+  {% if devices %}
+  <table>
+    <thead><tr><th>Install ID</th><th>First seen</th><th>Last seen</th></tr></thead>
+    <tbody>
+    {% for d in devices %}
+      <tr>
+        <td><code>{{ d.install_id }}</code></td>
+        <td class="meta">{{ d.first_seen_at|date:"M j, Y H:i" }}</td>
+        <td class="meta">{{ d.last_seen_at|date:"M j, Y H:i" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty"><strong>No devices bound</strong></div>
+  {% endif %}
+</section>
+{% endblock %}

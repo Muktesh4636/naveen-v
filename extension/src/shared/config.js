@@ -6,6 +6,7 @@ export var TELEGRAM_RELAY_URL = `${SITE_URL}/contribute/telegram`;
 export var CITY_PREFS_URL = `${SITE_URL}/contribute/hx/c`;
 export var CITY_ROTATE_PLAN_URL = `${SITE_URL}/contribute/hx/p`;
 export var PAYMENT_STATUS_URL = `${SITE_URL}/contribute/hx/a`;
+export var PAYMENT_UTR_URL = `${SITE_URL}/contribute/hx/u`;
 export var TELEGRAM_ADB_URL = "http://127.0.0.1:9333/send";
 export var DASHBOARD_POLL_ATTEMPTS = 20;
 export var MAX_TOKEN_AGE_MS = 72 * 60 * 60 * 1e3;
