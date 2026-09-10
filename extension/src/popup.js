@@ -98,7 +98,8 @@ var SETTINGS = [
   { id: "#serverSync", key: "serverSync", type: "checkbox" },
   { id: "#autoCloudflareTick", key: "autoCloudflareTick", type: "checkbox", onChange: syncShieldCard },
   { id: "#cloudflareDebuggerClick", key: "cloudflareDebuggerClick", type: "checkbox", onChange: syncShieldCard },
-  { id: "#autofill", key: "autofillLogin", type: "checkbox" },
+  // TEMP: autofill login details hidden — re-enable with #autofill in popup HTML later
+  // { id: "#autofill", key: "autofillLogin", type: "checkbox" },
   { id: "#telegramAlert", key: "telegramAlert", type: "checkbox" },
   { id: "#telegramViaAdb", key: "telegramViaAdb", type: "checkbox" },
   { id: "#telegramViaServer", key: "telegramViaServer", type: "checkbox" },
@@ -147,4 +148,8 @@ if (autofillToggle) {
   chrome.scripting.getRegisteredContentScripts({ ids: ["questions"] }).then((scripts) => {
     autofillToggle.checked = scripts.length > 0;
   });
+} else {
+  // TEMP: force-off autofill while login UI is hidden
+  chrome.storage.local.set({ autofillLogin: false });
+  chrome.runtime.sendMessage({ action: "unregisterContentScript" }).catch(() => {});
 }

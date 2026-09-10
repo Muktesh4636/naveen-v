@@ -82,12 +82,17 @@ CSRF_TRUSTED_ORIGINS = [
     o.strip()
     for o in os.environ.get(
         "CSRF_TRUSTED_ORIGINS",
-        "https://the.gopg.online",
+        "https://the.gopg.online,https://gopg.online,https://www.gopg.online",
     ).split(",")
     if o.strip()
 ]
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+CSRF_COOKIE_SECURE = True
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_HTTPONLY = False
 
 LOGIN_URL = "/panel/login/"
 LOGIN_REDIRECT_URL = "/panel/"

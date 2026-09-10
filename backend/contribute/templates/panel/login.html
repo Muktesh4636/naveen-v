@@ -148,7 +148,7 @@
       <p class="mark">Visa<span>Slot</span></p>
       <p>Operator console for cities &amp; timing</p>
     </div>
-    <form class="card" method="post" action="{% url 'panel_login' %}">
+    <form class="card" method="post" action="{% url 'panel_login' %}" autocomplete="on">
       {% csrf_token %}
       {% if next %}<input type="hidden" name="next" value="{{ next }}" />{% endif %}
       <h1>Sign in</h1>
@@ -165,7 +165,7 @@
       <input id="password" name="password" type="password" autocomplete="current-password" required />
       <button type="submit">Enter admin panel</button>
     </form>
-    <p class="foot">Authorized staff only · the.gopg.online</p>
+    <p class="foot">Open only via <strong>https://the.gopg.online/panel/login/</strong> · cookies must be allowed</p>
   </div>
 </body>
 </html>

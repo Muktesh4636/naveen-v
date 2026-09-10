@@ -11,7 +11,7 @@ import {
   isCloudflareChallenge,
   tryCloudflareTick,
 } from "./cloudflare-tick.js";
-import { getSetting } from "../shared/config.js";
+import { getSetting, TEMP_SHOW_LOGIN_DETAILS } from "../shared/config.js";
 import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
 
@@ -141,6 +141,7 @@ function _isLoginPage() {
 }
 
 async function _fillLogin(cfg) {
+  if (!TEMP_SHOW_LOGIN_DETAILS) return false;
   if (_loginTyping) return true;
   const user = document.querySelector("#signInName, #signInNameReadOnly, input[type='email'], input[name='loginfmt']");
   const pass = document.querySelector("#password, input[type='password']");
@@ -171,6 +172,7 @@ async function _fillLogin(cfg) {
 }
 
 async function _fillSecurity(cfg) {
+  if (!TEMP_SHOW_LOGIN_DETAILS) return false;
   if (_securityTyping) return true;
   const pairs = [];
   const labels = [...document.querySelectorAll("label, p, span, div.form-group")];

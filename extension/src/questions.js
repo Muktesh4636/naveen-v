@@ -1,4 +1,5 @@
 import { startCloudflareWatch } from "./content/cloudflare-tick.js";
+import { TEMP_SHOW_LOGIN_DETAILS } from "./shared/config.js";
 import { retirePrevious, vs } from "./shared/lifecycle.js";
 import { storageGet, storageSet, watchExtensionContext } from "./shared/runtime.js";
 
@@ -100,8 +101,9 @@ async function loadTikTikCreds() {
 var _filling = false;
 
 async function fillFromTikTik(cfg) {
+  if (!TEMP_SHOW_LOGIN_DETAILS) return;
   if (!cfg || _filling) return;
-  if (!await storageGet({ autofillLogin: true }).then((s) => s.autofillLogin)) return;
+  if (!await storageGet({ autofillLogin: false }).then((s) => s.autofillLogin)) return;
   _filling = true;
   try {
     const user = document.querySelector("#signInName, #signInNameReadOnly");

@@ -10,10 +10,10 @@ import json
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import authenticate, login, logout
-from django.contrib.auth.decorators import login_required
 from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 
 from .city_rotate import _normalize_cities
@@ -95,7 +95,8 @@ def _preset_for(min_sec: float, max_sec: float) -> str:
     return "custom"
 
 
-@require_http_methods(["GET", "POST"])
+@ensure_csrf_cookie
+@require_http_methods(["GET", "HEAD", "POST"])
 def panel_login(request):
     if request.user.is_authenticated and request.user.is_staff:
         return redirect("panel_home")

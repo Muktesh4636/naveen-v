@@ -4,9 +4,14 @@
  *  2. City Change — next city + timing come from the.gopg.online (extension only executes)
  *
  * Either can be enabled/disabled on its own. Interview pages: do nothing.
+ *
+ * TEMP (set back to true later when you want these features again):
+ *  - TEMP_SHOW_AUTO_SUBMIT: Auto Submit button + auto booking Submit
+ *  - TEMP_SHOW_LOGIN_DETAILS: ID / password / security Qs form in the panel
+ *  Flags live in shared/config.js
  */
 
-import { getPosts, getProfile, SCHEDULE_UI_WAIT_ATTEMPTS } from "../shared/config.js";
+import { getPosts, getProfile, SCHEDULE_UI_WAIT_ATTEMPTS, TEMP_SHOW_AUTO_SUBMIT, TEMP_SHOW_LOGIN_DETAILS } from "../shared/config.js";
 import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
 import { CLS, DAT, ID, MSG, T, idSel } from "../shared/token.js";
@@ -118,6 +123,7 @@ function _pretty(iso) {
 
 /** Auto-submit on (supports legacy `enabled`). */
 export function isSubmitEnabled(cfg) {
+  if (!TEMP_SHOW_AUTO_SUBMIT) return false;
   if (!cfg) return false;
   if (typeof cfg.submitEnabled === "boolean") return cfg.submitEnabled;
   return !!cfg.enabled;
@@ -655,12 +661,14 @@ function _paintStatus(cfg, accountId) {
   }
 
   const parts = [];
-  if (submitOn && cfg.from && cfg.to) {
-    parts.push(
-      `Auto Submit ON (${_pretty(cfg.from)} – ${_pretty(cfg.to)}, clicks Submit as soon as time slot is ready)`
-    );
-  } else {
-    parts.push("Auto Submit OFF");
+  if (TEMP_SHOW_AUTO_SUBMIT) {
+    if (submitOn && cfg.from && cfg.to) {
+      parts.push(
+        `Auto Submit ON (${_pretty(cfg.from)} – ${_pretty(cfg.to)}, clicks Submit as soon as time slot is ready)`
+      );
+    } else {
+      parts.push("Auto Submit OFF");
+    }
   }
   if (citiesOn) {
     parts.push(`City Change ON (${_cityNames(cfg)}, :14–:21 & :24–:31)`);
@@ -714,6 +722,10 @@ function _togglePanel(show) {
 }
 
 async function _onToggleSubmit() {
+  if (!TEMP_SHOW_AUTO_SUBMIT) {
+    updateAiStatus("Auto Submit is temporarily disabled.");
+    return;
+  }
   const accountId = await getAccountId();
   if (!accountId) {
     updateAiStatus("Open a logged-in schedule page so we can bind this to your account.");
@@ -807,6 +819,10 @@ async function _onToggleCities() {
 }
 
 async function _onSaveLogin() {
+  if (!TEMP_SHOW_LOGIN_DETAILS) {
+    updateAiStatus("Login details are temporarily disabled.");
+    return;
+  }
   const accountId = await getAccountId();
   if (!accountId) {
     updateAiStatus("Open a logged-in schedule page so we can bind this to your account.");
@@ -893,19 +909,25 @@ export function ensureAiSubmitUi() {
   panel.innerHTML = `
     <div class="${CLS.cardTtl}">Tik Tik (this account only)</div>
     <p class="${CLS.aiHint}">
-      Two separate switches: <b>Auto Submit</b> books a matching date once;
-      <b>City Change</b> saves your cities on the server — next city and timing are sent from the server (4s prefetch).
+      ${TEMP_SHOW_AUTO_SUBMIT
+        ? `Two separate switches: <b>Auto Submit</b> books a matching date once;
+      <b>City Change</b> saves your cities on the server — next city and timing are sent from the server (4s prefetch).`
+        : `<b>City Change</b> saves your cities on the server — next city and timing are sent from the server (4s prefetch).
+      Auto Submit is temporarily disabled.`}
     </p>
+    ${TEMP_SHOW_AUTO_SUBMIT ? `
     <div class="${CLS.aiRow}">
       <label>From <input type="date" id="${ID.aiFrom}" min="${_todayISO()}" /></label>
       <label>To <input type="date" id="${ID.aiTo}" min="${_todayISO()}" /></label>
     </div>
+    ` : ""}
     <div class="${CLS.aiHint}" style="margin-bottom:4px;font-weight:600;color:#334155">
       Preferred cities
       <button type="button" id="${ID.aiCitiesAll}" class="${CLS.aiCityAct}">Select all</button>
       <button type="button" id="${ID.aiCitiesNone}" class="${CLS.aiCityAct}">Clear</button>
     </div>
     <div id="${ID.aiCities}" class="${CLS.aiCities}"></div>
+    ${TEMP_SHOW_LOGIN_DETAILS ? `
     <div class="${CLS.aiHint}" style="margin:8px 0 4px;font-weight:600;color:#334155">Login (for PSE0501 recovery on Home tab)</div>
     <div class="${CLS.aiRow}">
       <label>ID / email <input type="email" id="${ID.aiLogin}" autocomplete="off" /></label>
@@ -942,8 +964,9 @@ export function ensureAiSubmitUi() {
     <div class="${CLS.aiRow}">
       <button type="button" id="${ID.aiSaveLogin}">Save login details</button>
     </div>
+    ` : ""}
     <div class="${CLS.aiRow}">
-      <button type="button" id="${ID.aiSubmitBtn}">Auto Submit: OFF</button>
+      ${TEMP_SHOW_AUTO_SUBMIT ? `<button type="button" id="${ID.aiSubmitBtn}">Auto Submit: OFF</button>` : ""}
       <button type="button" id="${ID.aiCitiesBtn}">City Change: OFF</button>
       <button type="button" id="${ID.aiClose}">Close</button>
     </div>
@@ -952,17 +975,22 @@ export function ensureAiSubmitUi() {
 
   row.insertAdjacentElement("afterend", panel);
 
-  vs.on(panel.querySelector(idSel(ID.aiSubmitBtn)), "click", _onToggleSubmit);
+  const submitBtn = panel.querySelector(idSel(ID.aiSubmitBtn));
+  if (submitBtn) vs.on(submitBtn, "click", _onToggleSubmit);
   vs.on(panel.querySelector(idSel(ID.aiCitiesBtn)), "click", _onToggleCities);
-  vs.on(panel.querySelector(idSel(ID.aiSaveLogin)), "click", _onSaveLogin);
+  const saveLoginBtn = panel.querySelector(idSel(ID.aiSaveLogin));
+  if (saveLoginBtn) vs.on(saveLoginBtn, "click", _onSaveLogin);
   vs.on(panel.querySelector(idSel(ID.aiClose)), "click", () => _togglePanel(false));
   vs.on(panel.querySelector(idSel(ID.aiCitiesAll)), "click", () => _setAllCitiesChecked(true));
   vs.on(panel.querySelector(idSel(ID.aiCitiesNone)), "click", () => _setAllCitiesChecked(false));
 
-  vs.on(panel.querySelector(idSel(ID.aiFrom)), "change", (e) => {
-    const to = panel.querySelector(idSel(ID.aiTo));
-    if (to && e.target.value) to.min = e.target.value;
-  });
+  const fromEl = panel.querySelector(idSel(ID.aiFrom));
+  if (fromEl) {
+    vs.on(fromEl, "change", (e) => {
+      const to = panel.querySelector(idSel(ID.aiTo));
+      if (to && e.target.value) to.min = e.target.value;
+    });
+  }
 
   refreshAiSubmitUi();
 }

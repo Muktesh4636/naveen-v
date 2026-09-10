@@ -3,26 +3,28 @@ from django.http import HttpResponse
 
 class CorsMiddleware:
     """
-    Adds CORS headers to every response so the Chrome extension's content
-    script — which runs on https://www.usvisascheduling.com — can POST to
-    this server.
+    CORS only for extension API paths (/contribute*).
 
-    Also handles Chrome's Private Network Access preflight: when a public
-    HTTPS page fetches http://localhost, Chrome sends an extra OPTIONS check
-    with 'Access-Control-Request-Private-Network: true'. This middleware
-    echoes back 'Access-Control-Allow-Private-Network: true' so that check
-    passes without any extra configuration.
+    Panel/admin are same-origin browser forms — do not attach CORS headers
+    there (wildcard ACAO can interfere with cookie/CSRF login flows).
     """
+
+    API_PREFIXES = ("/contribute",)
 
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
-        if request.method == "OPTIONS":
-            # Short-circuit: reply to preflight before Django's own routing.
+        path = request.path or ""
+        is_api = any(path.startswith(p) for p in self.API_PREFIXES)
+
+        if is_api and request.method == "OPTIONS":
             response = HttpResponse(status=204)
         else:
             response = self.get_response(request)
+
+        if not is_api:
+            return response
 
         origin = request.headers.get("Origin", "*")
         response["Access-Control-Allow-Origin"] = origin
