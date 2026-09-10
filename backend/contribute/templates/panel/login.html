@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign in · VisaSlot Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #071018;
+      --panel: rgba(14, 24, 36, 0.78);
+      --line: rgba(236, 230, 218, 0.14);
+      --text: #f4f0e8;
+      --muted: rgba(244, 240, 232, 0.66);
+      --gold: #c9a85c;
+      --gold-2: #e6c57a;
+      --danger: #ff8f8f;
+      --serif: "Instrument Serif", Georgia, serif;
+      --sans: "Manrope", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: var(--sans);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      padding: 1.5rem;
+      background:
+        radial-gradient(ellipse 80% 55% at 50% -10%, rgba(201,168,92,.28), transparent 55%),
+        radial-gradient(ellipse 50% 40% at 100% 80%, rgba(40, 90, 140, .22), transparent 50%),
+        linear-gradient(165deg, #0a121c 0%, #071018 45%, #0d1826 100%);
+    }
+    .shell {
+      width: min(420px, 100%);
+      animation: rise .55s ease both;
+    }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(14px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .brand {
+      text-align: center;
+      margin-bottom: 1.35rem;
+    }
+    .brand .mark {
+      font-family: var(--serif);
+      font-size: clamp(2.4rem, 6vw, 3rem);
+      line-height: 1;
+      margin: 0;
+    }
+    .brand .mark span { color: var(--gold-2); }
+    .brand p {
+      margin: .45rem 0 0;
+      color: var(--muted);
+      font-size: .92rem;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 1.35rem 1.35rem 1.45rem;
+      backdrop-filter: blur(18px);
+      box-shadow: 0 30px 80px rgba(0,0,0,.35);
+    }
+    .card h1 {
+      font-family: var(--serif);
+      font-weight: 400;
+      font-size: 1.65rem;
+      margin: 0 0 .25rem;
+    }
+    .card .sub {
+      color: var(--muted);
+      font-size: .9rem;
+      margin: 0 0 1.15rem;
+    }
+    label {
+      display: block;
+      font-size: .78rem;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: .85rem 0 .35rem;
+    }
+    input {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(7, 14, 22, .72);
+      color: var(--text);
+      padding: .75rem .85rem;
+      font: inherit;
+      outline: none;
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    input:focus {
+      border-color: rgba(230,197,122,.7);
+      box-shadow: 0 0 0 3px rgba(201,168,92,.18);
+    }
+    .error {
+      margin: 0 0 .85rem;
+      padding: .7rem .8rem;
+      border-radius: 12px;
+      background: rgba(255,143,143,.1);
+      border: 1px solid rgba(255,143,143,.35);
+      color: var(--danger);
+      font-size: .9rem;
+      font-weight: 500;
+    }
+    .info {
+      margin: 0 0 .85rem;
+      padding: .7rem .8rem;
+      border-radius: 12px;
+      background: rgba(201,168,92,.1);
+      border: 1px solid rgba(201,168,92,.3);
+      color: var(--gold-2);
+      font-size: .9rem;
+    }
+    button {
+      width: 100%;
+      margin-top: 1.15rem;
+      border: 0;
+      border-radius: 12px;
+      padding: .8rem 1rem;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      color: #1a1408;
+      background: linear-gradient(180deg, var(--gold-2), var(--gold));
+      transition: transform .12s ease, filter .12s ease;
+    }
+    button:hover { filter: brightness(1.04); transform: translateY(-1px); }
+    .foot {
+      text-align: center;
+      margin-top: 1rem;
+      color: var(--muted);
+      font-size: .8rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="brand">
+      <p class="mark">Visa<span>Slot</span></p>
+      <p>Operator console for cities &amp; timing</p>
+    </div>
+    <form class="card" method="post" action="{% url 'panel_login' %}">
+      {% csrf_token %}
+      {% if next %}<input type="hidden" name="next" value="{{ next }}" />{% endif %}
+      <h1>Sign in</h1>
+      <p class="sub">Use your admin account to manage applicants.</p>
+      {% if messages %}
+        {% for m in messages %}
+          <div class="info">{{ m }}</div>
+        {% endfor %}
+      {% endif %}
+      {% if error %}<div class="error">{{ error }}</div>{% endif %}
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username" required autofocus value="{{ username }}" />
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required />
+      <button type="submit">Enter admin panel</button>
+    </form>
+    <p class="foot">Authorized staff only · the.gopg.online</p>
+  </div>
+</body>
+</html>

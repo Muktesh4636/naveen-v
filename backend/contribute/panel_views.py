@@ -9,6 +9,8 @@ import json
 
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
+from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.decorators import login_required
 from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -22,6 +24,8 @@ TIMER_PRESETS = [
     {"id": "normal", "label": "Normal", "hint": "Recommended", "min": 13, "max": 18},
     {"id": "slow", "label": "Slow", "hint": "Gentler on the portal", "min": 20, "max": 30},
 ]
+
+_staff = staff_member_required(login_url="panel_login")
 
 
 def _cities_to_text(cities) -> str:
@@ -63,12 +67,10 @@ def _parse_cities_payload(request) -> list[dict]:
 
 
 def _known_cities() -> list[dict]:
-    """Unique cities seen across all applicants (for quick-add chips)."""
     by_id: dict[str, str] = {}
     for prefs in ApplicantCityPrefs.objects.exclude(cities=[]).only("cities")[:2000]:
         for c in _normalize_cities(prefs.cities):
             by_id.setdefault(c["id"], c["name"])
-    # Common India VAC labels if DB is empty — ids filled when users sync.
     defaults = [
         "NEW DELHI VAC",
         "MUMBAI VAC",
@@ -93,7 +95,48 @@ def _preset_for(min_sec: float, max_sec: float) -> str:
     return "custom"
 
 
-@staff_member_required
+@require_http_methods(["GET", "POST"])
+def panel_login(request):
+    if request.user.is_authenticated and request.user.is_staff:
+        return redirect("panel_home")
+
+    error = ""
+    username = ""
+    if request.method == "POST":
+        username = (request.POST.get("username") or "").strip()
+        password = request.POST.get("password") or ""
+        user = authenticate(request, username=username, password=password)
+        if user is None:
+            error = "Incorrect username or password."
+        elif not user.is_staff:
+            error = "This account cannot open the admin panel."
+        elif not user.is_active:
+            error = "This account is disabled."
+        else:
+            login(request, user)
+            next_url = request.GET.get("next") or request.POST.get("next") or ""
+            if next_url.startswith("/panel"):
+                return redirect(next_url)
+            return redirect("panel_home")
+
+    return render(
+        request,
+        "panel/login.html",
+        {
+            "error": error,
+            "username": username,
+            "next": request.GET.get("next") or "",
+        },
+    )
+
+
+def panel_logout(request):
+    logout(request)
+    messages.info(request, "Signed out of VisaSlot Admin.")
+    return redirect("panel_login")
+
+
+@_staff
 def panel_home(request):
     q = (request.GET.get("q") or "").strip()
     status = (request.GET.get("status") or "all").strip().lower()
@@ -156,11 +199,12 @@ def panel_home(request):
             "on_count": on_count,
             "shown": len(rows),
             "now": timezone.localtime(),
+            "operator": request.user.get_username(),
         },
     )
 
 
-@staff_member_required
+@_staff
 @require_http_methods(["GET", "POST"])
 def panel_user(request, pk: int):
     applicant = get_object_or_404(Applicant, pk=pk)
@@ -229,5 +273,6 @@ def panel_user(request, pk: int):
             "timer_presets": TIMER_PRESETS,
             "recent": recent,
             "updated": timezone.localtime(applicant.updated_at),
+            "operator": request.user.get_username(),
         },
     )

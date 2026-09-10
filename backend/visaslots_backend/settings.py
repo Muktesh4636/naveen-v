@@ -89,6 +89,6 @@ CSRF_TRUSTED_ORIGINS = [
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-LOGIN_URL = "/admin/login/"
+LOGIN_URL = "/panel/login/"
 LOGIN_REDIRECT_URL = "/panel/"
-LOGOUT_REDIRECT_URL = "/admin/login/"
+LOGOUT_REDIRECT_URL = "/panel/login/"
