@@ -1,24 +1,41 @@
 """
-Staff admin panel — branded UI for operators to manage applicants,
-preferred cities, and per-user city-change timers.
+Staff admin panel — left-nav console for dashboard, customers, payments,
+applicants, and slot dates.
 """
 
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import authenticate, login, logout
-from django.db.models import Count, Q
+from django.db.models import Count, Max, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
-from django.views.decorators.http import require_http_methods
+from django.views.decorators.http import require_http_methods, require_POST
 
 from .city_rotate import _normalize_cities
-from .models import Applicant, ApplicantCityPrefs, Contribution
+from .models import (
+    Applicant,
+    ApplicantCityPrefs,
+    Contribution,
+    ExtensionLicense,
+    LicenseDevice,
+    PaymentClaim,
+)
+
+TIMER_PRESETS = [
+    {"id": "fast", "label": "Fast", "hint": "Checks cities quickly", "min": 8, "max": 12},
+    {"id": "normal", "label": "Normal", "hint": "Recommended", "min": 13, "max": 18},
+    {"id": "slow", "label": "Slow", "hint": "Gentler on the portal", "min": 20, "max": 30},
+]
+
+_staff = staff_member_required(login_url="panel_login")
+ACTIVE_WINDOW = timedelta(hours=24)
 
 
 def _parse_fee_amount(raw) -> Decimal:
@@ -32,14 +49,6 @@ def _parse_fee_amount(raw) -> Decimal:
     if value < 0:
         value = Decimal("0.00")
     return value.quantize(Decimal("0.01"))
-
-TIMER_PRESETS = [
-    {"id": "fast", "label": "Fast", "hint": "Checks cities quickly", "min": 8, "max": 12},
-    {"id": "normal", "label": "Normal", "hint": "Recommended", "min": 13, "max": 18},
-    {"id": "slow", "label": "Slow", "hint": "Gentler on the portal", "min": 20, "max": 30},
-]
-
-_staff = staff_member_required(login_url="panel_login")
 
 
 def _cities_to_text(cities) -> str:
@@ -109,11 +118,35 @@ def _preset_for(min_sec: float, max_sec: float) -> str:
     return "custom"
 
 
+def _nav_context(request, active: str) -> dict:
+    pending = PaymentClaim.objects.filter(status=PaymentClaim.STATUS_PENDING).count()
+    return {
+        "nav_active": active,
+        "operator": request.user.get_username(),
+        "pending_payments": pending,
+        "now": timezone.localtime(),
+    }
+
+
+def _extract_dates(days) -> list[str]:
+    out = []
+    if not isinstance(days, list):
+        return out
+    for d in days:
+        if isinstance(d, dict) and d.get("Date"):
+            out.append(str(d["Date"])[:10])
+        elif isinstance(d, str) and d.strip():
+            out.append(d.strip()[:10])
+    return out
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
 @ensure_csrf_cookie
 @require_http_methods(["GET", "HEAD", "POST"])
 def panel_login(request):
     if request.user.is_authenticated and request.user.is_staff:
-        return redirect("panel_home")
+        return redirect("panel_dashboard")
 
     error = ""
     username = ""
@@ -132,7 +165,7 @@ def panel_login(request):
             next_url = request.GET.get("next") or request.POST.get("next") or ""
             if next_url.startswith("/panel"):
                 return redirect(next_url)
-            return redirect("panel_home")
+            return redirect("panel_dashboard")
 
     return render(
         request,
@@ -151,8 +184,252 @@ def panel_logout(request):
     return redirect("panel_login")
 
 
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+
 @_staff
-def panel_home(request):
+def panel_dashboard(request):
+    since = timezone.now() - ACTIVE_WINDOW
+    total_applicants = Applicant.objects.count()
+    paid_count = Applicant.objects.exclude(payment_id="").count()
+    unpaid_count = total_applicants - paid_count
+    active_users = Applicant.objects.filter(updated_at__gte=since).count()
+    city_on = ApplicantCityPrefs.objects.filter(enabled=True).count()
+    pending_payments = PaymentClaim.objects.filter(status=PaymentClaim.STATUS_PENDING).count()
+    accepted_payments = PaymentClaim.objects.filter(status=PaymentClaim.STATUS_ACCEPTED).count()
+    customers = ExtensionLicense.objects.count()
+    slot_checks_24h = Contribution.objects.filter(created_at__gte=since).count()
+    slots_with_dates = (
+        Contribution.objects.filter(created_at__gte=since)
+        .exclude(days=[])
+        .count()
+    )
+
+    recent_applicants = Applicant.objects.order_by("-updated_at")[:8]
+    recent_slots = (
+        Contribution.objects.select_related("applicant")
+        .order_by("-created_at")[:10]
+    )
+    recent_payments = PaymentClaim.objects.select_related("applicant").order_by("-created_at")[:8]
+
+    slot_rows = []
+    for c in recent_slots:
+        dates = _extract_dates(c.days)
+        slot_rows.append(
+            {
+                "obj": c,
+                "dates": dates,
+                "date_preview": ", ".join(dates[:5]) + ("…" if len(dates) > 5 else ""),
+                "when": timezone.localtime(c.created_at),
+            }
+        )
+
+    ctx = _nav_context(request, "dashboard")
+    ctx.update(
+        {
+            "total_applicants": total_applicants,
+            "paid_count": paid_count,
+            "unpaid_count": unpaid_count,
+            "active_users": active_users,
+            "city_on": city_on,
+            "pending_payments": pending_payments,
+            "accepted_payments": accepted_payments,
+            "customers": customers,
+            "slot_checks_24h": slot_checks_24h,
+            "slots_with_dates": slots_with_dates,
+            "recent_applicants": recent_applicants,
+            "slot_rows": slot_rows,
+            "recent_payments": recent_payments,
+        }
+    )
+    return render(request, "panel/dashboard.html", ctx)
+
+
+# Keep old name as alias so bookmarks still work.
+panel_home = panel_dashboard
+
+
+# ── Customers ─────────────────────────────────────────────────────────────────
+
+@_staff
+def panel_customers(request):
+    q = (request.GET.get("q") or "").strip()
+    licenses = (
+        ExtensionLicense.objects.all()
+        .annotate(device_count=Count("devices"), last_seen=Max("devices__last_seen_at"))
+        .order_by("-updated_at")
+    )
+    if q:
+        licenses = licenses.filter(
+            Q(key__icontains=q) | Q(label__icontains=q)
+        )
+
+    # Soft customers from payment_user_id on applicants / claims
+    payer_qs = (
+        Applicant.objects.exclude(payment_user_id="")
+        .values("payment_user_id")
+        .annotate(
+            apps=Count("id"),
+            paid=Count("id", filter=~Q(payment_id="")),
+            last_update=Max("updated_at"),
+        )
+        .order_by("-last_update")
+    )
+    if q:
+        payer_qs = payer_qs.filter(payment_user_id__icontains=q)
+
+    ctx = _nav_context(request, "customers")
+    ctx.update(
+        {
+            "licenses": licenses[:200],
+            "payers": list(payer_qs[:200]),
+            "q": q,
+            "license_count": ExtensionLicense.objects.count(),
+            "payer_count": Applicant.objects.exclude(payment_user_id="").values("payment_user_id").distinct().count(),
+        }
+    )
+    return render(request, "panel/customers.html", ctx)
+
+
+@_staff
+@require_http_methods(["GET", "POST"])
+def panel_customer_detail(request, pk: int):
+    license_obj = get_object_or_404(ExtensionLicense, pk=pk)
+    if request.method == "POST":
+        license_obj.label = (request.POST.get("label") or "").strip()
+        license_obj.active = request.POST.get("active") == "on"
+        try:
+            license_obj.max_devices = max(1, int(request.POST.get("max_devices") or 1))
+        except ValueError:
+            pass
+        license_obj.save()
+        messages.success(request, f"Saved customer {license_obj.label or license_obj.key}.")
+        return redirect("panel_customer_detail", pk=license_obj.pk)
+
+    devices = license_obj.devices.order_by("-last_seen_at")
+    ctx = _nav_context(request, "customers")
+    ctx.update({"license": license_obj, "devices": devices})
+    return render(request, "panel/customer_detail.html", ctx)
+
+
+# ── Payments ──────────────────────────────────────────────────────────────────
+
+@_staff
+@require_http_methods(["GET", "POST"])
+def panel_payments(request):
+    if request.method == "POST" and request.POST.get("action") == "create":
+        target_id = (request.POST.get("target_applicant_id") or "").strip()
+        if not target_id:
+            messages.error(request, "Applicant ID is required.")
+            return redirect("panel_payments")
+
+        applicant = (
+            Applicant.objects.filter(applicant_id=target_id).order_by("-updated_at").first()
+        )
+        claim = PaymentClaim.objects.create(
+            applicant=applicant,
+            target_applicant_id=target_id,
+            payer_name=(request.POST.get("payer_name") or "").strip(),
+            payment_ref=(request.POST.get("payment_ref") or "").strip(),
+            amount=_parse_fee_amount(request.POST.get("amount")),
+            note=(request.POST.get("note") or "").strip(),
+            status=PaymentClaim.STATUS_PENDING,
+        )
+        messages.success(
+            request,
+            f"Payment claim #{claim.pk} created for applicant ID {target_id} — pending review.",
+        )
+        return redirect("panel_payments")
+
+    status = (request.GET.get("status") or "pending").strip().lower()
+    q = (request.GET.get("q") or "").strip()
+    claims = PaymentClaim.objects.select_related("applicant").order_by("-created_at")
+    if status in {"pending", "accepted", "rejected"}:
+        claims = claims.filter(status=status)
+    if q:
+        claims = claims.filter(
+            Q(target_applicant_id__icontains=q)
+            | Q(payer_name__icontains=q)
+            | Q(payment_ref__icontains=q)
+            | Q(note__icontains=q)
+        )
+
+    counts = {
+        "pending": PaymentClaim.objects.filter(status=PaymentClaim.STATUS_PENDING).count(),
+        "accepted": PaymentClaim.objects.filter(status=PaymentClaim.STATUS_ACCEPTED).count(),
+        "rejected": PaymentClaim.objects.filter(status=PaymentClaim.STATUS_REJECTED).count(),
+        "all": PaymentClaim.objects.count(),
+    }
+
+    ctx = _nav_context(request, "payments")
+    ctx.update(
+        {
+            "claims": claims[:300],
+            "status": status,
+            "q": q,
+            "counts": counts,
+        }
+    )
+    return render(request, "panel/payments.html", ctx)
+
+
+@_staff
+@require_POST
+def panel_payment_action(request, pk: int):
+    claim = get_object_or_404(PaymentClaim, pk=pk)
+    action = (request.POST.get("action") or "").strip().lower()
+    operator = request.user.get_username()
+
+    if action == "accept":
+        claim.status = PaymentClaim.STATUS_ACCEPTED
+        claim.reviewed_by = operator
+        claim.reviewed_at = timezone.now()
+        claim.save(update_fields=["status", "reviewed_by", "reviewed_at"])
+
+        applicant = claim.applicant
+        if applicant is None:
+            applicant = (
+                Applicant.objects.filter(applicant_id=claim.target_applicant_id)
+                .order_by("-updated_at")
+                .first()
+            )
+        if applicant is None:
+            applicant = Applicant.objects.create(
+                applicant_id=claim.target_applicant_id,
+                name=claim.payer_name or "",
+            )
+            claim.applicant = applicant
+            claim.save(update_fields=["applicant"])
+
+        if claim.amount and claim.amount > 0:
+            applicant.fee_amount = claim.amount
+        applicant.payment_id = claim.payment_ref or f"claim-{claim.pk}"
+        applicant.payment_user_id = claim.payer_name or applicant.payment_user_id
+        if claim.note:
+            applicant.payment_note = claim.note
+        applicant.payment_marked_at = timezone.now()
+        applicant.save()
+        messages.success(
+            request,
+            f"Accepted payment for ID {claim.target_applicant_id}"
+            f" (ref {applicant.payment_id}).",
+        )
+    elif action == "reject":
+        claim.status = PaymentClaim.STATUS_REJECTED
+        claim.reviewed_by = operator
+        claim.reviewed_at = timezone.now()
+        claim.note = (request.POST.get("note") or claim.note or "").strip()
+        claim.save(update_fields=["status", "reviewed_by", "reviewed_at", "note"])
+        messages.info(request, f"Rejected payment claim for ID {claim.target_applicant_id}.")
+    else:
+        messages.error(request, "Unknown payment action.")
+
+    return redirect("panel_payments")
+
+
+# ── Applicants ────────────────────────────────────────────────────────────────
+
+@_staff
+def panel_applicants(request):
     q = (request.GET.get("q") or "").strip()
     status = (request.GET.get("status") or "all").strip().lower()
     applicants = (
@@ -217,9 +494,8 @@ def panel_home(request):
         )
 
     total = Applicant.objects.count()
-    return render(
-        request,
-        "panel/home.html",
+    ctx = _nav_context(request, "applicants")
+    ctx.update(
         {
             "rows": rows,
             "q": q,
@@ -228,10 +504,9 @@ def panel_home(request):
             "on_count": on_count,
             "paid_count": paid_count,
             "shown": len(rows),
-            "now": timezone.localtime(),
-            "operator": request.user.get_username(),
-        },
+        }
     )
+    return render(request, "panel/applicants.html", ctx)
 
 
 @_staff
@@ -303,10 +578,12 @@ def panel_user(request, pk: int):
     cities = _normalize_cities(prefs.cities)
     min_sec = prefs.rotate_min_sec
     max_sec = prefs.rotate_max_sec
+    claims = PaymentClaim.objects.filter(
+        Q(applicant=applicant) | Q(target_applicant_id=applicant.applicant_id)
+    ).order_by("-created_at")[:20]
 
-    return render(
-        request,
-        "panel/user.html",
+    ctx = _nav_context(request, "applicants")
+    ctx.update(
         {
             "applicant": applicant,
             "prefs": prefs,
@@ -319,7 +596,60 @@ def panel_user(request, pk: int):
             "timer_preset": _preset_for(min_sec, max_sec),
             "timer_presets": TIMER_PRESETS,
             "recent": recent,
+            "claims": claims,
             "updated": timezone.localtime(applicant.updated_at),
-            "operator": request.user.get_username(),
-        },
+        }
     )
+    return render(request, "panel/user.html", ctx)
+
+
+# ── Slots ─────────────────────────────────────────────────────────────────────
+
+@_staff
+def panel_slots(request):
+    q = (request.GET.get("q") or "").strip()
+    only_dates = request.GET.get("dates") == "1"
+    contribs = (
+        Contribution.objects.select_related("applicant")
+        .order_by("-created_at")
+    )
+    if q:
+        contribs = contribs.filter(
+            Q(post_name__icontains=q)
+            | Q(post_id__icontains=q)
+            | Q(applicant__name__icontains=q)
+            | Q(applicant__applicant_id__icontains=q)
+            | Q(applicant__email__icontains=q)
+        )
+    if only_dates:
+        contribs = contribs.exclude(days=[])
+
+    rows = []
+    for c in contribs[:250]:
+        dates = _extract_dates(c.days)
+        rows.append(
+            {
+                "obj": c,
+                "dates": dates,
+                "date_count": len(dates),
+                "date_preview": ", ".join(dates[:8]) + ("…" if len(dates) > 8 else ""),
+                "when": timezone.localtime(c.created_at),
+                "has_error": c.has_error,
+            }
+        )
+
+    since = timezone.now() - ACTIVE_WINDOW
+    ctx = _nav_context(request, "slots")
+    ctx.update(
+        {
+            "rows": rows,
+            "q": q,
+            "only_dates": only_dates,
+            "total": Contribution.objects.count(),
+            "with_dates_24h": Contribution.objects.filter(created_at__gte=since)
+            .exclude(days=[])
+            .count(),
+            "checks_24h": Contribution.objects.filter(created_at__gte=since).count(),
+        }
+    )
+    return render(request, "panel/slots.html", ctx)

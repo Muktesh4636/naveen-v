@@ -82,17 +82,27 @@ CSRF_TRUSTED_ORIGINS = [
     o.strip()
     for o in os.environ.get(
         "CSRF_TRUSTED_ORIGINS",
-        "https://the.gopg.online,https://gopg.online,https://www.gopg.online",
+        "https://the.gopg.online,https://gopg.online,https://www.gopg.online,https://72.61.148.117",
     ).split(",")
     if o.strip()
 ]
 
+# Required when Django sits behind nginx TLS termination.
+USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# same-origin Referrer-Policy can make some browsers omit Referer on POST and
+# trigger CSRF 403. This policy still protects privacy but keeps Referer for CSRF.
+SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
+
 CSRF_COOKIE_SECURE = True
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_HTTPONLY = False
+# Ensure the CSRF cookie is readable by JS and sent on admin/panel forms.
+CSRF_COOKIE_NAME = "csrftoken"
+CSRF_HEADER_NAME = "HTTP_X_CSRFTOKEN"
 
 LOGIN_URL = "/panel/login/"
 LOGIN_REDIRECT_URL = "/panel/"

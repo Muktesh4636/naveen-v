@@ -203,3 +203,64 @@ class ApplicantCityPrefs(models.Model):
     @property
     def rotate_max_sec(self) -> float:
         return round((self.rotate_max_gap_ms or 0) / 1000, 1)
+
+
+class PaymentClaim(models.Model):
+    """
+    A payment reported for a visa applicant ID.
+    Admin can Accept (unlocks Tik Tik / marks applicant paid) or Reject.
+    """
+
+    STATUS_PENDING = "pending"
+    STATUS_ACCEPTED = "accepted"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_ACCEPTED, "Accepted"),
+        (STATUS_REJECTED, "Rejected"),
+    ]
+
+    applicant = models.ForeignKey(
+        Applicant,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="payment_claims",
+    )
+    # Visa portal applicant ID they paid for (kept even if Applicant row is missing).
+    target_applicant_id = models.CharField(max_length=64, db_index=True)
+    payer_name = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        help_text="Customer / payer name or ID",
+    )
+    payment_ref = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="UPI / bank / transaction reference",
+    )
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    status = models.CharField(
+        max_length=16,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+    )
+    note = models.CharField(max_length=255, blank=True, default="")
+    reviewed_by = models.CharField(max_length=128, blank=True, default="")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status", "created_at"]),
+            models.Index(fields=["target_applicant_id", "status"]),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.target_applicant_id} · {self.payment_ref or 'no-ref'} · {self.status}"
+

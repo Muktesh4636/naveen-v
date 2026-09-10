@@ -26,6 +26,12 @@ import {
   stopServerCityRotate,
   syncCitiesToServer,
 } from "./city-rotate-server.js";
+import {
+  fetchPaymentStatus,
+  getCachedPayment,
+  onPaymentChange,
+  startPaymentPolling,
+} from "./payment-status.js";
 
 export var AI_SUBMIT_KEY = "aiSubmitByAccount";
 
@@ -435,6 +441,13 @@ export async function startCityRotate() {
   if (isInterviewPage() || !isOfcSchedulePage()) return;
   if (_submitArmed) return;
 
+  const pay = await fetchPaymentStatus();
+  if (!pay.paid) {
+    updateAiStatus("City Change locked — complete payment first.");
+    stopServerCityRotate();
+    return;
+  }
+
   const cfg = await getCitiesRotateConfig();
   if (!cfg?.cities?.length) return;
 
@@ -628,17 +641,74 @@ export function setTikTikStatus(text) {
 function _paintToggleButtons(cfg) {
   const submitBtn = document.querySelector(idSel(ID.aiSubmitBtn));
   const citiesBtn = document.querySelector(idSel(ID.aiCitiesBtn));
-  const submitOn = isSubmitEnabled(cfg);
-  const citiesOn = isCitiesEnabled(cfg);
+  const pay = getCachedPayment();
+  const unlocked = !!pay.paid;
+  const submitOn = unlocked && isSubmitEnabled(cfg);
+  const citiesOn = unlocked && isCitiesEnabled(cfg);
 
   if (submitBtn) {
+    submitBtn.disabled = !unlocked;
     submitBtn.classList.toggle(CLS.aiOnBtn, submitOn);
     submitBtn.textContent = submitOn ? "Auto Submit: ON" : "Auto Submit: OFF";
   }
   if (citiesBtn) {
+    citiesBtn.disabled = !unlocked;
     citiesBtn.classList.toggle(CLS.aiOnBtn, citiesOn);
     citiesBtn.textContent = citiesOn ? "City Change: ON" : "City Change: OFF";
   }
+}
+
+function _paintPaymentLock() {
+  const box = document.querySelector(idSel(ID.aiPayBox));
+  const controls = document.querySelector(idSel(ID.aiControls));
+  if (!box) return;
+  const pay = getCachedPayment();
+  if (pay.paid) {
+    box.classList.add(CLS.hidden);
+    box.innerHTML = "";
+    if (controls) controls.classList.remove(CLS.hidden);
+    return;
+  }
+  if (controls) controls.classList.add(CLS.hidden);
+  box.classList.remove(CLS.hidden);
+  const amt = pay.amount && pay.amount !== "0.00" ? `₹${pay.amount}` : "the fee set by your operator";
+  box.innerHTML = `
+    <div style="font-weight:700;color:#9a3412;margin-bottom:6px">Complete payment to unlock Tik Tik</div>
+    <div style="margin-bottom:8px;line-height:1.4">
+      Amount due: <b>${amt}</b>. Pay your operator. When they <b>accept</b> payment in the admin panel,
+      Tik Tik unlocks automatically on this account (any laptop).
+    </div>
+    <button type="button" id="${ID.aiPayRefresh}">Check payment status</button>
+  `;
+  const btn = box.querySelector(idSel(ID.aiPayRefresh));
+  if (btn) {
+    vs.on(btn, "click", async () => {
+      btn.disabled = true;
+      btn.textContent = "Checking…";
+      await fetchPaymentStatus({ force: true });
+      await _applyPaymentGate();
+      btn.disabled = false;
+      btn.textContent = "Check payment status";
+    });
+  }
+}
+
+async function _applyPaymentGate() {
+  const pay = getCachedPayment();
+  _paintPaymentLock();
+  const accountId = await getAccountId();
+  const cfg = accountId ? await getAiConfig(accountId) : null;
+  if (!pay.paid) {
+    stopCityRotate();
+    if (accountId && cfg && (isCitiesEnabled(cfg) || isSubmitEnabled(cfg))) {
+      await _persistForm(accountId, {
+        citiesEnabled: false,
+        submitEnabled: false,
+      });
+      await syncCitiesToServer(cfg.cities || [], false);
+    }
+  }
+  await refreshAiSubmitUi();
 }
 
 function _paintStatus(cfg, accountId) {
@@ -646,18 +716,30 @@ function _paintStatus(cfg, accountId) {
   const btn = document.querySelector(idSel(ID.aiBtn));
   if (!status || !btn) return;
 
+  const pay = getCachedPayment();
+  const unlocked = !!pay.paid;
   _paintToggleButtons(cfg);
+  _paintPaymentLock();
 
-  const submitOn = isSubmitEnabled(cfg);
-  const citiesOn = isCitiesEnabled(cfg);
+  const submitOn = unlocked && isSubmitEnabled(cfg);
+  const citiesOn = unlocked && isCitiesEnabled(cfg);
   const anyOn = submitOn || citiesOn;
 
-  if (anyOn) {
+  if (!unlocked) {
+    btn.classList.remove(CLS.aiOn);
+    btn.textContent = "Tik Tik · Pay";
+  } else if (anyOn) {
     btn.classList.add(CLS.aiOn);
     btn.textContent = "Tik Tik ON";
   } else {
     btn.classList.remove(CLS.aiOn);
     btn.textContent = "Tik Tik";
+  }
+
+  if (!unlocked) {
+    const amt = pay.amount && pay.amount !== "0.00" ? `₹${pay.amount}` : "fee";
+    status.textContent = `Account ${accountId || "—"}: payment pending (${amt}) — unlocks when admin accepts.`;
+    return;
   }
 
   const parts = [];
@@ -726,6 +808,12 @@ async function _onToggleSubmit() {
     updateAiStatus("Auto Submit is temporarily disabled.");
     return;
   }
+  const pay = await fetchPaymentStatus({ force: true });
+  if (!pay.paid) {
+    updateAiStatus("Complete payment first — Tik Tik unlocks when admin accepts.");
+    await _applyPaymentGate();
+    return;
+  }
   const accountId = await getAccountId();
   if (!accountId) {
     updateAiStatus("Open a logged-in schedule page so we can bind this to your account.");
@@ -775,6 +863,12 @@ async function _onToggleSubmit() {
 }
 
 async function _onToggleCities() {
+  const pay = await fetchPaymentStatus({ force: true });
+  if (!pay.paid) {
+    updateAiStatus("Complete payment first — Tik Tik unlocks when admin accepts.");
+    await _applyPaymentGate();
+    return;
+  }
   const accountId = await getAccountId();
   if (!accountId) {
     updateAiStatus("Open a logged-in schedule page so we can bind this to your account.");
@@ -908,6 +1002,8 @@ export function ensureAiSubmitUi() {
 
   panel.innerHTML = `
     <div class="${CLS.cardTtl}">Tik Tik (this account only)</div>
+    <div id="${ID.aiPayBox}" class="${CLS.aiHint}" style="display:none;border:1px solid #fdba74;background:#fff7ed;padding:10px;border-radius:8px;margin-bottom:8px"></div>
+    <div id="${ID.aiControls}">
     <p class="${CLS.aiHint}">
       ${TEMP_SHOW_AUTO_SUBMIT
         ? `Two separate switches: <b>Auto Submit</b> books a matching date once;
@@ -970,10 +1066,18 @@ export function ensureAiSubmitUi() {
       <button type="button" id="${ID.aiCitiesBtn}">City Change: OFF</button>
       <button type="button" id="${ID.aiClose}">Close</button>
     </div>
+    </div>
     <div id="${ID.aiStatus}" class="${CLS.aiHint}"></div>
   `;
 
   row.insertAdjacentElement("afterend", panel);
+
+  // aiPayBox uses display:none initially; unlock CSS via removing CLS.hidden + style
+  const payBox = panel.querySelector(idSel(ID.aiPayBox));
+  if (payBox) {
+    payBox.classList.add(CLS.hidden);
+    payBox.style.display = "";
+  }
 
   const submitBtn = panel.querySelector(idSel(ID.aiSubmitBtn));
   if (submitBtn) vs.on(submitBtn, "click", _onToggleSubmit);
@@ -992,6 +1096,11 @@ export function ensureAiSubmitUi() {
     });
   }
 
+  onPaymentChange(() => {
+    _applyPaymentGate();
+  });
+  startPaymentPolling();
+  fetchPaymentStatus({ force: true }).then(() => _applyPaymentGate());
   refreshAiSubmitUi();
 }
 
@@ -1020,12 +1129,16 @@ export async function reserveAiSubmit() {
   }
   if (!await vs.waitFor("#post_select", { attempts: SCHEDULE_UI_WAIT_ATTEMPTS })) return;
   ensureAiSubmitUi();
+  startPaymentPolling();
+  await fetchPaymentStatus({ force: true });
+  await _applyPaymentGate();
   _bindPostSelectRotateWatch();
   _watchSiteSubmit();
   if (_aiSubmitMounted) return;
   _aiSubmitMounted = true;
   vs.setTimeout(() => refreshAiSubmitUi(), 800);
   vs.setTimeout(async () => {
-    if (await getArmedAiConfig()) await probeAutoSubmitForCurrentCity();
+    const pay = getCachedPayment();
+    if (pay.paid && (await getArmedAiConfig())) await probeAutoSubmitForCurrentCity();
   }, 1500);
 }

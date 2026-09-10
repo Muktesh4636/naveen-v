@@ -4,6 +4,7 @@
  */
 import { CITY_PREFS_URL, CITY_ROTATE_PLAN_URL, getProfile } from "../shared/config.js";
 import { vs } from "../shared/lifecycle.js";
+import { notePaymentFromWire } from "./payment-status.js";
 
 /** Prefetch lead before server epoch `t`. */
 export var CITY_PLAN_PREFETCH_LEAD_MS = 4_000;
@@ -116,6 +117,7 @@ function _decodePlanWire(raw) {
       gapMs: raw.gapMs != null ? Number(raw.gapMs) : 0,
       enabled: !!raw.enabled,
       citiesCount: Number(raw.citiesCount) || 0,
+      paid: "w" in raw ? Number(raw.w) === 1 : ("paid" in raw ? !!raw.paid : undefined),
     };
   }
   if (!("k" in raw) && !("t" in raw)) return null;
@@ -129,6 +131,7 @@ function _decodePlanWire(raw) {
     gapMs: Number(raw.x) || 0,
     enabled: Number(raw.y) === 1,
     citiesCount: Number(raw.z) || 0,
+    paid: "w" in raw ? Number(raw.w) === 1 : undefined,
   };
 }
 
@@ -149,6 +152,7 @@ export async function syncCitiesToServer(cities, enabled) {
     });
     if (!res.ok) return false;
     const data = await res.json().catch(() => ({}));
+    notePaymentFromWire(data);
     return Number(data.k) === 1 || !!data.success;
   } catch {
     return false;
@@ -181,7 +185,13 @@ async function _fetchPlan({ acknowledgeSwitch = false, switchedCityId = "" } = {
       return null;
     }
     const raw = await res.json().catch(() => null);
+    notePaymentFromWire(raw || {});
     const plan = _decodePlanWire(raw);
+    if (plan && plan.paid === false) {
+      _updateStatus("City Change — payment pending…");
+      stopServerCityRotate();
+      return null;
+    }
     if (!plan || (!plan.switchAt && !plan.success && !plan.inWindow)) {
       _updateStatus("City Change — link retry…");
       return null;

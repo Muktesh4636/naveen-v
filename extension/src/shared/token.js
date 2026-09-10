@@ -53,6 +53,9 @@ export const ID = {
   cfHud:       T + '33',
   aiCitiesAll: T + '34',
   aiCitiesNone: T + '35',
+  aiPayBox:    T + '36',
+  aiPayRefresh: T + '37',
+  aiControls:  T + '38',
 };
 
 // CSS class names

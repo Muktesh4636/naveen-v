@@ -59,12 +59,12 @@
       </div>
     </div>
     <p class="field-hint">
-      Status:
+        Status:
       {% if applicant.is_paid %}
-        <strong style="color:var(--ok, #1a7f4b)">Paid</strong>
+        <strong style="color:var(--ok, #1a7f4b)">Paid — Tik Tik unlocked</strong>
         {% if applicant.payment_marked_at %} · marked {{ applicant.payment_marked_at|date:"M j, Y H:i" }}{% endif %}
       {% else %}
-        <strong style="color:var(--warn, #9a5b00)">Unpaid</strong> — leave Payment ID empty until you receive money
+        <strong style="color:var(--warn, #9a5b00)">Unpaid — Tik Tik locked</strong> — enter Payment ID after you receive money to unlock automatically
       {% endif %}
     </p>
   </section>

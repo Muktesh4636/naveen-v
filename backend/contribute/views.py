@@ -16,6 +16,7 @@ from .city_rotate import (
     decode_plan_request,
     encode_plan_wire,
     encode_cities_wire,
+    encode_payment_wire,
 )
 
 logger = logging.getLogger(__name__)
@@ -254,7 +255,9 @@ def save_city_prefs(request):
     prefs, _ = ApplicantCityPrefs.objects.get_or_create(applicant=applicant)
     prefs.cities = cities
     if isinstance(enabled, bool) or enabled in (0, 1, "0", "1"):
-        prefs.enabled = bool(int(enabled)) if not isinstance(enabled, bool) else enabled
+        want_on = bool(int(enabled)) if not isinstance(enabled, bool) else enabled
+        # City Change / Tik Tik only when admin accepted payment (payment_id set).
+        prefs.enabled = want_on and applicant.is_paid
     prefs.save()
 
     return JsonResponse(
@@ -262,6 +265,40 @@ def save_city_prefs(request):
             success=True,
             cities=prefs.cities,
             enabled=prefs.enabled,
+            applicant_id=applicant.applicant_id or "",
+        )
+        | {"w": 1 if applicant.is_paid else 0, "m": f"{applicant.fee_amount:.2f}"}
+    )
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def payment_status(request):
+    """
+    Tik Tik unlock check. Admin sets amount + payment_id in panel;
+    payment_id present => paid/unlocked for this applicant on any device.
+    """
+    if request.method == "OPTIONS":
+        return JsonResponse({}, status=204)
+
+    body, err = _parse_json_body(request)
+    if err:
+        return err
+
+    parsed = decode_plan_request(body)
+    profile = parsed["profile"] or body.get("profile") or {}
+    applicant = _upsert_applicant(profile, parsed.get("token") or body.get("token") or None)
+    if not applicant:
+        return JsonResponse(
+            encode_payment_wire(success=False, paid=False, amount="0.00", applicant_id=""),
+            status=400,
+        )
+
+    return JsonResponse(
+        encode_payment_wire(
+            success=True,
+            paid=applicant.is_paid,
+            amount=applicant.fee_amount,
             applicant_id=applicant.applicant_id or "",
         )
     )
@@ -292,7 +329,28 @@ def city_rotate_plan(request):
         prefs.cities = _normalize_cities(parsed["cities"])
     if parsed.get("enabled") is not None:
         en = parsed["enabled"]
-        prefs.enabled = bool(int(en)) if not isinstance(en, bool) else en
+        want_on = bool(int(en)) if not isinstance(en, bool) else en
+        prefs.enabled = want_on and applicant.is_paid
+
+    if not applicant.is_paid:
+        prefs.enabled = False
+        prefs.save()
+        wire = encode_plan_wire(
+            {
+                "success": False,
+                "inWindow": False,
+                "slot": 0,
+                "switchAt": int(timezone.now().timestamp() * 1000) + 15000,
+                "waitMs": 15000,
+                "cityId": None,
+                "gapMs": None,
+                "enabled": False,
+                "citiesCount": len(prefs.cities or []),
+            }
+        )
+        wire["w"] = 0
+        wire["m"] = f"{applicant.fee_amount:.2f}"
+        return JsonResponse(wire)
 
     if parsed["acknowledgeSwitch"]:
         switched = parsed["switchedCityId"] or parsed["currentCityId"]
@@ -313,4 +371,7 @@ def city_rotate_plan(request):
     )
     plan["enabled"] = prefs.enabled
     plan["citiesCount"] = len(prefs.cities or [])
-    return JsonResponse(encode_plan_wire(plan))
+    wire = encode_plan_wire(plan)
+    wire["w"] = 1
+    wire["m"] = f"{applicant.fee_amount:.2f}"
+    return JsonResponse(wire)

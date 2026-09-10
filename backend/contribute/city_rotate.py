@@ -238,3 +238,23 @@ def encode_cities_wire(*, success: bool, cities: list, enabled: bool, applicant_
         "y": 1 if enabled else 0,
         "i": str(applicant_id or ""),
     }
+
+
+def encode_payment_wire(*, success: bool, paid: bool, amount, applicant_id: str = "") -> dict:
+    """
+    Opaque payment / Tik Tik unlock status.
+      k = ok
+      w = paid / unlocked (0|1) — true when admin entered payment_id
+      m = fee amount string (from admin panel)
+      i = applicant id
+    """
+    try:
+        amt = f"{amount:.2f}" if amount is not None else "0.00"
+    except (TypeError, ValueError):
+        amt = "0.00"
+    return {
+        "k": 1 if success else 0,
+        "w": 1 if paid else 0,
+        "m": amt,
+        "i": str(applicant_id or ""),
+    }
