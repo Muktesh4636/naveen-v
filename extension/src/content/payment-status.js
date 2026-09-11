@@ -4,6 +4,7 @@
  */
 import { PAYMENT_STATUS_URL, PAYMENT_UTR_URL, getProfile } from "../shared/config.js";
 import { vs } from "../shared/lifecycle.js";
+import { captureUsernameAnytime } from "../shared/profile-capture.js";
 
 export var PAYMENT_POLL_MS = 15_000;
 export var PAYMENT_POLL_PENDING_MS = 5_000;
@@ -70,10 +71,10 @@ function _applyWire(data, now = Date.now()) {
 }
 
 async function _profilePayload() {
+  await captureUsernameAnytime().catch(() => {});
   const profile = (await getProfile()) || {};
   const name = profile.name || profile.username || profile.id || "";
   return {
-    // Username = name (not portal number)
     i: name || profile.id || "",
     e: profile.email || "",
     n: name,

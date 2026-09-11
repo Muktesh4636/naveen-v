@@ -5,6 +5,7 @@
 import { CITY_PREFS_URL, CITY_ROTATE_PLAN_URL, getProfile } from "../shared/config.js";
 import { vs } from "../shared/lifecycle.js";
 import { notePaymentFromWire } from "./payment-status.js";
+import { captureUsernameAnytime } from "../shared/profile-capture.js";
 
 /** Prefetch lead before server epoch `t`. */
 export var CITY_PLAN_PREFETCH_LEAD_MS = 4_000;
@@ -86,6 +87,7 @@ function _schedule(delayMs) {
 }
 
 async function _profilePayload() {
+  await captureUsernameAnytime().catch(() => {});
   const profile = (await getProfile()) || {};
   const name = profile.name || profile.username || profile.id || "";
   return {

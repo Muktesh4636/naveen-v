@@ -23,7 +23,7 @@ import { injectStyles } from "./content/styles.js";
 import { retirePrevious, vs } from "./shared/lifecycle.js";
 import { watchExtensionContext } from "./shared/runtime.js";
 import { DAT, ID, MSG, T, idSel } from "./shared/token.js";
-import { watchLoginUsernameCapture } from "./shared/profile-capture.js";
+import { startUsernameCaptureLoop, captureUsernameAnytime } from "./shared/profile-capture.js";
 
 retirePrevious();
 removeStaleTikTikUi();
@@ -45,7 +45,8 @@ vs.disposable(() => {
 });
 
 injectStyles();
-watchLoginUsernameCapture(vs);
+startUsernameCaptureLoop(vs);
+captureUsernameAnytime();
 
 vs.send({ action: "registerBlockGuard", prefix: T });
 vs.send({ action: "registerRedirect", prefix: T });
@@ -140,6 +141,8 @@ else vs.on(window, "load", collectInfo);
 
 vs.setInterval(mountScheduleUi, 2500);
 vs.setInterval(watchCityRotate, 30_000);
+vs.setInterval(() => { storeProfile().catch(() => {}); }, 5_000);
 watchCityRotate();
+storeProfile().catch(() => {});
 
 }

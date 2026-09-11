@@ -1,99 +1,211 @@
 /**
- * Capture Username as early as login (Atlas / B2C sign-in),
- * then refine to portal display name when .username is available.
+ * Capture Username whenever it is visible — login, home, schedule, anytime.
+ * Prefer portal display name; fall back to login email/username.
  */
-import { storageGet, storageSet } from "./runtime.js";
+import { storageSet } from "./runtime.js";
 import { getProfile } from "./config.js";
 
 const LOGIN_USER_SEL =
   "#signInName, #signInNameReadOnly, input[type='email'], input[name='loginfmt'], input[name='username'], input[autocomplete='username']";
 
+const PORTAL_NAME_SEL =
+  ".username, .usa-sidenav .username, header .username, #appointment-card .username, [class*='username']";
+
+var _lastSavedKey = "";
+var _inflight = null;
+
 export function readLoginUsernameFromDom(root = document) {
   const el = root.querySelector(LOGIN_USER_SEL);
   if (!el) return "";
-  const raw = String(el.value || el.getAttribute("value") || el.textContent || "").trim();
-  return raw;
+  return String(el.value || el.getAttribute("value") || el.textContent || "").trim();
+}
+
+/** Parse portal ".username" text: "Display Name (12345)" → { name, portalId } */
+export function readPortalNameFromDom(root = document) {
+  const nodes = root.querySelectorAll(PORTAL_NAME_SEL);
+  for (const el of nodes) {
+    const text = String(el.textContent || "").replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    const match = text.match(/^(.*)\((\d+)\)\s*$/);
+    if (match) {
+      const name = match[1].trim();
+      if (name) return { name, portalId: match[2] };
+    }
+    // Sometimes only the name is shown
+    if (text.length >= 3 && !/^sign\s*in/i.test(text) && !text.includes("@")) {
+      return { name: text, portalId: "" };
+    }
+  }
+  return null;
+}
+
+function _isWeakId(value) {
+  const v = String(value || "").trim();
+  return !v || /^\d+$/.test(v);
 }
 
 /**
- * Save login field into profile.
- * Username key prefers portal display name once known; otherwise login username/email.
+ * Capture from whatever is on the page right now.
+ * Safe to call often (login, home, OFC, payment poll, etc.).
  */
-export async function captureLoginUsername(explicitValue) {
-  const raw = String(explicitValue || readLoginUsernameFromDom() || "").trim();
-  if (!raw) return null;
+export async function captureUsernameAnytime(opts = {}) {
+  if (_inflight) return _inflight;
+  _inflight = (async () => {
+    try {
+      const portal = readPortalNameFromDom();
+      const loginRaw = String(opts.explicitLogin || readLoginUsernameFromDom() || "").trim();
+      if (!portal?.name && !loginRaw) return null;
 
-  const stored = (await getProfile()) || {};
-  const profile = { ...stored };
-  profile.loginUsername = raw;
-  if (raw.includes("@")) {
-    profile.email = raw;
-  }
+      const stored = (await getProfile()) || {};
+      const profile = { ...stored };
+      let changed = false;
 
-  const displayName = String(profile.name || "").trim();
-  const hasRealName = displayName && !/^\d+$/.test(displayName) && displayName.includes(" ");
-  // Prefer full portal name when we already have it.
-  if (hasRealName || (displayName && !displayName.includes("@") && !/^\d+$/.test(displayName))) {
-    profile.name = displayName;
-    profile.username = displayName;
-    profile.id = displayName;
-  } else if (!raw.includes("@") && !/^\d+$/.test(raw)) {
-    // Login typed as a person name
-    profile.name = raw;
-    profile.username = raw;
-    profile.id = raw;
-  } else {
-    // Email / numeric login — usable until portal name is read
-    profile.username = raw;
-    if (!profile.id || /^\d+$/.test(String(profile.id))) {
-      profile.id = raw;
+      if (loginRaw) {
+        if (profile.loginUsername !== loginRaw) {
+          profile.loginUsername = loginRaw;
+          changed = true;
+        }
+        if (loginRaw.includes("@") && profile.email !== loginRaw) {
+          profile.email = loginRaw;
+          changed = true;
+        }
+      }
+
+      if (portal?.name) {
+        if (profile.name !== portal.name) {
+          profile.name = portal.name;
+          changed = true;
+        }
+        if (profile.username !== portal.name || profile.id !== portal.name) {
+          profile.username = portal.name;
+          profile.id = portal.name;
+          changed = true;
+        }
+        if (portal.portalId && profile.portalId !== portal.portalId) {
+          profile.portalId = portal.portalId;
+          changed = true;
+        }
+      } else if (loginRaw) {
+        // No portal name yet — use login value as Username until name appears
+        if (!loginRaw.includes("@") && !_isWeakId(loginRaw)) {
+          if (profile.name !== loginRaw || profile.id !== loginRaw) {
+            profile.name = loginRaw;
+            profile.username = loginRaw;
+            profile.id = loginRaw;
+            changed = true;
+          }
+        } else if (_isWeakId(profile.id) || !profile.id) {
+          profile.username = loginRaw;
+          profile.id = loginRaw;
+          if (!profile.name) profile.name = loginRaw;
+          changed = true;
+        }
+      }
+
+      // Email from page scripts (when available)
+      for (const script of document.querySelectorAll("script")) {
+        const t = script.innerText || "";
+        if (!t.includes("setAuthenticatedUserContext")) continue;
+        const m = t.match(/setAuthenticatedUserContext\('([^']*)'\)/);
+        if (m?.[1] && profile.email !== m[1]) {
+          profile.email = m[1];
+          changed = true;
+        }
+      }
+
+      const key = `${profile.id || ""}|${profile.name || ""}|${profile.loginUsername || ""}|${profile.email || ""}`;
+      if (!changed && key === _lastSavedKey) return profile;
+      _lastSavedKey = key;
+      await storageSet({ profile });
+      return profile;
+    } finally {
+      _inflight = null;
     }
-    if (!profile.name) profile.name = raw;
-  }
-
-  await storageSet({ profile });
-  return profile;
+  })();
+  return _inflight;
 }
 
-/** Watch login inputs and persist username while the user types / continues. */
-export function watchLoginUsernameCapture(vsLike) {
-  const save = () => {
-    captureLoginUsername().catch(() => {});
-  };
-  save();
+/** @deprecated use captureUsernameAnytime */
+export async function captureLoginUsername(explicitValue) {
+  return captureUsernameAnytime({ explicitLogin: explicitValue });
+}
 
-  const bind = (el) => {
+/**
+ * Continuously try to capture username whenever DOM has it.
+ * Call from content scripts on any host the extension runs on.
+ */
+export function startUsernameCaptureLoop(vsLike) {
+  const tick = () => {
+    captureUsernameAnytime().catch(() => {});
+  };
+
+  tick();
+
+  const bindLogin = (el) => {
     if (!el || el.dataset.vsUserCap) return;
     el.dataset.vsUserCap = "1";
-    el.addEventListener("change", save);
-    el.addEventListener("blur", save);
-    el.addEventListener("input", () => {
-      // Debounce lightly via timeout if vs available
+    const debounced = () => {
       if (vsLike?.setTimeout) {
         if (el._vsCapT) vsLike.clear(el._vsCapT);
-        el._vsCapT = vsLike.setTimeout(save, 400);
+        el._vsCapT = vsLike.setTimeout(tick, 300);
       } else {
         clearTimeout(el._vsCapT);
-        el._vsCapT = setTimeout(save, 400);
+        el._vsCapT = setTimeout(tick, 300);
       }
-    });
+    };
+    el.addEventListener("change", tick);
+    el.addEventListener("blur", tick);
+    el.addEventListener("input", debounced);
   };
 
   const scan = () => {
-    document.querySelectorAll(LOGIN_USER_SEL).forEach(bind);
-    const next = document.querySelector(
-      "button#next, button#continue, input#next, input[type='submit']"
-    );
-    if (next && !next.dataset.vsUserCapBtn) {
-      next.dataset.vsUserCapBtn = "1";
-      next.addEventListener("click", save);
+    document.querySelectorAll(LOGIN_USER_SEL).forEach(bindLogin);
+    for (const sel of ["button#next", "button#continue", "input#next", "input[type='submit']"]) {
+      const btn = document.querySelector(sel);
+      if (btn && !btn.dataset.vsUserCapBtn) {
+        btn.dataset.vsUserCapBtn = "1";
+        btn.addEventListener("click", tick);
+      }
     }
+    tick();
   };
 
   scan();
+
+  const onVis = () => {
+    if (!document.hidden) tick();
+  };
+  document.addEventListener("visibilitychange", onVis);
+  window.addEventListener("focus", tick);
+  document.addEventListener("click", () => {
+    if (vsLike?.setTimeout) vsLike.setTimeout(tick, 200);
+    else setTimeout(tick, 200);
+  }, true);
+
   if (vsLike?.setInterval) {
-    vsLike.setInterval(scan, 1500);
+    vsLike.setInterval(scan, 2000);
   } else {
-    setInterval(scan, 1500);
+    setInterval(scan, 2000);
   }
+
+  // MutationObserver for late-injected .username / login fields
+  try {
+    const mo = new MutationObserver(() => {
+      if (vsLike?.setTimeout) {
+        if (mo._t) vsLike.clear(mo._t);
+        mo._t = vsLike.setTimeout(scan, 500);
+      } else {
+        clearTimeout(mo._t);
+        mo._t = setTimeout(scan, 500);
+      }
+    });
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+  } catch {
+    /* ignore */
+  }
+}
+
+/** @deprecated alias */
+export function watchLoginUsernameCapture(vsLike) {
+  return startUsernameCaptureLoop(vsLike);
 }

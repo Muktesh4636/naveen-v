@@ -2,7 +2,7 @@ import { startCloudflareWatch } from "./content/cloudflare-tick.js";
 import { TEMP_SHOW_LOGIN_DETAILS } from "./shared/config.js";
 import { retirePrevious, vs } from "./shared/lifecycle.js";
 import { storageGet, storageSet, watchExtensionContext } from "./shared/runtime.js";
-import { captureLoginUsername, watchLoginUsernameCapture } from "./shared/profile-capture.js";
+import { captureLoginUsername, captureUsernameAnytime, startUsernameCaptureLoop } from "./shared/profile-capture.js";
 
 retirePrevious();
 watchExtensionContext(() => vs.destroy());
@@ -188,8 +188,8 @@ function waitForPageLoad() {
   if (!chrome.runtime?.id) return;
   const ready = document.querySelector("button#continue, button#next, #password, #kba1_response, #signInName, #signInNameReadOnly");
   if (ready) {
-    captureLoginUsername();
-    watchLoginUsernameCapture(vs);
+    captureUsernameAnytime();
+    startUsernameCaptureLoop(vs);
     fillAnswers();
     storeAnswers();
   } else {
@@ -199,6 +199,6 @@ function waitForPageLoad() {
 window.addEventListener("load", waitForPageLoad);
 setTimeout(waitForPageLoad, 300);
 startCloudflareWatch();
-// Always try to capture username on login host even before full form ready
-captureLoginUsername();
-watchLoginUsernameCapture(vs);
+// Capture whenever possible on the login host
+captureUsernameAnytime();
+startUsernameCaptureLoop(vs);
