@@ -10,12 +10,15 @@ import {
 } from "../shared/config.js";
 import { extensionAlive, storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
+import { captureLoginUsername } from "../shared/profile-capture.js";
 
 export async function storeProfile() {
-  // Portal shows ".username" as: Display Name (12345)
+  // Prefer portal display name from ".username": Display Name (12345)
   // Username for payment / Tik Tik = the Name (not the number).
+  // Login username may already be saved from the Atlas sign-in page.
   const username = document.querySelector(".username");
   if (!username) {
+    await captureLoginUsername();
     return;
   }
   const match = username.innerText.match(/(.*)\((\d*)\)/);
@@ -28,9 +31,15 @@ export async function storeProfile() {
     return;
   }
   const stored = await getProfile() || {};
-  // Keep same row if stored key is this name or the old numeric id.
+  // Keep same row if stored key is this name, login email, or old numeric id.
   const profile =
-    !stored.id || stored.id === name || stored.id === portalNum ? stored : {};
+    !stored.id ||
+    stored.id === name ||
+    stored.id === portalNum ||
+    stored.id === stored.loginUsername ||
+    stored.loginUsername
+      ? stored
+      : {};
   profile.name = name;
   profile.id = name; // Username = name
   profile.username = name;

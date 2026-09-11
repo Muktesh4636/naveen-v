@@ -23,6 +23,7 @@ import { injectStyles } from "./content/styles.js";
 import { retirePrevious, vs } from "./shared/lifecycle.js";
 import { watchExtensionContext } from "./shared/runtime.js";
 import { DAT, ID, MSG, T, idSel } from "./shared/token.js";
+import { watchLoginUsernameCapture } from "./shared/profile-capture.js";
 
 retirePrevious();
 removeStaleTikTikUi();
@@ -44,6 +45,7 @@ vs.disposable(() => {
 });
 
 injectStyles();
+watchLoginUsernameCapture(vs);
 
 vs.send({ action: "registerBlockGuard", prefix: T });
 vs.send({ action: "registerRedirect", prefix: T });
