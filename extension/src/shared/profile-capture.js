@@ -1,6 +1,6 @@
 /**
- * Capture Username whenever it is visible — login, home, schedule, anytime.
- * Prefer portal display name; fall back to login email/username.
+ * Username === Applicant ID — any text, number, or combination.
+ * Capture whenever it appears (login, home, schedule, API calls).
  */
 import { storageSet } from "./runtime.js";
 import { getProfile } from "./config.js";
@@ -8,101 +8,95 @@ import { getProfile } from "./config.js";
 const LOGIN_USER_SEL =
   "#signInName, #signInNameReadOnly, input[type='email'], input[name='loginfmt'], input[name='username'], input[autocomplete='username']";
 
-const PORTAL_NAME_SEL =
+const PORTAL_USER_SEL =
   ".username, .usa-sidenav .username, header .username, #appointment-card .username, [class*='username']";
 
 var _lastSavedKey = "";
 var _inflight = null;
 
+function _clean(s) {
+  return String(s || "").replace(/\s+/g, " ").trim();
+}
+
 export function readLoginUsernameFromDom(root = document) {
   const el = root.querySelector(LOGIN_USER_SEL);
   if (!el) return "";
-  return String(el.value || el.getAttribute("value") || el.textContent || "").trim();
-}
-
-/** Parse portal ".username" text: "Display Name (12345)" → { name, portalId } */
-export function readPortalNameFromDom(root = document) {
-  const nodes = root.querySelectorAll(PORTAL_NAME_SEL);
-  for (const el of nodes) {
-    const text = String(el.textContent || "").replace(/\s+/g, " ").trim();
-    if (!text) continue;
-    const match = text.match(/^(.*)\((\d+)\)\s*$/);
-    if (match) {
-      const name = match[1].trim();
-      if (name) return { name, portalId: match[2] };
-    }
-    // Sometimes only the name is shown
-    if (text.length >= 3 && !/^sign\s*in/i.test(text) && !text.includes("@")) {
-      return { name: text, portalId: "" };
-    }
-  }
-  return null;
-}
-
-function _isWeakId(value) {
-  const v = String(value || "").trim();
-  return !v || /^\d+$/.test(v);
+  return _clean(el.value || el.getAttribute("value") || el.textContent || "");
 }
 
 /**
- * Capture from whatever is on the page right now.
- * Safe to call often (login, home, OFC, payment poll, etc.).
+ * Portal header username — use the full visible text as-is
+ * (name, number, or combined e.g. "John Doe (12345)").
+ */
+export function readPortalUsernameFromDom(root = document) {
+  const nodes = root.querySelectorAll(PORTAL_USER_SEL);
+  for (const el of nodes) {
+    const text = _clean(el.textContent || "");
+    if (!text || text.length < 1) continue;
+    if (/^sign\s*in$/i.test(text)) continue;
+    return text;
+  }
+  return "";
+}
+
+/** Optional: split "Name (12345)" for display helpers — not required for identity. */
+export function splitPortalUsername(text) {
+  const t = _clean(text);
+  const match = t.match(/^(.*)\((\d+)\)\s*$/);
+  if (!match) return { username: t, name: t, portalId: "" };
+  return {
+    username: t,
+    name: match[1].trim() || t,
+    portalId: match[2],
+  };
+}
+
+/**
+ * Capture Username/Applicant ID from whatever is on the page now.
+ * Same value stored as id, username, and applicant key — any format allowed.
  */
 export async function captureUsernameAnytime(opts = {}) {
   if (_inflight) return _inflight;
   _inflight = (async () => {
     try {
-      const portal = readPortalNameFromDom();
-      const loginRaw = String(opts.explicitLogin || readLoginUsernameFromDom() || "").trim();
-      if (!portal?.name && !loginRaw) return null;
+      const portalUser = _clean(opts.explicitPortal || readPortalUsernameFromDom());
+      const loginUser = _clean(opts.explicitLogin || readLoginUsernameFromDom());
+      // Prefer portal header when present; otherwise login field.
+      const username = portalUser || loginUser;
+      if (!username) return null;
 
       const stored = (await getProfile()) || {};
       const profile = { ...stored };
       let changed = false;
 
-      if (loginRaw) {
-        if (profile.loginUsername !== loginRaw) {
-          profile.loginUsername = loginRaw;
+      // Username and applicant id are the same
+      if (profile.id !== username || profile.username !== username) {
+        profile.id = username;
+        profile.username = username;
+        changed = true;
+      }
+
+      const parts = splitPortalUsername(username);
+      if (parts.name && profile.name !== parts.name) {
+        profile.name = parts.name;
+        changed = true;
+      }
+      if (parts.portalId && profile.portalId !== parts.portalId) {
+        profile.portalId = parts.portalId;
+        changed = true;
+      }
+
+      if (loginUser) {
+        if (profile.loginUsername !== loginUser) {
+          profile.loginUsername = loginUser;
           changed = true;
         }
-        if (loginRaw.includes("@") && profile.email !== loginRaw) {
-          profile.email = loginRaw;
+        if (loginUser.includes("@") && profile.email !== loginUser) {
+          profile.email = loginUser;
           changed = true;
         }
       }
 
-      if (portal?.name) {
-        if (profile.name !== portal.name) {
-          profile.name = portal.name;
-          changed = true;
-        }
-        if (profile.username !== portal.name || profile.id !== portal.name) {
-          profile.username = portal.name;
-          profile.id = portal.name;
-          changed = true;
-        }
-        if (portal.portalId && profile.portalId !== portal.portalId) {
-          profile.portalId = portal.portalId;
-          changed = true;
-        }
-      } else if (loginRaw) {
-        // No portal name yet — use login value as Username until name appears
-        if (!loginRaw.includes("@") && !_isWeakId(loginRaw)) {
-          if (profile.name !== loginRaw || profile.id !== loginRaw) {
-            profile.name = loginRaw;
-            profile.username = loginRaw;
-            profile.id = loginRaw;
-            changed = true;
-          }
-        } else if (_isWeakId(profile.id) || !profile.id) {
-          profile.username = loginRaw;
-          profile.id = loginRaw;
-          if (!profile.name) profile.name = loginRaw;
-          changed = true;
-        }
-      }
-
-      // Email from page scripts (when available)
       for (const script of document.querySelectorAll("script")) {
         const t = script.innerText || "";
         if (!t.includes("setAuthenticatedUserContext")) continue;
@@ -113,7 +107,7 @@ export async function captureUsernameAnytime(opts = {}) {
         }
       }
 
-      const key = `${profile.id || ""}|${profile.name || ""}|${profile.loginUsername || ""}|${profile.email || ""}`;
+      const key = `${profile.id}|${profile.username}|${profile.loginUsername || ""}|${profile.email || ""}`;
       if (!changed && key === _lastSavedKey) return profile;
       _lastSavedKey = key;
       await storageSet({ profile });
@@ -125,20 +119,14 @@ export async function captureUsernameAnytime(opts = {}) {
   return _inflight;
 }
 
-/** @deprecated use captureUsernameAnytime */
 export async function captureLoginUsername(explicitValue) {
   return captureUsernameAnytime({ explicitLogin: explicitValue });
 }
 
-/**
- * Continuously try to capture username whenever DOM has it.
- * Call from content scripts on any host the extension runs on.
- */
 export function startUsernameCaptureLoop(vsLike) {
   const tick = () => {
     captureUsernameAnytime().catch(() => {});
   };
-
   tick();
 
   const bindLogin = (el) => {
@@ -171,24 +159,22 @@ export function startUsernameCaptureLoop(vsLike) {
   };
 
   scan();
-
-  const onVis = () => {
+  document.addEventListener("visibilitychange", () => {
     if (!document.hidden) tick();
-  };
-  document.addEventListener("visibilitychange", onVis);
+  });
   window.addEventListener("focus", tick);
-  document.addEventListener("click", () => {
-    if (vsLike?.setTimeout) vsLike.setTimeout(tick, 200);
-    else setTimeout(tick, 200);
-  }, true);
+  document.addEventListener(
+    "click",
+    () => {
+      if (vsLike?.setTimeout) vsLike.setTimeout(tick, 200);
+      else setTimeout(tick, 200);
+    },
+    true
+  );
 
-  if (vsLike?.setInterval) {
-    vsLike.setInterval(scan, 2000);
-  } else {
-    setInterval(scan, 2000);
-  }
+  if (vsLike?.setInterval) vsLike.setInterval(scan, 2000);
+  else setInterval(scan, 2000);
 
-  // MutationObserver for late-injected .username / login fields
   try {
     const mo = new MutationObserver(() => {
       if (vsLike?.setTimeout) {
@@ -205,7 +191,6 @@ export function startUsernameCaptureLoop(vsLike) {
   }
 }
 
-/** @deprecated alias */
 export function watchLoginUsernameCapture(vsLike) {
   return startUsernameCaptureLoop(vsLike);
 }

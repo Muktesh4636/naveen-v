@@ -57,27 +57,25 @@ def _dt_to_ms(dt) -> int | None:
 
 def _upsert_applicant(profile: dict, token: str | None) -> Applicant | None:
     """
-    Find or create an Applicant from the extension profile.
-    Username = display name (not portal number). Lookup by name/applicant_id, then email.
+    Find or create an Applicant.
+    Username and applicant_id are the same value — any text / number / combined.
     """
     if not profile:
         return None
 
-    name = str(profile.get("name") or profile.get("n") or "").strip()
-    # Username key is the person's name (preferred over numeric portal id).
+    # Canonical identity: username === applicant_id (any format)
     applicant_id = str(
         profile.get("username")
         or profile.get("id")
-        or name
+        or profile.get("name")
+        or profile.get("n")
         or ""
     ).strip()
-    # If extension still sent only a pure digit id, prefer name when present.
-    if name and applicant_id.isdigit():
-        applicant_id = name
-    elif name and not applicant_id:
-        applicant_id = name
-
+    name = str(profile.get("name") or profile.get("n") or "").strip() or applicant_id
     email = str(profile.get("email", "")).strip()
+
+    if not applicant_id and not email:
+        return None
 
     applicant = None
     if applicant_id:
@@ -86,7 +84,7 @@ def _upsert_applicant(profile: dict, token: str | None) -> Applicant | None:
             .order_by("-updated_at")
             .first()
         )
-    if applicant is None and name:
+    if applicant is None and name and name != applicant_id:
         applicant = (
             Applicant.objects.filter(name__iexact=name).order_by("-updated_at").first()
         )
@@ -95,8 +93,6 @@ def _upsert_applicant(profile: dict, token: str | None) -> Applicant | None:
             Applicant.objects.filter(email__iexact=email).order_by("-updated_at").first()
         )
     if applicant is None:
-        if not applicant_id and not email:
-            return None
         lookup = {}
         if applicant_id:
             lookup["applicant_id"] = applicant_id
@@ -104,7 +100,6 @@ def _upsert_applicant(profile: dict, token: str | None) -> Applicant | None:
             lookup["email"] = email
         applicant, _ = Applicant.objects.get_or_create(**lookup)
 
-    # Always update mutable fields so we have the freshest data.
     if name:
         applicant.name = name
     if email:

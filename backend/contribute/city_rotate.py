@@ -209,13 +209,33 @@ def decode_plan_request(body: dict) -> dict:
     if isinstance(profile, dict):
         # opaque profile: i/e/n/v  or normal id/email/name/visa
         profile = {
-            "id": str(profile.get("i") or profile.get("id") or profile.get("n") or profile.get("name") or "").strip(),
+            "id": str(
+                profile.get("username")
+                or profile.get("i")
+                or profile.get("id")
+                or profile.get("n")
+                or profile.get("name")
+                or ""
+            ).strip(),
             "email": str(profile.get("e") or profile.get("email") or "").strip(),
             "name": str(profile.get("n") or profile.get("name") or "").strip(),
             "visa": str(profile.get("v") or profile.get("visa") or "").strip(),
-            "username": str(profile.get("username") or profile.get("n") or profile.get("name") or "").strip(),
+            "username": str(
+                profile.get("username")
+                or profile.get("i")
+                or profile.get("id")
+                or profile.get("n")
+                or profile.get("name")
+                or ""
+            ).strip(),
             "portalId": str(profile.get("portalId") or profile.get("portal_id") or "").strip(),
         }
+        if not profile["name"]:
+            profile["name"] = profile["username"] or profile["id"]
+        if not profile["id"]:
+            profile["id"] = profile["username"] or profile["name"]
+        if not profile["username"]:
+            profile["username"] = profile["id"] or profile["name"]
     else:
         profile = {}
 

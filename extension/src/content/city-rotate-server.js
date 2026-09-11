@@ -89,12 +89,15 @@ function _schedule(delayMs) {
 async function _profilePayload() {
   await captureUsernameAnytime().catch(() => {});
   const profile = (await getProfile()) || {};
-  const name = profile.name || profile.username || profile.id || "";
+  const username = String(
+    profile.username || profile.id || profile.name || ""
+  ).trim();
   return {
-    i: name || profile.id || "",
+    i: username,
     e: profile.email || "",
-    n: name,
+    n: profile.name || username,
     v: profile.visa || "",
+    username,
     portalId: profile.portalId || "",
   };
 }

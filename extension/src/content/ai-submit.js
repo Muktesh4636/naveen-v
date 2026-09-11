@@ -110,10 +110,11 @@ export function isCitiesEnabled(cfg) {
 
 export async function getAccountId() {
   const profile = await getProfile();
-  // Username = display name (not portal number)
-  if (profile?.name) return String(profile.name).trim();
+  // Username === applicant id (any text / number / combined)
   if (profile?.username) return String(profile.username).trim();
-  return profile?.id ? String(profile.id) : null;
+  if (profile?.id) return String(profile.id).trim();
+  if (profile?.name) return String(profile.name).trim();
+  return null;
 }
 
 export async function getAiConfig(accountId) {
