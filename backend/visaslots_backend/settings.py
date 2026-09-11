@@ -22,6 +22,7 @@ MIDDLEWARE = [
     # Must be first so CORS headers are added to every response,
     # including 4xx/5xx errors and preflight OPTIONS requests.
     "contribute.middleware.CorsMiddleware",
+    "contribute.middleware.ContributeApiAuthMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -116,6 +117,14 @@ UNLOCK_TOKEN_TTL_SEC = int(os.environ.get("UNLOCK_TOKEN_TTL_SEC", str(6 * 60 * 6
 APPLICANT_MAX_DEVICES = int(os.environ.get("APPLICANT_MAX_DEVICES", "2"))
 API_RATE_LIMIT_PER_MIN = int(os.environ.get("API_RATE_LIMIT_PER_MIN", "90"))
 UNLOCK_SIGNING_SECRET = os.environ.get("UNLOCK_SIGNING_SECRET", "")
+EXTENSION_API_KEY = os.environ.get("EXTENSION_API_KEY", "vs1")
+EXTENSION_API_SECRET = os.environ.get("EXTENSION_API_SECRET", "")
+EXTENSION_API_SKEW_SEC = int(os.environ.get("EXTENSION_API_SKEW_SEC", "300"))
+EXTENSION_API_AUTH_DISABLED = os.environ.get("EXTENSION_API_AUTH_DISABLED", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 CACHES = {
     "default": {

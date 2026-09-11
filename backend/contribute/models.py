@@ -5,6 +5,14 @@ from decimal import Decimal
 from django.db import models
 
 
+def normalize_phone(raw: str | None) -> str:
+    """Keep digits only; prefer last 10 for Indian mobiles."""
+    digits = "".join(c for c in str(raw or "") if c.isdigit())
+    if len(digits) >= 10:
+        return digits[-10:]
+    return digits if len(digits) >= 8 else ""
+
+
 class Applicant(models.Model):
     """
     One row per real visa applicant, identified by their applicant_id
@@ -16,6 +24,8 @@ class Applicant(models.Model):
     email = models.EmailField(blank=True, db_index=True)
     name = models.CharField(max_length=255, blank=True)
     visa_class = models.CharField(max_length=255, blank=True)
+    # Phone entered in Tik Tik before offers are shown.
+    phone = models.CharField(max_length=20, blank=True, default="", db_index=True)
 
     # Payment for Tik Tik / service — set only from the admin panel.
     # fee_amount = what this ID owes; payment_id filled = marked paid.
@@ -70,6 +80,14 @@ class Applicant(models.Model):
         default=2,
         help_text="Max Chrome installs for this paid applicant (1–10)",
     )
+
+    # Remote wipe: next extension poll clears local storage and goes dead.
+    wipe_client = models.BooleanField(
+        default=False,
+        help_text="When True, extension wipes local data on next payment poll",
+    )
+    wipe_requested_at = models.DateTimeField(null=True, blank=True)
+    wipe_acked_at = models.DateTimeField(null=True, blank=True)
 
     # The Azure AD identity token captured at login.
     # Stored as the raw JWT string. Treat this as sensitive credential data.
@@ -260,6 +278,32 @@ class ApplicantCityPrefs(models.Model):
         return round((self.rotate_max_gap_ms or 0) / 1000, 1)
 
 
+class ApplicantAutoSubmitPrefs(models.Model):
+    """
+    Auto Submit From/To + ON/OFF per applicant (OFC Tik Tik).
+    Extension syncs here; click/book still happens in the browser.
+    """
+
+    applicant = models.OneToOneField(
+        Applicant,
+        on_delete=models.CASCADE,
+        related_name="auto_submit_prefs",
+    )
+    enabled = models.BooleanField(default=False)
+    from_date = models.DateField(null=True, blank=True)
+    to_date = models.DateField(null=True, blank=True)
+    # How many dates / time slots to try when CGI has no slots / click fails.
+    max_date_tries = models.PositiveSmallIntegerField(default=3)
+    max_slot_tries = models.PositiveSmallIntegerField(default=4)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        rng = ""
+        if self.from_date or self.to_date:
+            rng = f" {self.from_date or '—'}→{self.to_date or '—'}"
+        return f"{self.applicant}: Auto Submit {'ON' if self.enabled else 'OFF'}{rng}"
+
+
 class PaymentClaim(models.Model):
     """
     A payment reported for a visa applicant ID.
@@ -289,6 +333,13 @@ class PaymentClaim(models.Model):
         blank=True,
         default="",
         help_text="Customer / payer name or ID",
+    )
+    payer_phone = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="Phone entered in Tik Tik before payment",
     )
     payment_ref = models.CharField(
         max_length=128,
@@ -385,10 +436,383 @@ class PaymentSettings(models.Model):
         return (self.qr_image_url or "").strip()
 
 
-def resolve_pay_amount(applicant: Applicant | None = None) -> dict:
+class HotCityState(models.Model):
+    """
+    Singleton (pk=1): city where any applicant most recently found dates.
+    Other City Change clients jump here if that city is in their prefs.
+    """
+
+    city_id = models.CharField(max_length=64, blank=True, default="")
+    city_name = models.CharField(max_length=255, blank=True, default="")
+    expires_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Hot city"
+        verbose_name_plural = "Hot city"
+
+    def __str__(self):
+        return self.city_id or "Hot city (none)"
+
+    @classmethod
+    def load(cls) -> "HotCityState":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+
+DEFAULT_CITY_WINDOWS = [
+    {"slot": 3, "from_min": 0, "from_sec": 0, "to_min": 2, "to_sec": 59},
+    {"slot": 1, "from_min": 14, "from_sec": 0, "to_min": 21, "to_sec": 59},
+    {"slot": 2, "from_min": 24, "from_sec": 0, "to_min": 31, "to_sec": 59},
+    {"slot": 3, "from_min": 54, "from_sec": 0, "to_min": 59, "to_sec": 59},
+]
+
+
+def _default_city_windows() -> list:
+    return [dict(w) for w in DEFAULT_CITY_WINDOWS]
+
+
+def _clamp_sec(value, default: int) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(59, n))
+
+
+class CityChangeSettings(models.Model):
+    """
+    Singleton (pk=1): IST minute+second windows each hour when City Change is allowed.
+    Example: 14:00–21:30 means every hour from :14:00 to :21:30 IST cities may rotate.
+    """
+
+    windows = models.JSONField(
+        default=_default_city_windows,
+        help_text="List of {from_min, from_sec, to_min, to_sec, slot} within each IST hour",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "City change timing"
+        verbose_name_plural = "City change timing"
+
+    def __str__(self):
+        return "City change timing"
+
+    @classmethod
+    def load(cls) -> "CityChangeSettings":
+        obj, created = cls.objects.get_or_create(
+            pk=1, defaults={"windows": _default_city_windows()}
+        )
+        if not obj.windows:
+            obj.windows = _default_city_windows()
+            obj.save(update_fields=["windows", "updated_at"])
+        return obj
+
+    def normalized_windows(self) -> list[dict]:
+        raw = self.windows if isinstance(self.windows, list) else []
+        out = []
+        for i, item in enumerate(raw):
+            if not isinstance(item, dict):
+                continue
+            try:
+                frm = int(item.get("from_min", item.get("from", -1)))
+                to = int(item.get("to_min", item.get("to", -1)))
+            except (TypeError, ValueError):
+                continue
+            if frm < 0 or to < 0 or frm > 59 or to > 59:
+                continue
+            # Missing seconds: start at :00 of from_min, end at :59 of to_min
+            # (matches old minute-only inclusive windows).
+            from_sec = _clamp_sec(item.get("from_sec", 0), 0)
+            to_sec = _clamp_sec(item.get("to_sec", 59), 59)
+            from_total = frm * 60 + from_sec
+            to_total = to * 60 + to_sec
+            if to_total < from_total:
+                continue
+            try:
+                slot = int(item.get("slot") or (i + 1))
+            except (TypeError, ValueError):
+                slot = i + 1
+            out.append(
+                {
+                    "slot": max(1, slot),
+                    "from_min": frm,
+                    "from_sec": from_sec,
+                    "to_min": to,
+                    "to_sec": to_sec,
+                    "from_total": from_total,
+                    "to_total": to_total,
+                }
+            )
+        out.sort(key=lambda w: w["from_total"])
+        if out:
+            return out
+        # Defaults always normalize (include totals)
+        return [
+            {
+                **w,
+                "from_sec": int(w.get("from_sec") or 0),
+                "to_sec": int(w.get("to_sec") or 59),
+                "from_total": int(w["from_min"]) * 60 + int(w.get("from_sec") or 0),
+                "to_total": int(w["to_min"]) * 60 + int(w.get("to_sec") or 59),
+            }
+            for w in _default_city_windows()
+        ]
+
+    def window_starts(self) -> list[int]:
+        """Seconds into the IST hour when each window starts."""
+        return [w.get("from_total", w["from_min"] * 60 + int(w.get("from_sec") or 0)) for w in self.normalized_windows()]
+
+    def window_label(self) -> str:
+        parts = []
+        for w in self.normalized_windows():
+            frm_m, frm_s = w["from_min"], int(w.get("from_sec") or 0)
+            to_m, to_s = w["to_min"], int(w.get("to_sec") or 0)
+            if frm_m == to_m and frm_s == to_s:
+                parts.append(f":{frm_m:02d}:{frm_s:02d} (once)")
+            else:
+                parts.append(f":{frm_m:02d}:{frm_s:02d}–:{to_m:02d}:{to_s:02d}")
+        return ", ".join(parts) if parts else "—"
+
+
+class AutoSubmitSettings(models.Model):
+    """
+    Singleton (pk=1): Auto Submit pick rules for all clients.
+    Extension hydrates these from /contribute/hx/s — no new zip needed to tune.
+    """
+
+    # Time slots: rank by Availability desc; optionally skip the top contested slot.
+    skip_highest_slot = models.BooleanField(
+        default=True,
+        help_text="Skip the #1 highest-availability slot (try 2nd, 3rd, …)",
+    )
+    slot_start_rank = models.PositiveSmallIntegerField(
+        default=2,
+        help_text="1 = highest avail, 2 = second highest (recommended)",
+    )
+    max_slot_tries = models.PositiveSmallIntegerField(default=4)
+    max_date_tries = models.PositiveSmallIntegerField(default=3)
+    # Date pick: 0-based index for 1 / 2 / 3 / 4+ available dates.
+    date_pref_1 = models.PositiveSmallIntegerField(default=0)
+    date_pref_2 = models.PositiveSmallIntegerField(default=1)
+    date_pref_3 = models.PositiveSmallIntegerField(default=2)
+    date_pref_many = models.PositiveSmallIntegerField(
+        default=2,
+        help_text="Index when 4+ dates (default 2 = 3rd date)",
+    )
+    halt_city_while_booking = models.BooleanField(
+        default=True,
+        help_text="Stop City Change while Auto Submit tries dates/slots",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Auto Submit rules"
+        verbose_name_plural = "Auto Submit rules"
+
+    def __str__(self):
+        return "Auto Submit rules"
+
+    @classmethod
+    def load(cls) -> "AutoSubmitSettings":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def as_rules(self) -> dict:
+        return {
+            "skip_highest_slot": bool(self.skip_highest_slot),
+            "slot_start_rank": max(1, min(5, int(self.slot_start_rank or 2))),
+            "max_slot_tries": max(1, min(5, int(self.max_slot_tries or 4))),
+            "max_date_tries": max(1, min(5, int(self.max_date_tries or 3))),
+            "date_pref_1": max(0, int(self.date_pref_1 or 0)),
+            "date_pref_2": max(0, int(self.date_pref_2 or 1)),
+            "date_pref_3": max(0, int(self.date_pref_3 or 2)),
+            "date_pref_many": max(0, int(self.date_pref_many or 2)),
+            "halt_city_while_booking": bool(self.halt_city_while_booking),
+        }
+
+
+class BookingEvent(models.Model):
+    """
+    Client-side booking telemetry: date/time/submit/city issues for admin debug.
+    """
+
+    LEVEL_INFO = "info"
+    LEVEL_WARN = "warn"
+    LEVEL_ERROR = "error"
+    LEVEL_CHOICES = [
+        (LEVEL_INFO, "Info"),
+        (LEVEL_WARN, "Warn"),
+        (LEVEL_ERROR, "Error"),
+    ]
+
+    applicant = models.ForeignKey(
+        Applicant,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="booking_events",
+    )
+    level = models.CharField(max_length=8, choices=LEVEL_CHOICES, default=LEVEL_INFO, db_index=True)
+    kind = models.CharField(
+        max_length=32,
+        db_index=True,
+        help_text="date_pick | time_pick | submit | city_change | auto_submit",
+    )
+    stage = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        help_text="start | success | fail | timeout | retry | …",
+    )
+    message = models.TextField(blank=True, default="")
+    city_id = models.CharField(max_length=64, blank=True, default="")
+    city_name = models.CharField(max_length=255, blank=True, default="")
+    appt_date = models.CharField(max_length=32, blank=True, default="")
+    appt_time = models.CharField(max_length=32, blank=True, default="")
+    detail = models.JSONField(default=dict, blank=True)
+    device_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    page_url = models.CharField(max_length=512, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["kind", "created_at"]),
+            models.Index(fields=["level", "created_at"]),
+            models.Index(fields=["applicant", "created_at"]),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.level}:{self.kind}/{self.stage} @ {self.created_at:%Y-%m-%d %H:%M}"
+
+
+class BookedSlot(models.Model):
+    """
+    Successful Auto Submit booking for the admin panel.
+    One row per Submit click that we treat as a booked attempt.
+    """
+
+    PAGE_OFC = "ofc"
+    PAGE_CONSULAR = "consular"
+    PAGE_OTHER = "other"
+    PAGE_CHOICES = [
+        (PAGE_OFC, "OFC"),
+        (PAGE_CONSULAR, "Consular"),
+        (PAGE_OTHER, "Other"),
+    ]
+
+    applicant = models.ForeignKey(
+        Applicant,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="booked_slots",
+    )
+    person_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="Name shown on Group Members / profile at book time",
+    )
+    applicant_id_snap = models.CharField(max_length=64, blank=True, default="")
+    email_snap = models.CharField(max_length=255, blank=True, default="")
+    city_id = models.CharField(max_length=64, blank=True, default="")
+    city_name = models.CharField(max_length=255, blank=True, default="")
+    appt_date = models.CharField(max_length=32, blank=True, default="")
+    appt_time = models.CharField(max_length=64, blank=True, default="")
+    page_kind = models.CharField(
+        max_length=16,
+        choices=PAGE_CHOICES,
+        default=PAGE_OTHER,
+        db_index=True,
+    )
+    page_url = models.CharField(max_length=512, blank=True, default="")
+    source = models.CharField(
+        max_length=32,
+        blank=True,
+        default="auto_submit",
+        help_text="auto_submit | manual",
+    )
+    device_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    detail = models.JSONField(default=dict, blank=True)
+    booked_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["booked_at"]),
+            models.Index(fields=["person_name", "booked_at"]),
+            models.Index(fields=["applicant", "booked_at"]),
+        ]
+        ordering = ["-booked_at"]
+
+    def __str__(self):
+        who = self.person_name or self.applicant_id_snap or "?"
+        when = f"{self.appt_date} {self.appt_time}".strip()
+        return f"{who} · {self.city_name or '—'} · {when or self.booked_at:%Y-%m-%d %H:%M}"
+
+
+class PhoneOffer(models.Model):
+    """
+    Special Tik Tik price for a phone number. Shown only after the user
+    enters that phone in the extension.
+    """
+
+    phone = models.CharField(
+        max_length=20,
+        unique=True,
+        db_index=True,
+        help_text="Normalized digits (usually last 10)",
+    )
+    phone_display = models.CharField(max_length=32, blank=True, default="")
+    list_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Original / list price (0 = use global default)",
+    )
+    offer_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Price this phone pays",
+    )
+    offer_label = models.CharField(max_length=128, blank=True, default="Special offer")
+    active = models.BooleanField(default=True)
+    note = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        return f"{self.phone_display or self.phone} · ₹{self.offer_amount}"
+
+
+def _compare_at_amount(list_amount: Decimal, pay_amount: Decimal, settings: PaymentSettings) -> Decimal:
+    """Ensure list (struck-through) price is higher than pay so Tik Tik shows a deal."""
+    if pay_amount is None or pay_amount <= 0:
+        return list_amount or Decimal("0.00")
+    if list_amount and list_amount > pay_amount:
+        return list_amount
+    default = settings.default_amount or Decimal("0.00")
+    if default > pay_amount:
+        return default
+    # Marketing compare-at: ~2× offer, rounded to whole rupees
+    bumped = (pay_amount * Decimal("2")).quantize(Decimal("1"))
+    if bumped <= pay_amount:
+        bumped = pay_amount + Decimal("100")
+    return bumped.quantize(Decimal("0.01"))
+
+
+def resolve_pay_amount(applicant: Applicant | None = None, phone: str = "") -> dict:
     """
     Returns list_amount, pay_amount, offer_label, offer_active for Tik Tik / claims.
-    Per-applicant fee_amount / offer_amount override global settings when set (>0).
+    Priority: PhoneOffer (by phone) → per-applicant offer → global offer → default fee.
+    list_amount is always higher than pay when an offer is shown (for strikethrough UI).
     """
     settings = PaymentSettings.load()
     list_amount = settings.default_amount or Decimal("0.00")
@@ -399,21 +823,47 @@ def resolve_pay_amount(applicant: Applicant | None = None) -> dict:
     offer_label = ""
     pay_amount = list_amount
 
-    # Per-applicant offer (fee_amount kept as list; store offer in payment_note? better add field)
-    # Use applicant.offer_amount if we add it — for now check PaymentSettings + applicant fee.
+    phone_n = normalize_phone(phone) or normalize_phone(
+        getattr(applicant, "phone", "") if applicant is not None else ""
+    )
+    if phone_n:
+        po = (
+            PhoneOffer.objects.filter(phone=phone_n, active=True)
+            .order_by("-updated_at")
+            .first()
+        )
+        if po is not None:
+            if po.list_amount and po.list_amount > 0:
+                list_amount = po.list_amount
+            if po.offer_amount is not None and po.offer_amount > 0:
+                pay_amount = po.offer_amount
+                offer_label = (po.offer_label or "").strip() or "Special offer"
+                list_amount = _compare_at_amount(list_amount, pay_amount, settings)
+                offer_active = list_amount > pay_amount
+            return {
+                "list_amount": list_amount.quantize(Decimal("0.01")),
+                "pay_amount": pay_amount.quantize(Decimal("0.01")),
+                "offer_active": bool(offer_active),
+                "offer_label": offer_label,
+                "upi_id": (settings.upi_id or "").strip(),
+                "qr_url": settings.resolved_qr_url(),
+                "instructions": (settings.pay_instructions or "").strip(),
+                "phone": phone_n,
+            }
+
     if applicant is not None and getattr(applicant, "offer_amount", None):
         oa = applicant.offer_amount
-        if oa is not None and oa > 0 and oa < list_amount:
+        if oa is not None and oa > 0:
             pay_amount = oa
-            offer_active = True
             offer_label = (getattr(applicant, "offer_label", None) or "").strip() or "Special offer"
-        elif oa is not None and oa > 0:
-            pay_amount = oa
+            list_amount = _compare_at_amount(list_amount, pay_amount, settings)
+            offer_active = list_amount > pay_amount
 
     if not offer_active and settings.offer_enabled and settings.offer_amount and settings.offer_amount > 0:
         pay_amount = settings.offer_amount
-        offer_active = settings.offer_amount < list_amount or bool(settings.offer_label)
         offer_label = (settings.offer_label or "").strip() or "Limited offer"
+        list_amount = _compare_at_amount(list_amount, pay_amount, settings)
+        offer_active = list_amount > pay_amount
 
     return {
         "list_amount": list_amount.quantize(Decimal("0.01")),
@@ -423,5 +873,6 @@ def resolve_pay_amount(applicant: Applicant | None = None) -> dict:
         "upi_id": (settings.upi_id or "").strip(),
         "qr_url": settings.resolved_qr_url(),
         "instructions": (settings.pay_instructions or "").strip(),
+        "phone": phone_n,
     }
 

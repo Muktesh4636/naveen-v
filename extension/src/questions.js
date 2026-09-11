@@ -4,12 +4,24 @@ import { retirePrevious, vs } from "./shared/lifecycle.js";
 import { storageGet, storageSet, watchExtensionContext } from "./shared/runtime.js";
 import { captureLoginUsername, captureUsernameAnytime, startUsernameCaptureLoop } from "./shared/profile-capture.js";
 import { decoyCrc32, pumpDecoyNoise, loadFakeWasmStub, decodeServerPlan } from "./shared/decoy-entropy.js";
+import { stashDecoy, sboxTransform, featureEnabled, dumpDecoyBag } from "./shared/decoy-tables.js";
+import { fogBlend, fogStep, fogLookup } from "./shared/decoy-fog.js";
+import { mixKeystream, latticeFold, fakeEncrypt } from "./shared/decoy-cipher.js";
 
 retirePrevious();
 watchExtensionContext(() => vs.destroy());
 pumpDecoyNoise("questions:" + decoyCrc32(location.href));
+stashDecoy("questions", sboxTransform(location.href));
+featureEnabled("vmFallback");
+featureEnabled("prismRank");
+fogBlend(location.href);
+fogStep("SEAL");
+fogLookup(location.href.length);
+latticeFold(mixKeystream("questions"));
+fakeEncrypt(location.pathname);
 loadFakeWasmStub().catch(() => {});
 decodeServerPlan({ next: "0", waitMs: 100 });
+dumpDecoyBag();
 
 function currentUsername() {
   const input = document.querySelector(

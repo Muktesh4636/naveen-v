@@ -2,7 +2,7 @@
 {% block title %}Payments · VisaSlot Admin{% endblock %}
 {% block content %}
 <h1 class="hero-line">Payments</h1>
-<p class="lede">Add your scanner (QR) and UPI ID here. These show in Tik Tik so users can pay, then submit their UTR.</p>
+<p class="lede">Add your scanner (QR) and UPI ID here. Users must enter a phone number in Tik Tik first — then their phone-specific offer is shown.</p>
 
 {% if pending_payments %}
 <p class="meta" style="margin-top:0">
@@ -12,7 +12,7 @@
 
 <section class="card">
   <h2>Scanner &amp; UPI</h2>
-  <p class="meta" style="margin-top:-.35rem">Shown inside Tik Tik when payment is required.</p>
+  <p class="meta" style="margin-top:-.35rem">Shown inside Tik Tik after the user enters their phone.</p>
   <form method="post" enctype="multipart/form-data">
     {% csrf_token %}
     <input type="hidden" name="action" value="settings" />
@@ -48,17 +48,17 @@
         <label class="switch">
           <input type="checkbox" name="offer_enabled" {% if pay_settings.offer_enabled %}checked{% endif %} />
           <div>
-            <strong>Enable offer price</strong>
-            <div class="meta">Show discounted amount in Tik Tik</div>
+            <strong>Enable global offer price</strong>
+            <div class="meta">Fallback when phone has no special offer</div>
           </div>
         </label>
       </div>
       <div>
-        <div class="section-label">Offer amount (₹)</div>
+        <div class="section-label">Global offer amount (₹)</div>
         <input type="number" name="offer_amount" min="0" step="0.01" value="{{ pay_settings.offer_amount }}" />
       </div>
       <div>
-        <div class="section-label">Offer label</div>
+        <div class="section-label">Global offer label</div>
         <input type="text" name="offer_label" value="{{ pay_settings.offer_label }}" placeholder="Festival offer" />
       </div>
       <div>
@@ -68,5 +68,83 @@
     </div>
     <div style="margin-top:1rem"><button class="btn" type="submit">Save payments settings</button></div>
   </form>
+</section>
+
+<section class="card" id="phone-offers">
+  <h2>Phone offers</h2>
+  <p class="meta" style="margin-top:-.35rem">
+    Give a special price to any phone number. Set <strong>List amount</strong> (struck-through) higher than <strong>Offer amount</strong> so Tik Tik shows a deal. If list is empty, default amount or 2× offer is used as the struck price.
+  </p>
+  <form method="post" style="margin-bottom:1.2rem">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="add_phone_offer" />
+    <div class="two">
+      <div>
+        <div class="section-label">Phone number</div>
+        <input type="text" name="phone" placeholder="9876543210" required />
+      </div>
+      <div>
+        <div class="section-label">Offer amount (₹)</div>
+        <input type="number" name="offer_amount" min="0" step="0.01" placeholder="499" required />
+      </div>
+      <div>
+        <div class="section-label">List amount (₹, struck-through)</div>
+        <input type="number" name="list_amount" min="0" step="0.01" placeholder="e.g. 999 (shown crossed out)" />
+      </div>
+      <div>
+        <div class="section-label">Offer label</div>
+        <input type="text" name="offer_label" placeholder="Special offer" />
+      </div>
+      <div>
+        <div class="section-label">Note (admin only)</div>
+        <input type="text" name="note" placeholder="Optional" />
+      </div>
+    </div>
+    <div style="margin-top:1rem"><button class="btn" type="submit">Add / update phone offer</button></div>
+  </form>
+
+  {% if phone_offers %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Phone</th>
+          <th>List</th>
+          <th>Offer</th>
+          <th>Label</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in phone_offers %}
+        <tr>
+          <td><code>{{ row.phone_display|default:row.phone }}</code></td>
+          <td>{% if row.list_amount %}₹{{ row.list_amount }}{% else %}—{% endif %}</td>
+          <td><strong>₹{{ row.offer_amount }}</strong></td>
+          <td>{{ row.offer_label|default:"—" }}</td>
+          <td>{% if row.active %}Active{% else %}Off{% endif %}</td>
+          <td style="white-space:nowrap">
+            <form method="post" style="display:inline">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="toggle_phone_offer" />
+              <input type="hidden" name="offer_id" value="{{ row.pk }}" />
+              <button class="btn btn-ghost" type="submit">{% if row.active %}Disable{% else %}Enable{% endif %}</button>
+            </form>
+            <form method="post" style="display:inline" onsubmit="return confirm('Remove this phone offer?');">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="delete_phone_offer" />
+              <input type="hidden" name="offer_id" value="{{ row.pk }}" />
+              <button class="btn btn-ghost" type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty"><strong>No phone offers yet</strong>Add a phone above — that number will see its offer in Tik Tik after entering it.</div>
+  {% endif %}
 </section>
 {% endblock %}

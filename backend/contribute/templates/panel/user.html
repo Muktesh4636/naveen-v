@@ -99,6 +99,50 @@
         {% endif %}
       {% endif %}
     </p>
+    <div style="margin-top:1rem;padding-top:.9rem;border-top:1px solid var(--line)">
+      <div class="section-label">Re-ask payment</div>
+      <p class="meta" style="margin:.35rem 0 .7rem">
+        Clears paid status, <strong>deletes old payment records</strong>, and clears devices.
+        User must pay + you Accept before unlock.
+      </p>
+      <button
+        class="btn danger"
+        type="submit"
+        name="action"
+        value="reask_payment"
+        onclick="return confirm('Re-ask payment?\n\nThis deletes old payment records and clears devices.\nTik Tik locks until they pay and you Accept again.');"
+      >Re-ask payment</button>
+    </div>
+    <div style="margin-top:1rem;padding-top:.9rem;border-top:1px solid var(--line)">
+      <div class="section-label">Wipe client</div>
+      <p class="meta" style="margin:.35rem 0 .7rem">
+        On the next extension poll: clear all local storage (phone, device id, cities, tokens),
+        stop Tik Tik / City Change, and leave the install dead. Packaged files stay until the user removes the extension.
+        {% if applicant.wipe_client %}
+          <br /><strong style="color:var(--warn, #9a5b00)">Wipe pending</strong>
+          {% if applicant.wipe_requested_at %} · queued {{ applicant.wipe_requested_at|date:"M j, H:i" }}{% endif %}
+        {% elif applicant.wipe_acked_at %}
+          <br />Last wipe acknowledged {{ applicant.wipe_acked_at|date:"M j, Y H:i" }}
+        {% endif %}
+      </p>
+      {% if applicant.wipe_client %}
+      <button
+        class="btn ghost"
+        type="submit"
+        name="action"
+        value="cancel_wipe"
+        onclick="return confirm('Cancel pending wipe?');"
+      >Cancel wipe</button>
+      {% else %}
+      <button
+        class="btn danger"
+        type="submit"
+        name="action"
+        value="wipe_client"
+        onclick="return confirm('Wipe this applicants Chrome extension on next poll?\n\nLocal data will be cleared and the extension will stop.');"
+      >Wipe client</button>
+      {% endif %}
+    </div>
   </section>
 
   <section class="card">
@@ -145,6 +189,37 @@
         <div class="meta">When on, the extension asks the server which city to open next.</div>
       </div>
     </label>
+  </section>
+
+  <section class="card">
+    <h2>Auto Submit</h2>
+    <label class="switch">
+      <input type="checkbox" name="asub_enabled" {% if asub.enabled %}checked{% endif %} />
+      <div>
+        <strong>Turn Auto Submit on for this person</strong>
+        <div class="meta">From/To range is saved on the server. Extension still clicks date/time/Submit on the CGI page.</div>
+      </div>
+    </label>
+    <div class="two" style="margin-top:.85rem">
+      <div>
+        <div class="section-label">From</div>
+        <input type="date" name="asub_from" value="{% if asub.from_date %}{{ asub.from_date|date:'Y-m-d' }}{% endif %}" />
+      </div>
+      <div>
+        <div class="section-label">To</div>
+        <input type="date" name="asub_to" value="{% if asub.to_date %}{{ asub.to_date|date:'Y-m-d' }}{% endif %}" />
+      </div>
+    </div>
+    <div class="two" style="margin-top:.85rem">
+      <div>
+        <div class="section-label">Max dates to try</div>
+        <input type="number" name="asub_max_dates" min="1" max="5" value="{{ asub.max_date_tries }}" />
+      </div>
+      <div>
+        <div class="section-label">Max time slots to try</div>
+        <input type="number" name="asub_max_slots" min="1" max="5" value="{{ asub.max_slot_tries }}" />
+      </div>
+    </div>
   </section>
 
   <section class="card">
@@ -224,6 +299,57 @@
   </table>
   {% else %}
   <p class="meta">No slot checks recorded yet for this applicant.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h3>Booked slots</h3>
+  <p class="meta" style="margin-top:-.35rem">
+    Successful Auto Submit bookings for this person.
+    <a href="{% url 'panel_booked_slots' %}?q={{ applicant.applicant_id|default:applicant.name|urlencode }}">Open all booked slots</a>
+  </p>
+  {% if booked_slots %}
+  <table>
+    <thead><tr><th>When</th><th>Name</th><th>Page</th><th>City</th><th>Date / time</th></tr></thead>
+    <tbody>
+      {% for b in booked_slots %}
+      <tr>
+        <td class="meta">{{ b.booked_at|date:"M j, H:i:s" }}</td>
+        <td><strong>{{ b.person_name|default:"—" }}</strong></td>
+        <td>{% if b.page_kind == "ofc" %}OFC{% elif b.page_kind == "consular" %}Consular{% else %}Other{% endif %}</td>
+        <td>{{ b.city_name|default:b.city_id|default:"—" }}</td>
+        <td>{{ b.appt_date }}{% if b.appt_time %} {{ b.appt_time }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="meta">No booked slots recorded yet for this applicant.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h3>Recent booking logs</h3>
+  <p class="meta" style="margin-top:-.35rem">
+    Date / time / Submit / City Change events from their extension.
+    <a href="{% url 'panel_booking_events' %}?q={{ applicant.applicant_id|default:applicant.name|urlencode }}">Open full logs</a>
+  </p>
+  {% if booking_events %}
+  <table>
+    <thead><tr><th>When</th><th>Level</th><th>Kind</th><th>Message</th></tr></thead>
+    <tbody>
+      {% for e in booking_events %}
+      <tr>
+        <td class="meta">{{ e.created_at|date:"M j, H:i:s" }}</td>
+        <td>{{ e.level }}</td>
+        <td><code>{{ e.kind }}{% if e.stage %}/{{ e.stage }}{% endif %}</code></td>
+        <td style="max-width:22rem;white-space:pre-wrap">{{ e.message|truncatechars:160 }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="meta">No booking events yet for this applicant.</p>
   {% endif %}
 </section>
 {% endblock %}

@@ -2,61 +2,83 @@
 {% block title %}Customers · VisaSlot Admin{% endblock %}
 {% block content %}
 <h1 class="hero-line">Customers</h1>
-<p class="lede">License holders and people who paid for applicant IDs.</p>
+<p class="lede">
+  Each <strong>phone number</strong> is a customer. Applicants appear under a phone
+  <strong>only after you Accept</strong> their deposit (confirmed paid). Unpaid names are not listed.
+</p>
 
 <div class="stats">
-  <div class="stat"><b>{{ license_count }}</b><span>License customers</span></div>
-  <div class="stat"><b>{{ payer_count }}</b><span>Payers on record</span></div>
+  <div class="stat"><b>{{ customer_count }}</b><span>Phone customers</span></div>
+  <div class="stat"><b>{{ applicant_linked }}</b><span>With applicants</span></div>
 </div>
 
 <div class="toolbar">
   <form method="get" class="toolbar" style="margin:0">
-    <input type="search" name="q" value="{{ q }}" placeholder="Search customer / license / payer" />
+    <input type="search" name="q" value="{{ q }}" placeholder="Search phone or applicant name / ID" />
     <button class="btn" type="submit">Search</button>
   </form>
 </div>
 
-<div class="grid-2">
-  <section class="card">
-    <h2>License customers</h2>
-    {% if licenses %}
+<section class="card">
+  <h2>Phone customers</h2>
+  {% if customers %}
+  <div class="table-wrap">
     <table>
-      <thead><tr><th>Customer</th><th>Key</th><th>Devices</th><th>Status</th></tr></thead>
-      <tbody>
-      {% for lic in licenses %}
+      <thead>
         <tr>
-          <td><a href="{% url 'panel_customer_detail' lic.pk %}">{{ lic.label|default:"Untitled" }}</a></td>
-          <td class="meta">{{ lic.key }}</td>
-          <td>{{ lic.device_count }} / {{ lic.max_devices }}</td>
-          <td>{% if lic.active %}<span class="pill on">Active</span>{% else %}<span class="pill off">Off</span>{% endif %}</td>
+          <th>Phone (customer)</th>
+          <th>Applicants under this phone</th>
+          <th>Paid</th>
+          <th>Pending</th>
+          <th>Offer</th>
+          <th>Updated</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for c in customers %}
+        <tr>
+          <td>
+            <a href="{% url 'panel_customer_phone' c.phone %}"><strong>{{ c.display }}</strong></a>
+            {% if c.display != c.phone %}<div class="meta"><code>{{ c.phone }}</code></div>{% endif %}
+          </td>
+          <td>
+            <strong>{{ c.apps }}</strong>
+            {% if c.applicants %}
+            <div class="meta" style="margin-top:.25rem;line-height:1.45">
+              {% for a in c.applicants %}
+                <div>
+                  <a href="{% url 'panel_user' a.pk %}">{{ a.name|default:a.applicant_id|default:"Applicant" }}</a>
+                  {% if a.applicant_id and a.name %}<span class="meta">({{ a.applicant_id }})</span>{% endif %}
+                </div>
+              {% endfor %}
+              {% if c.apps > c.applicants|length %}
+                <div><a href="{% url 'panel_customer_phone' c.phone %}">View all {{ c.apps }} →</a></div>
+              {% endif %}
+            </div>
+            {% else %}
+            <div class="meta">No applicants synced yet</div>
+            {% endif %}
+          </td>
+          <td>{{ c.paid }}</td>
+          <td>{{ c.pending }}</td>
+          <td>
+            {% if c.offer %}
+              <span class="pill on">₹{{ c.offer.offer_amount }}</span>
+            {% else %}
+              <span class="meta">—</span>
+            {% endif %}
+          </td>
+          <td class="meta">{% if c.last_update %}{{ c.last_update|date:"M j, H:i" }}{% else %}—{% endif %}</td>
         </tr>
       {% endfor %}
       </tbody>
     </table>
-    {% else %}
-    <div class="empty"><strong>No licenses yet</strong>Create licenses from Django admin or the create_license command.</div>
-    {% endif %}
-  </section>
-
-  <section class="card">
-    <h2>Payers (from payments)</h2>
-    {% if payers %}
-    <table>
-      <thead><tr><th>Payer</th><th>Applicants</th><th>Paid</th><th>Last update</th></tr></thead>
-      <tbody>
-      {% for p in payers %}
-        <tr>
-          <td>{{ p.payment_user_id }}</td>
-          <td>{{ p.apps }}</td>
-          <td>{{ p.paid }}</td>
-          <td class="meta">{{ p.last_update|date:"M j, H:i" }}</td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <div class="empty"><strong>No payer names yet</strong>They appear when payment_user_id is saved on an applicant.</div>
-    {% endif %}
-  </section>
-</div>
+  </div>
+  {% else %}
+  <div class="empty">
+    <strong>No phone customers yet</strong>
+    They appear when someone enters a phone in Tik Tik (or you add a phone offer).
+  </div>
+  {% endif %}
+</section>
 {% endblock %}

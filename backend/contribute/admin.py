@@ -3,13 +3,19 @@ from django.utils import timezone
 from django.utils.html import format_html
 from .models import (
     Applicant,
+    ApplicantAutoSubmitPrefs,
     ApplicantCityPrefs,
     ApplicantDevice,
+    AutoSubmitSettings,
+    BookedSlot,
+    BookingEvent,
+    CityChangeSettings,
     Contribution,
     DashboardSnapshot,
     ExtensionLicense,
     PaymentClaim,
     PaymentSettings,
+    PhoneOffer,
 )
 
 
@@ -169,8 +175,22 @@ class ApplicantCityPrefsInline(admin.StackedInline):
     readonly_fields = ("updated_at", "last_switch_at")
 
 
+class ApplicantAutoSubmitPrefsInline(admin.StackedInline):
+    model = ApplicantAutoSubmitPrefs
+    extra = 0
+    fields = (
+        "enabled",
+        "from_date",
+        "to_date",
+        "max_date_tries",
+        "max_slot_tries",
+        "updated_at",
+    )
+    readonly_fields = ("updated_at",)
+
+
 # Re-bind Applicant admin with inline
-ApplicantAdmin.inlines = [ApplicantCityPrefsInline]
+ApplicantAdmin.inlines = [ApplicantCityPrefsInline, ApplicantAutoSubmitPrefsInline]
 
 
 # City prefs are edited via Applicant inline — do not list as a second
@@ -335,3 +355,96 @@ class PaymentClaimAdmin(admin.ModelAdmin):
 @admin.register(PaymentSettings)
 class PaymentSettingsAdmin(admin.ModelAdmin):
     list_display = ("upi_id", "default_amount", "offer_enabled", "offer_amount", "updated_at")
+
+
+@admin.register(PhoneOffer)
+class PhoneOfferAdmin(admin.ModelAdmin):
+    list_display = ("phone", "phone_display", "offer_amount", "list_amount", "offer_label", "active", "updated_at")
+    list_filter = ("active",)
+    search_fields = ("phone", "phone_display", "offer_label", "note")
+
+
+@admin.register(CityChangeSettings)
+class CityChangeSettingsAdmin(admin.ModelAdmin):
+    list_display = ("pk", "updated_at")
+
+
+@admin.register(AutoSubmitSettings)
+class AutoSubmitSettingsAdmin(admin.ModelAdmin):
+    list_display = (
+        "pk",
+        "skip_highest_slot",
+        "slot_start_rank",
+        "max_slot_tries",
+        "max_date_tries",
+        "halt_city_while_booking",
+        "updated_at",
+    )
+    fields = (
+        "skip_highest_slot",
+        "slot_start_rank",
+        "max_slot_tries",
+        "max_date_tries",
+        "date_pref_1",
+        "date_pref_2",
+        "date_pref_3",
+        "date_pref_many",
+        "halt_city_while_booking",
+        "updated_at",
+    )
+    readonly_fields = ("updated_at",)
+
+
+@admin.register(BookingEvent)
+class BookingEventAdmin(admin.ModelAdmin):
+    list_display = (
+        "created_at",
+        "level",
+        "kind",
+        "stage",
+        "applicant",
+        "city_name",
+        "appt_date",
+        "message_short",
+    )
+    list_filter = ("level", "kind")
+    search_fields = (
+        "message",
+        "city_name",
+        "city_id",
+        "applicant__name",
+        "applicant__applicant_id",
+        "applicant__email",
+    )
+    readonly_fields = ("created_at",)
+
+    @admin.display(description="Message")
+    def message_short(self, obj):
+        return (obj.message or "")[:80]
+
+
+@admin.register(BookedSlot)
+class BookedSlotAdmin(admin.ModelAdmin):
+    list_display = (
+        "booked_at",
+        "person_name",
+        "page_kind",
+        "city_name",
+        "appt_date",
+        "appt_time",
+        "applicant",
+        "source",
+    )
+    list_filter = ("page_kind", "source")
+    search_fields = (
+        "person_name",
+        "city_name",
+        "city_id",
+        "appt_date",
+        "email_snap",
+        "applicant_id_snap",
+        "applicant__name",
+        "applicant__applicant_id",
+        "applicant__email",
+    )
+    readonly_fields = ("booked_at",)

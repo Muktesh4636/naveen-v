@@ -2,6 +2,7 @@ import { getProfile } from "../shared/config.js";
 import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
 import { notifyTelegramScreenshot } from "./telegram-notify.js";
+import { reportBookingEvent } from "./booking-log.js";
 
 export var SUBMIT_ERRORS_KEY = "submitErrors";
 export var SUBMIT_ERRORS_MAX = 50;
@@ -63,7 +64,7 @@ async function _notifyTelegram(entry) {
   if (entry.route) lines.push(`🔗 <b>Route:</b> ${entry.route}`);
   if (entry.status) lines.push(`🌐 <b>HTTP:</b> ${entry.status}`);
   if (entry.email) lines.push(`👤 <b>Account:</b> ${entry.email}`);
-  lines.push(`🕐 <b>When:</b> ${when} IST`, "", "📲 Visa Slot 6");
+  lines.push(`🕐 <b>When:</b> ${when} IST`, "", "📲 Visa Slot 10");
   const caption = lines.join("\n");
   await notifyTelegramScreenshot(caption, {
     kind: "submit_error",
@@ -97,6 +98,19 @@ export async function recordSubmitError(source, message, meta = {}) {
   };
 
   await _appendStorage(entry);
+  reportBookingEvent({
+    kind: "submit",
+    stage: "fail",
+    level: "error",
+    message: entry.message,
+    date: entry.date || "",
+    city: entry.city || "",
+    detail: {
+      source: entry.source,
+      route: entry.route || "",
+      status: entry.status || "",
+    },
+  });
   try {
     await _notifyTelegram(entry);
   } catch (e) {}

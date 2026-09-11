@@ -1,0 +1,184 @@
+{% extends "panel/base.html" %}
+{% block title %}City timing · VisaSlot Admin{% endblock %}
+{% block content %}
+<h1 class="hero-line">City Change timing</h1>
+<p class="lede">
+  Set <strong>when</strong> cities may change each IST hour (minutes + seconds).
+  How often they change inside a long window still uses each applicant’s gap (usually 13–18s).
+  When any applicant finds dates, others with that city in prefs jump there automatically.
+</p>
+
+<section class="card">
+  <h2>Hot city (dates found)</h2>
+  <p class="meta" style="margin-top:-.35rem">
+    When one account sees dates, that city stays hot for ~3 minutes.
+    Other Tik Tik users with <strong>City Change ON</strong> and that city in preferred cities switch there immediately.
+  </p>
+  {% if hot_city %}
+  <p>
+    Active: <strong>{{ hot_city.name }}</strong>
+    <code>{{ hot_city.id }}</code>
+  </p>
+  <form method="post" style="margin-top:.6rem" onsubmit="return confirm('Clear hot city?');">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="clear_hot_city" />
+    <button class="btn ghost" type="submit">Clear hot city</button>
+  </form>
+  {% else %}
+  <p class="meta">No hot city right now — waiting for the next date sighting.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Active windows (IST, every hour)</h2>
+  <p class="meta" style="margin-top:-.35rem">
+    Current: <strong>{{ window_label }}</strong>
+    {% if timing.updated_at %} · updated {{ timing.updated_at|date:"M j, H:i" }}{% endif %}
+  </p>
+  <p class="meta">
+    <strong>Point (once):</strong> set From and To to the <em>same</em> time —
+    e.g. <code>12</code>:<code>44</code> → <code>12</code>:<code>44</code> and
+    <code>12</code>:<code>54</code> → <code>12</code>:<code>54</code>.
+    City changes <strong>once</strong> at each of those seconds, then waits for the next row.
+  </p>
+  <p class="meta">
+    <strong>Range:</strong> From earlier than To —
+    e.g. <code>14</code>:<code>00</code> → <code>21</code>:<code>30</code>, or a short
+    10-second window. While inside, cities keep rotating every <strong>13–18s</strong>
+    (or that applicant’s Fast/Normal/Slow). Outside all rows, City Change waits.
+  </p>
+
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="save" />
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>From min</th>
+            <th>From sec</th>
+            <th>To min</th>
+            <th>To sec</th>
+            <th>Preview</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in form_rows %}
+          <tr>
+            <td>{{ forloop.counter }}</td>
+            <td>
+              <input type="number" name="from_{{ forloop.counter }}" min="0" max="59" step="1"
+                     value="{{ row.from_min }}" placeholder="14" style="width:4.5rem" />
+            </td>
+            <td>
+              <input type="number" name="from_sec_{{ forloop.counter }}" min="0" max="59" step="1"
+                     value="{{ row.from_sec }}" placeholder="00" style="width:4.5rem" />
+            </td>
+            <td>
+              <input type="number" name="to_{{ forloop.counter }}" min="0" max="59" step="1"
+                     value="{{ row.to_min }}" placeholder="21" style="width:4.5rem" />
+            </td>
+            <td>
+              <input type="number" name="to_sec_{{ forloop.counter }}" min="0" max="59" step="1"
+                     value="{{ row.to_sec }}" placeholder="59" style="width:4.5rem" />
+            </td>
+            <td class="meta">
+              {% if row.from_min != "" and row.to_min != "" %}
+                {% if row.from_min == row.to_min and row.from_sec == row.to_sec %}
+                  :{{ row.from_min|stringformat:"02d" }}:{{ row.from_sec|default_if_none:0|stringformat:"02d" }} <em>(once)</em>
+                {% else %}
+                  :{{ row.from_min|stringformat:"02d" }}:{{ row.from_sec|default_if_none:0|stringformat:"02d" }}–:{{ row.to_min|stringformat:"02d" }}:{{ row.to_sec|default_if_none:0|stringformat:"02d" }}
+                {% endif %}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="field-hint">
+      Leave a row blank to remove it. Same From/To = one switch at that second.
+      Different From/To = keep rotating with 13–18s while inside.
+    </p>
+    <div style="margin-top:1rem;display:flex;gap:.6rem;flex-wrap:wrap">
+      <button class="btn" type="submit">Save city timing</button>
+    </div>
+  </form>
+
+  <form method="post" style="margin-top:.8rem" onsubmit="return confirm('Reset to default windows :00:00–:02:59, :14:00–:21:59, :24:00–:31:59, :54:00–:59:59?');">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="reset_defaults" />
+    <button class="btn ghost" type="submit">Reset to defaults</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Auto Submit rules</h2>
+  <p class="meta" style="margin-top:-.35rem">
+    Global pick strategy for all Tik Tik clients. Changes apply on the next Auto Submit sync — no new extension zip.
+    {% if asub_rules.updated_at %} · updated {{ asub_rules.updated_at|date:"M j, H:i" }}{% endif %}
+  </p>
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="save_asub_rules" />
+    <label class="switch" style="margin-bottom:.85rem">
+      <input type="checkbox" name="skip_highest_slot" {% if asub_rules.skip_highest_slot %}checked{% endif %} />
+      <div>
+        <strong>Skip highest-availability time slot</strong>
+        <div class="meta">Start at 2nd highest (recommended) so booking is less contested.</div>
+      </div>
+    </label>
+    <label class="switch" style="margin-bottom:.85rem">
+      <input type="checkbox" name="halt_city_while_booking" {% if asub_rules.halt_city_while_booking %}checked{% endif %} />
+      <div>
+        <strong>Don’t change city while trying dates</strong>
+        <div class="meta">Stop City Change while Auto Submit is picking date/time.</div>
+      </div>
+    </label>
+    <div class="two">
+      <div>
+        <div class="section-label">Slot start rank (1 = highest avail)</div>
+        <input type="number" name="slot_start_rank" min="1" max="5" value="{{ asub_rules.slot_start_rank }}" />
+      </div>
+      <div>
+        <div class="section-label">Max time slots to try</div>
+        <input type="number" name="max_slot_tries" min="1" max="5" value="{{ asub_rules.max_slot_tries }}" />
+      </div>
+    </div>
+    <div class="two" style="margin-top:.85rem">
+      <div>
+        <div class="section-label">Max dates to try (same city)</div>
+        <input type="number" name="max_date_tries" min="1" max="5" value="{{ asub_rules.max_date_tries }}" />
+      </div>
+      <div></div>
+    </div>
+    <p class="meta" style="margin-top:1rem">Date pick index (0 = first date). Current default: 1 date→1st, 2→2nd, 3→3rd, 4+→3rd.</p>
+    <div class="two">
+      <div>
+        <div class="section-label">When 1 date</div>
+        <input type="number" name="date_pref_1" min="0" max="9" value="{{ asub_rules.date_pref_1 }}" />
+      </div>
+      <div>
+        <div class="section-label">When 2 dates</div>
+        <input type="number" name="date_pref_2" min="0" max="9" value="{{ asub_rules.date_pref_2 }}" />
+      </div>
+    </div>
+    <div class="two" style="margin-top:.85rem">
+      <div>
+        <div class="section-label">When 3 dates</div>
+        <input type="number" name="date_pref_3" min="0" max="9" value="{{ asub_rules.date_pref_3 }}" />
+      </div>
+      <div>
+        <div class="section-label">When 4+ dates</div>
+        <input type="number" name="date_pref_many" min="0" max="9" value="{{ asub_rules.date_pref_many }}" />
+      </div>
+    </div>
+    <div style="margin-top:1rem">
+      <button class="btn" type="submit">Save Auto Submit rules</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

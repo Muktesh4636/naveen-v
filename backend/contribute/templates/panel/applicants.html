@@ -18,10 +18,10 @@
     <button class="btn" type="submit">Search</button>
     {% if q %}<a class="btn ghost" href="?status={{ status }}">Clear</a>{% endif %}
   </form>
-  <form method="post" style="margin:0" onsubmit="return confirm('Merge duplicate applicants (same email / ID / name)?');">
+  <form method="post" style="margin:0" onsubmit="return confirm('Merge duplicate applicants (same email / phone / ID / name)?');">
     {% csrf_token %}
     <input type="hidden" name="action" value="dedupe" />
-    <button class="btn ghost" type="submit">Remove duplicates</button>
+    <button class="btn ghost" type="submit">Remove duplicates{% if dup_groups %} ({{ dup_groups }}){% endif %}</button>
   </form>
   <div class="filters">
     <a class="chip-filter {% if status == 'all' %}active{% endif %}" href="?q={{ q|urlencode }}&status=all">All</a>
@@ -57,20 +57,16 @@
       {% if row.payment_id %} · Pay ID {{ row.payment_id }}{% endif %}
       {% if row.payment_user_id %} · By {{ row.payment_user_id }}{% endif %}
     </div>
-    <div class="city-tags">
-      {% for c in row.cities %}
-        <span class="tag">{{ c.name }}</span>
-      {% empty %}
-        <span class="meta">No preferred cities yet</span>
-      {% endfor %}
-    </div>
-    <div class="meta">
-      Switches every <strong style="color:var(--text)">{{ row.min_sec }}–{{ row.max_sec }}s</strong>
-      · {{ row.contrib_count }} slot check{{ row.contrib_count|pluralize }}
-    </div>
     <div class="row-actions">
       <span class="meta">Updated {{ row.updated|date:"M j, H:i" }}</span>
-      <a class="btn" href="{% url 'panel_user' row.applicant.pk %}">Manage</a>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+        <form method="post" action="{% url 'panel_user' row.applicant.pk %}" style="margin:0" onsubmit="return confirm('Wipe this client on next poll? Local extension data will be cleared.');">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="wipe_client" />
+          <button class="btn ghost" type="submit" style="color:var(--danger)">Wipe client</button>
+        </form>
+        <a class="btn" href="{% url 'panel_user' row.applicant.pk %}">Manage</a>
+      </div>
     </div>
   </article>
   {% endfor %}

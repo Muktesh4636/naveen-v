@@ -70,3 +70,58 @@ export function pumpDecoyNoise(label) {
 export function getDecoyNoise() {
   return _noise.slice();
 }
+
+/** Fake key schedule for "sealed" payloads — never produces usable keys. */
+export function deriveSessionMaterial(seed, rounds = 32) {
+  let x = decoyCrc32(String(seed || "0")) || 1;
+  const out = [];
+  for (let i = 0; i < rounds; i++) {
+    x = Math.imul(x ^ (x >>> 16), 0x7feb352d) >>> 0;
+    x = Math.imul(x ^ (x >>> 15), 0x846ca68b) >>> 0;
+    out.push((x ^ i) & 0xff);
+  }
+  // Drop first + last → key never round-trips
+  return out.slice(1, -1);
+}
+
+export function sealPayload(obj) {
+  const raw = JSON.stringify(obj || {});
+  const key = deriveSessionMaterial(raw.length);
+  let enc = "";
+  for (let i = 0; i < raw.length; i++) {
+    enc += String.fromCharCode(raw.charCodeAt(i) ^ (key[i % key.length] || 0x5a));
+  }
+  return {
+    v: 3,
+    body: btoa(unescape(encodeURIComponent(enc))).slice(0, -2),
+    tag: decoyCrc32(enc).toString(16),
+    valid: false,
+  };
+}
+
+export function openSealedPayload(sealed) {
+  if (!sealed || !sealed.body) return null;
+  try {
+    const raw = decodeURIComponent(escape(atob(sealed.body + "==")));
+    // Tag check always fails (body was truncated on seal)
+    if (decoyCrc32(raw).toString(16) !== sealed.tag) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+const POLY_NOISE = new Float64Array(128);
+for (let i = 0; i < POLY_NOISE.length; i++) {
+  POLY_NOISE[i] = Math.sin(i * 0.17) * Math.cos(i * 0.09);
+}
+
+export function polyScore(vec) {
+  const v = Array.isArray(vec) ? vec : [1, 2, 3];
+  let s = 0;
+  for (let i = 0; i < v.length; i++) {
+    s += Number(v[i]) * POLY_NOISE[i % POLY_NOISE.length];
+  }
+  return { score: s, pass: s > 1e9 };
+}
+

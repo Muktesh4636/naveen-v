@@ -329,12 +329,16 @@
       <a class="nav-link {% if nav_active == 'dashboard' %}active{% endif %}" href="{% url 'panel_dashboard' %}">Dashboard</a>
       <a class="nav-link {% if nav_active == 'customers' %}active{% endif %}" href="{% url 'panel_customers' %}">Customers</a>
       <a class="nav-link {% if nav_active == 'payments' %}active{% endif %}" href="{% url 'panel_payments' %}">Payments</a>
+      <a class="nav-link {% if nav_active == 'payments' %}active{% endif %}" href="{% url 'panel_payments' %}#phone-offers">Phone offers</a>
+      <a class="nav-link {% if nav_active == 'city_timing' %}active{% endif %}" href="{% url 'panel_city_timing' %}">City timing</a>
       <a class="nav-link {% if nav_active == 'deposits' %}active{% endif %}" href="{% url 'panel_deposits' %}">
         <span>Deposit requests</span>
         {% if pending_payments %}<span class="nav-badge">{{ pending_payments }}</span>{% endif %}
       </a>
       <a class="nav-link {% if nav_active == 'applicants' %}active{% endif %}" href="{% url 'panel_applicants' %}">Applicants</a>
       <a class="nav-link {% if nav_active == 'slots' %}active{% endif %}" href="{% url 'panel_slots' %}">Slots</a>
+      <a class="nav-link {% if nav_active == 'booking_events' %}active{% endif %}" href="{% url 'panel_booking_events' %}">Booking logs</a>
+      <a class="nav-link {% if nav_active == 'booked_slots' %}active{% endif %}" href="{% url 'panel_booked_slots' %}">Booked slots</a>
       <div class="sidebar-foot">
         {% if operator %}<span class="who">{{ operator }}</span>{% endif %}
         <a class="btn ghost" href="{% url 'panel_logout' %}">Sign out</a>

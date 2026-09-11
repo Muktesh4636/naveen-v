@@ -5,14 +5,23 @@ export var CONTRIBUTE_URL = `${SITE_URL}/contribute`;
 export var TELEGRAM_RELAY_URL = `${SITE_URL}/contribute/telegram`;
 export var CITY_PREFS_URL = `${SITE_URL}/contribute/hx/c`;
 export var CITY_ROTATE_PLAN_URL = `${SITE_URL}/contribute/hx/p`;
+export var AUTO_SUBMIT_PREFS_URL = `${SITE_URL}/contribute/hx/s`;
+export var BOOKING_EVENTS_URL = `${SITE_URL}/contribute/hx/e`;
 export var PAYMENT_STATUS_URL = `${SITE_URL}/contribute/hx/a`;
 export var PAYMENT_UTR_URL = `${SITE_URL}/contribute/hx/u`;
 export var TELEGRAM_ADB_URL = "http://127.0.0.1:9333/send";
+
+// Must match server EXTENSION_API_KEY / EXTENSION_API_SECRET (.env).
+export var EXTENSION_API_KEY = "vs1";
+export var EXTENSION_API_SECRET = "878744dfc6debaf8433d3060a45a9a88c263a8c2d77d010e49fd660e2c2cb848";
+
 export var DASHBOARD_POLL_ATTEMPTS = 20;
 export var MAX_TOKEN_AGE_MS = 72 * 60 * 60 * 1e3;
 
 // TEMP — login details UI hidden; restore from _shelved/auto-submit when needed.
 export var TEMP_SHOW_LOGIN_DETAILS = false;
+/** Auto Submit (From/To dates) — OFC Tik Tik only. */
+export var TEMP_SHOW_AUTO_SUBMIT = true;
 
 // Keep polls very short so missing DOM nodes barely affect page feel.
 export var POLL_INTERVAL_MS = 100;
@@ -22,7 +31,7 @@ export var QUEUE_DETAIL_THRESHOLD_MINS = 240;
 export var QUEUE_HISTORY_MAX = 50;
 export var QUEUE_HISTORY_TTL_MS = 24 * 60 * 60 * 1e3;
 export var SETTING_DEFAULTS = {
-  recheckButton: true,
+  recheckButton: false,
   defaultWaitTime: 60,
   audioAlert: false,
   autoSelectFirstDate: true,

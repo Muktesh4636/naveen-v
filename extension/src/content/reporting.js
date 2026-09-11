@@ -8,6 +8,7 @@ import {
   getSetting,
   setPosts,
 } from "../shared/config.js";
+import { signedFetch } from "../shared/api-sign.js";
 import { extensionAlive, storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
 import { captureUsernameAnytime } from "../shared/profile-capture.js";
@@ -98,11 +99,7 @@ export async function submitContribution() {
   if (!contrib.profile?.id && !contrib.profile?.email) return;
 
   try {
-    const response = await fetch(CONTRIBUTE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(contrib),
-    }).then((r) => r.json());
+    const response = await signedFetch(CONTRIBUTE_URL, contrib).then((r) => r.json());
 
     if (!response.success) return;
 
@@ -147,11 +144,7 @@ export function syncDashboard(attempt = 0) {
       if (JSON.stringify(current) === JSON.stringify(storage.savedDashboard)) {
         return;
       }
-      fetch(CONTRIBUTE_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile: storage.profile, dashboard: current, token }),
-      }).then((response) => response.json()).then((response) => {
+      signedFetch(CONTRIBUTE_URL, { profile: storage.profile, dashboard: current, token }).then((response) => response.json()).then((response) => {
         if (response.success) {
           storageSet({ savedDashboard: current });
         }

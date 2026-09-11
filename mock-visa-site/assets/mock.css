@@ -1,0 +1,220 @@
+:root {
+  --ink: #1b1b1b;
+  --muted: #5c5c5c;
+  --line: #dfe1e2;
+  --bg: #f0f0f0;
+  --card: #ffffff;
+  --accent: #005ea2;
+  --accent-dark: #1a4480;
+  --warn: #9a3412;
+  --ok: #166534;
+  --mock: #7c2d12;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Source Sans Pro", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+  line-height: 1.45;
+}
+
+.hidden { display: none !important; }
+
+.mock-controls {
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  padding: 8px 14px;
+  background: #fff7ed;
+  border-bottom: 2px solid #fdba74;
+  font-size: 13px;
+}
+
+.mock-controls strong { color: var(--mock); margin-right: 6px; }
+
+.mock-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mock-controls select,
+.mock-controls input[type="number"] {
+  padding: 4px 6px;
+  border: 1px solid #fdba74;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.mock-controls button {
+  padding: 5px 10px;
+  border: 1px solid #c2410c;
+  background: #ea580c;
+  color: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.mock-controls button:hover { background: #c2410c; }
+
+.mock-status { color: var(--muted); font-size: 12px; }
+
+.site-header {
+  background: var(--accent);
+  color: #fff;
+  padding: 14px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.brand { font-size: 1.25rem; font-weight: 700; letter-spacing: 0.02em; }
+
+.badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #fef08a;
+  color: #713f12;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
+.header-meta { font-size: 13px; opacity: 0.92; }
+
+.layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 0;
+  max-width: 1100px;
+  margin: 16px auto;
+  background: var(--card);
+  border: 1px solid var(--line);
+  min-height: 70vh;
+}
+
+@media (max-width: 720px) {
+  .layout { grid-template-columns: 1fr; margin: 0; border: none; }
+}
+
+.sidebar {
+  border-right: 1px solid var(--line);
+  background: #f8f9fa;
+  padding: 16px 0;
+}
+
+.sidenav {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.usa-sidenav__item a {
+  display: block;
+  padding: 10px 16px;
+  color: var(--accent-dark);
+  text-decoration: none;
+  border-left: 4px solid transparent;
+}
+
+.usa-sidenav__item a:hover {
+  background: #e7f6f8;
+  border-left-color: var(--accent);
+}
+
+.main { padding: 20px 24px 32px; }
+
+.main h1 {
+  margin: 0 0 8px;
+  font-size: 1.6rem;
+  font-weight: 700;
+}
+
+.lede { color: var(--muted); margin: 0 0 20px; max-width: 52ch; }
+
+.field-row {
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 420px;
+}
+
+#post_select,
+#datepicker {
+  padding: 8px 10px;
+  border: 1px solid #adadad;
+  border-radius: 4px;
+  font-size: 15px;
+}
+
+.loading {
+  margin: 12px 0;
+  padding: 12px 14px;
+  background: #e7f6f8;
+  border-left: 4px solid var(--accent);
+  color: var(--accent-dark);
+  font-weight: 600;
+}
+
+.times-wrap { margin: 18px 0; max-width: 480px; }
+
+.times-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 14px;
+}
+
+.times-table th,
+.times-table td {
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.times-table tbody tr:hover { background: #f0f9ff; cursor: pointer; }
+
+.actions { margin-top: 20px; }
+
+#submitbtn {
+  padding: 10px 22px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#submitbtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+#submitbtn:not(:disabled):hover { background: var(--accent-dark); }
+
+.submit-result {
+  margin-top: 12px;
+  font-weight: 600;
+  min-height: 1.2em;
+}
+
+.submit-result.ok { color: var(--ok); }
+.submit-result.err { color: var(--warn); }
+
+/* jQuery UI datepicker sits above mock controls */
+.ui-datepicker { z-index: 1100 !important; }

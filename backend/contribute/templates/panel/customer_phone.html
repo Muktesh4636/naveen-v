@@ -1,0 +1,101 @@
+{% extends "panel/base.html" %}
+{% block title %}{{ display }} · Customer{% endblock %}
+{% block content %}
+<p class="meta"><a href="{% url 'panel_customers' %}">← Customers</a></p>
+<h1 class="hero-line">{{ display }}</h1>
+<p class="lede">
+  Phone customer — paid applicants locked to this number after Accept.
+  {% if display != phone %}<code>{{ phone }}</code>{% endif %}
+</p>
+
+<div class="stats">
+  <div class="stat"><b>{{ applicants|length }}</b><span>Applicants</span></div>
+  <div class="stat"><b>{{ paid_count }}</b><span>Paid</span></div>
+  <div class="stat"><b>{{ pending_count }}</b><span>Pending UTR</span></div>
+</div>
+
+{% if offer %}
+<section class="card">
+  <h2>Phone offer</h2>
+  <p class="meta" style="margin-top:-.35rem">Special Tik Tik price for this phone.</p>
+  <div class="two">
+    <div><div class="section-label">Offer amount</div><strong>₹{{ offer.offer_amount }}</strong></div>
+    <div><div class="section-label">List amount</div>{% if offer.list_amount %}₹{{ offer.list_amount }}{% else %}—{% endif %}</div>
+    <div><div class="section-label">Label</div>{{ offer.offer_label|default:"—" }}</div>
+    <div><div class="section-label">Status</div>{% if offer.active %}<span class="pill on">Active</span>{% else %}<span class="pill off">Off</span>{% endif %}</div>
+  </div>
+  <p class="meta" style="margin-top:.8rem"><a href="{% url 'panel_payments' %}#phone-offers">Edit on Payments → Phone offers</a></p>
+</section>
+{% else %}
+<section class="card">
+  <h2>Phone offer</h2>
+  <p class="meta">No special offer for this phone yet. <a href="{% url 'panel_payments' %}#phone-offers">Add one on Payments</a>.</p>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Paid applicants under {{ display }}</h2>
+  {% if applicants %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Applicant</th>
+          <th>Username / ID</th>
+          <th>Email</th>
+          <th>Payment</th>
+          <th>Updated</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for a in applicants %}
+        <tr>
+          <td><a href="{% url 'panel_user' a.pk %}"><strong>{{ a.name|default:"—" }}</strong></a></td>
+          <td><code>{{ a.applicant_id|default:"—" }}</code></td>
+          <td class="meta">{{ a.email|default:"—" }}</td>
+          <td><span class="pill on">Paid</span></td>
+          <td class="meta">{{ a.updated_at|date:"M j, H:i" }}</td>
+          <td>
+            <form method="post" action="{% url 'panel_user' a.pk %}" style="display:inline" onsubmit="return confirm('Re-ask payment? Tik Tik will lock until they pay again.');">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="reask_payment" />
+              <button class="btn ghost" type="submit">Re-ask payment</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty"><strong>No paid applicants yet</strong>Accept a deposit for this phone on Deposit requests — then the applicant appears here.</div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Recent deposit requests</h2>
+  {% if claims %}
+  <table>
+    <thead><tr><th>When</th><th>Applicant</th><th>UTR</th><th>Amount</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for c in claims %}
+      <tr>
+        <td class="meta">{{ c.created_at|date:"M j, H:i" }}</td>
+        <td>{{ c.target_applicant_id }}</td>
+        <td><code>{{ c.payment_ref|default:"—" }}</code></td>
+        <td>₹{{ c.amount }}</td>
+        <td>
+          {% if c.status == "accepted" %}<span class="pill on">Accepted</span>
+          {% elif c.status == "rejected" %}<span class="pill bad">Rejected</span>
+          {% else %}<span class="pill off">Waiting</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty"><strong>No deposits for this phone</strong></div>
+  {% endif %}
+</section>
+{% endblock %}

@@ -59,6 +59,9 @@ export const ID = {
   aiPayUtr:    T + '39',
   aiPaySubmit: T + '40',
   aiPayCopy:   T + '41',
+  aiPayPhone:  T + '42',
+  aiPayPhoneGo: T + '43',
+  aiPayPhoneChange: T + '44',
 };
 
 // CSS class names

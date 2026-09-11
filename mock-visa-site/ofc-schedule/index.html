@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OFC Schedule — Mock Visa Site</title>
+  <link rel="stylesheet" href="/assets/vendor/jquery-ui.css" />
+  <link rel="stylesheet" href="/assets/mock.css" />
+</head>
+<body>
+  <div id="mock-controls" class="mock-controls" aria-label="Mock test controls">
+    <strong>Mock controls</strong>
+    <label>Scenario
+      <select id="mock-scenario">
+        <option value="slots">Slots (dates)</option>
+        <option value="empty">No slots</option>
+        <option value="error">HasError</option>
+        <option value="pse0501">PSE0501 alert</option>
+      </select>
+    </label>
+    <label>Load delay (ms)
+      <input type="number" id="mock-delay" min="0" step="100" value="1500" />
+    </label>
+    <button type="button" id="mock-apply">Apply</button>
+    <button type="button" id="mock-reload-city">Reload current city</button>
+    <span id="mock-status" class="mock-status"></span>
+  </div>
+
+  <header class="site-header">
+    <div class="brand">USVisaScheduling <span class="badge">MOCK</span></div>
+    <div class="header-meta">Applicant: Test User · OFC Appointment</div>
+  </header>
+
+  <div class="layout">
+    <aside id="atlas-sidebar" class="sidebar">
+      <ul class="sidenav">
+        <li class="usa-sidenav__item"><a href="/ofc-schedule">OFC Schedule</a></li>
+        <li class="usa-sidenav__item"><a href="#manage">Manage Appointments</a></li>
+      </ul>
+    </aside>
+
+    <main class="main">
+      <h1>Schedule OFC Appointment</h1>
+      <p class="lede">Select a post / VAC. Available days load via Ajax (same shape as CGI).</p>
+
+      <form id="page_form" onsubmit="return false;">
+        <div class="field-row">
+          <label for="post_select"><strong>Post / VAC</strong></label>
+          <select id="post_select" name="post_select">
+            <option value="">— Select —</option>
+            <option value="3f6bf614-b0db-ec11-a7b4-001dd80234f6">CHENNAI VAC</option>
+            <option value="436bf614-b0db-ec11-a7b4-001dd80234f6">HYDERABAD VAC</option>
+            <option value="466bf614-b0db-ec11-a7b4-001dd80234f6">MUMBAI VAC</option>
+            <option value="486bf614-b0db-ec11-a7b4-001dd80234f6">NEW DELHI VAC</option>
+            <option value="4a6bf614-b0db-ec11-a7b4-001dd80234f6">KOLKATA VAC</option>
+          </select>
+        </div>
+
+        <div id="loading-indicator" class="loading hidden" aria-live="polite">
+          Loading appointment available days…
+        </div>
+
+        <div class="field-row">
+          <label for="datepicker"><strong>Select date</strong></label>
+          <input type="text" id="datepicker" autocomplete="off" placeholder="Choose a date" disabled />
+        </div>
+
+        <div id="times-wrap" class="times-wrap hidden">
+          <strong>Available times</strong>
+          <table id="times-table" class="times-table">
+            <thead>
+              <tr><th>Select</th><th>Time</th><th>Available</th></tr>
+            </thead>
+            <tbody id="times-body"></tbody>
+          </table>
+        </div>
+
+        <div class="actions">
+          <button type="button" id="submitbtn" disabled>Submit</button>
+        </div>
+        <div id="submit-result" class="submit-result" aria-live="polite"></div>
+      </form>
+    </main>
+  </div>
+
+  <script src="/assets/vendor/jquery-3.7.1.min.js"></script>
+  <script src="/assets/vendor/jquery-ui.min.js"></script>
+  <script src="/assets/mock.js"></script>
+</body>
+</html>

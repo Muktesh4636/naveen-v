@@ -295,6 +295,7 @@ export var CSS = `
 #${ID.aiPanel} input[type="text"],
 #${ID.aiPanel} input[type="password"],
 #${ID.aiPanel} input[type="email"],
+#${ID.aiPanel} input[type="tel"],
 #${ID.aiPanel} select {
   padding: 4px 6px;
   border: 1px solid #cbd5e1;

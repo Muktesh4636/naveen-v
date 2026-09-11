@@ -119,6 +119,7 @@ def merge_into(keeper: Applicant, losers: list[Applicant]) -> int:
             "payment_note",
             "pending_utr",
             "offer_label",
+            "phone",
         ):
             cur = getattr(keeper, field) or ""
             other = getattr(loser, field) or ""
@@ -163,8 +164,9 @@ def dedupe_applicants() -> dict:
     Merge duplicates in passes:
     1) same applicant_id (case-insensitive)
     2) same email
-    3) same extracted portal number
-    4) same normalized name (when name length >= 5)
+    3) same phone
+    4) same extracted portal number
+    5) same normalized name (when name length >= 5)
     """
     before = Applicant.objects.count()
     removed = 0
@@ -185,7 +187,15 @@ def dedupe_applicants() -> dict:
             by_email[key].append(a)
     removed += _merge_groups(by_email)
 
-    # Pass 3: portal number from id or name
+    # Pass 3: phone
+    by_phone = defaultdict(list)
+    for a in Applicant.objects.all():
+        phone = "".join(ch for ch in str(getattr(a, "phone", "") or "") if ch.isdigit())
+        if len(phone) >= 8:
+            by_phone[phone[-10:]].append(a)
+    removed += _merge_groups(by_phone)
+
+    # Pass 4: portal number from id or name
     by_num = defaultdict(list)
     for a in Applicant.objects.all():
         num = extract_portal_number(a.applicant_id, a.name)
@@ -193,7 +203,7 @@ def dedupe_applicants() -> dict:
             by_num[num].append(a)
     removed += _merge_groups(by_num)
 
-    # Pass 4: normalized name
+    # Pass 5: normalized name
     by_name = defaultdict(list)
     for a in Applicant.objects.all():
         key = _norm(a.name)
@@ -202,11 +212,6 @@ def dedupe_applicants() -> dict:
     removed += _merge_groups(by_name)
 
     after = Applicant.objects.count()
-    left = (
-        Applicant.objects.exclude(applicant_id="")
-        .annotate(lid=Count("id"))  # placeholder; check manually below
-    )
-    # Remaining exact id dups
     remaining = (
         Applicant.objects.exclude(applicant_id="")
         .values("applicant_id")
@@ -220,3 +225,42 @@ def dedupe_applicants() -> dict:
         "removed": removed,
         "remaining_id_dup_groups": remaining,
     }
+
+
+def count_duplicate_groups() -> int:
+    """How many mergeable groups exist (without merging)."""
+    seen = set()
+    groups = 0
+
+    def _count(mapping):
+        nonlocal groups
+        for key, rows in mapping.items():
+            if len(rows) < 2:
+                continue
+            ids = tuple(sorted(a.pk for a in rows))
+            if ids in seen:
+                continue
+            seen.add(ids)
+            groups += 1
+
+    by_id = defaultdict(list)
+    by_email = defaultdict(list)
+    by_phone = defaultdict(list)
+    by_num = defaultdict(list)
+    by_name = defaultdict(list)
+    for a in Applicant.objects.all():
+        if _norm(a.applicant_id):
+            by_id[_norm(a.applicant_id)].append(a)
+        if _norm(a.email):
+            by_email[_norm(a.email)].append(a)
+        phone = "".join(ch for ch in str(getattr(a, "phone", "") or "") if ch.isdigit())
+        if len(phone) >= 8:
+            by_phone[phone[-10:]].append(a)
+        num = extract_portal_number(a.applicant_id, a.name)
+        if num:
+            by_num[num].append(a)
+        if len(_norm(a.name)) >= 5:
+            by_name[_norm(a.name)].append(a)
+    for m in (by_id, by_email, by_phone, by_num, by_name):
+        _count(m)
+    return groups

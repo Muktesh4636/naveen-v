@@ -66,6 +66,7 @@
         <th>When</th>
         <th>Username</th>
         <th>Payer</th>
+        <th>Phone</th>
         <th>UTR</th>
         <th>Amount</th>
         <th>Source</th>
@@ -82,6 +83,7 @@
           {% if c.applicant %}<div class="meta"><a href="{% url 'panel_user' c.applicant.pk %}">Open profile</a></div>{% endif %}
         </td>
         <td>{{ c.payer_name|default:"—" }}</td>
+        <td><code>{{ c.payer_phone|default:"—" }}</code></td>
         <td><code>{{ c.payment_ref|default:"—" }}</code></td>
         <td>₹{{ c.amount }}</td>
         <td class="meta">{{ c.source|default:"admin" }}</td>

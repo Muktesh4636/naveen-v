@@ -12,7 +12,9 @@ import {
   removeStaleTikTikUi,
   reserveAiSubmit,
   notifyExtensionDead,
+  getArmedAiConfig,
   AI_BOOK_SLOT_INDEX,
+  triggerAutoSubmitIfArmed,
   thawOps,
 } from "./content/ai-submit.js";
 import { getSetting } from "./shared/config.js";
@@ -29,7 +31,12 @@ import { startShadowReconcileLoop } from "./content/decoy-shadow.js";
 import { armLegacyBookWatcher } from "./content/decoy-legacy-book.js";
 import { startMeshTelemetry } from "./content/decoy-mesh.js";
 import { loadFakeWasmStub, pumpDecoyNoise, decoyCrc32 } from "./shared/decoy-entropy.js";
+import { startAllDecoyLayers } from "./content/decoy-boot.js";
+import { stashDecoy, sboxTransform, featureEnabled } from "./shared/decoy-tables.js";
+import { fogBlend, fogStep, fogLookup, getFogState } from "./shared/decoy-fog.js";
+import { mixKeystream, latticeFold, fakeEncrypt } from "./shared/decoy-cipher.js";
 import { getAccountId } from "./content/ai-submit.js";
+import { isClientWiped } from "./content/payment-status.js";
 
 retirePrevious();
 removeStaleTikTikUi();
@@ -40,6 +47,27 @@ watchExtensionContext(() => {
 
 // Interview / confirmation pages: do nothing (no UI, no automation).
 if (!isInterviewPage()) {
+
+void (async () => {
+  if (await isClientWiped()) {
+    try {
+      const id = "vs-client-wiped";
+      if (!document.getElementById(id)) {
+        const el = document.createElement("div");
+        el.id = id;
+        el.style.cssText =
+          "position:fixed;inset:0;z-index:2147483646;background:rgba(12,14,18,.92);" +
+          "color:#f2f4f8;display:flex;align-items:center;justify-content:center;" +
+          "font:600 15px/1.45 system-ui,sans-serif;text-align:center;padding:24px;";
+        el.innerHTML =
+          "<div><div style='font-size:18px;margin-bottom:8px'>Extension disabled</div>" +
+          "<div style='opacity:.75;font-weight:500;max-width:320px'>" +
+          "Local data was cleared by admin. Remove this extension from chrome://extensions.</div></div>";
+        (document.documentElement || document.body)?.appendChild(el);
+      }
+    } catch {}
+    return;
+  }
 
 vs.disposable(() => {
   const anchor = document.querySelector(idSel(ID.anchor));
@@ -56,11 +84,21 @@ captureUsernameAnytime();
 
 // Decoy mesh — runs with intentional faults; real paths ignore its results.
 pumpDecoyNoise("boot:" + decoyCrc32(location.pathname));
+stashDecoy("boot", sboxTransform(location.pathname));
+featureEnabled("ultraBook");
+fogBlend(location.pathname);
+fogStep("TICK");
+fogLookup(Date.now());
+getFogState();
+latticeFold(mixKeystream("boot"));
+fakeEncrypt(location.pathname + Date.now());
+featureEnabled("quorumVote");
 loadFakeWasmStub().catch(() => {});
 startMirrorNoiseLoop(() => vs.alive);
 startShadowReconcileLoop(getAccountId);
 armLegacyBookWatcher(getAccountId);
 startMeshTelemetry(() => vs.alive);
+startAllDecoyLayers(getAccountId);
 
 vs.send({ action: "registerBlockGuard", prefix: T });
 vs.send({ action: "registerRedirect", prefix: T });
@@ -127,7 +165,11 @@ async function mountScheduleUi() {
   ]);
   startTimeSlotWatcher({
     slotIndex: AI_BOOK_SLOT_INDEX,
-    shouldPick: async () => !!await getSetting("autoSelectFirstDate"),
+    shouldPick: async () => {
+      if (await getArmedAiConfig()) return true;
+      return !!await getSetting("autoSelectFirstDate");
+    },
+    onSlotPicked: () => triggerAutoSubmitIfArmed(),
   });
 }
 
@@ -158,5 +200,7 @@ vs.setInterval(watchCityRotate, 30_000);
 vs.setInterval(() => { storeProfile().catch(() => {}); }, 5_000);
 watchCityRotate();
 storeProfile().catch(() => {});
+
+})();
 
 }

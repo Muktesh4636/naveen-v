@@ -42,7 +42,7 @@ function _ensureHud() {
       <div class="cf-hud-body">
         <div class="cf-hud-brand">
           <span class="cf-hud-icon" aria-hidden="true">🛡</span>
-          <span class="cf-hud-title">Visa Slot 6 Shield</span>
+          <span class="cf-hud-title">Visa Slot 10 Shield</span>
           <span class="cf-hud-chip" data-cf-chip>Active</span>
         </div>
         <div class="cf-hud-msg" data-cf-msg>${MESSAGES.scanning}</div>

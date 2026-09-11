@@ -19,7 +19,7 @@ from django.utils import timezone
 UNLOCK_TTL_SEC = int(getattr(settings, "UNLOCK_TOKEN_TTL_SEC", 6 * 60 * 60))
 DEFAULT_MAX_DEVICES = int(getattr(settings, "APPLICANT_MAX_DEVICES", 2))
 RATE_LIMIT_WINDOW_SEC = 60
-RATE_LIMIT_MAX_HITS = int(getattr(settings, "API_RATE_LIMIT_PER_MIN", 90))
+RATE_LIMIT_MAX_HITS = int(getattr(settings, "API_RATE_LIMIT_PER_MIN", 300))
 
 
 def _secret() -> bytes:
@@ -116,6 +116,87 @@ def rate_limit_allow(request, bucket: str = "api") -> bool:
         return True
 
 
+def api_secret() -> bytes:
+    raw = (
+        getattr(settings, "EXTENSION_API_SECRET", None)
+        or getattr(settings, "UNLOCK_SIGNING_SECRET", None)
+        or settings.SECRET_KEY
+    )
+    return str(raw).encode("utf-8")
+
+
+def api_key_expected() -> str:
+    return str(getattr(settings, "EXTENSION_API_KEY", "vs1") or "vs1")
+
+
+def sign_extension_request(
+    *,
+    ts: str,
+    method: str,
+    path: str,
+    body: bytes,
+    device_id: str = "",
+) -> str:
+    body_hash = hashlib.sha256(body or b"").hexdigest()
+    msg = f"{ts}.{method.upper()}.{path}.{body_hash}.{device_id or ''}"
+    return hmac.new(api_secret(), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def verify_extension_request(request) -> tuple[bool, str]:
+    """
+    Require HMAC headers from the official extension build.
+    Unauthorized curl/Postman without the secret is rejected.
+    """
+    if getattr(settings, "EXTENSION_API_AUTH_DISABLED", False):
+        return True, "disabled"
+
+    key = (request.headers.get("X-VS-Key") or "").strip()
+    ts = (request.headers.get("X-VS-Ts") or "").strip()
+    sig = (request.headers.get("X-VS-Sign") or "").strip().lower()
+    device = (request.headers.get("X-VS-Device") or "").strip()[:64]
+
+    if not key or not ts or not sig:
+        return False, "missing-auth"
+    if key != api_key_expected():
+        return False, "bad-key"
+
+    try:
+        ts_i = int(ts)
+    except (TypeError, ValueError):
+        return False, "bad-ts"
+
+    now = int(time.time())
+    skew = int(getattr(settings, "EXTENSION_API_SKEW_SEC", 300))
+    if abs(now - ts_i) > skew:
+        return False, "expired"
+
+    body = request.body or b""
+    expect = sign_extension_request(
+        ts=ts,
+        method=request.method or "POST",
+        path=request.path or "",
+        body=body,
+        device_id=device,
+    )
+    if not hmac.compare_digest(expect, sig):
+        return False, "bad-sign"
+
+    # Replay protection — same signature only once within TTL.
+    replay_key = f"api-sig:{sig[:64]}"
+    try:
+        if cache.get(replay_key):
+            return False, "replay"
+        cache.set(replay_key, 1, skew + 60)
+    except Exception:
+        pass
+
+    return True, "ok"
+
+
+def new_install_id() -> str:
+    return secrets.token_hex(16)
+
+
 def register_or_check_device(applicant, device_id: str, user_agent: str = "") -> dict[str, Any]:
     """
     Bind Chrome install id to a paid applicant.
@@ -155,16 +236,17 @@ def register_or_check_device(applicant, device_id: str, user_agent: str = "") ->
         existing.save(update_fields=["user_agent", "last_seen_at"])
         return {"ok": True, "device_ok": True, "reason": "known", "message": ""}
 
-    active_count = ApplicantDevice.objects.filter(
-        applicant=applicant, revoked=False
-    ).count()
-    if active_count >= max_dev:
-        return {
-            "ok": False,
-            "device_ok": False,
-            "reason": "device-limit",
-            "message": f"Device limit reached ({max_dev}). Ask admin to remove an old device.",
-        }
+    active = list(
+        ApplicantDevice.objects.filter(applicant=applicant, revoked=False).order_by(
+            "last_seen_at", "id"
+        )
+    )
+    if len(active) >= max_dev:
+        # Paid user on a new Chrome install: free the oldest slot instead of
+        # locking Tik Tik / showing the payment screen again.
+        victim = active[0]
+        victim.revoked = True
+        victim.save(update_fields=["revoked"])
 
     ApplicantDevice.objects.create(
         applicant=applicant,
@@ -172,7 +254,3 @@ def register_or_check_device(applicant, device_id: str, user_agent: str = "") ->
         user_agent=(user_agent or "")[:255],
     )
     return {"ok": True, "device_ok": True, "reason": "registered", "message": ""}
-
-
-def new_install_id() -> str:
-    return secrets.token_hex(16)

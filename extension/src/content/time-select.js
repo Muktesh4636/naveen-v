@@ -19,6 +19,16 @@ function resolveSlotIndex(count, slotIndex) {
   return Math.min(Math.max(0, want), n - 1);
 }
 
+/** Same as date pick: 1→1st, 2→2nd, 3→3rd, 4+→3rd. */
+function preferredSlotIndex(count) {
+  const n = Math.max(0, Number(count) || 0);
+  if (n <= 0) return 0;
+  if (n === 1) return 0;
+  if (n === 2) return 1;
+  if (n === 3) return 2;
+  return 2;
+}
+
 function rowLooksLikeTime(row) {
   const text = (row?.textContent || "").replace(/\s+/g, " ");
   return /\d{1,2}\s*:\s*\d{2}/.test(text) || /\b\d{1,2}\s*(AM|PM)\b/i.test(text);
@@ -236,8 +246,10 @@ export function startTimeSlotWatcher({ shouldPick, slotIndex = 0, onSlotPicked }
     }
     if (!collectTimeRadios().length) return;
     busy = true;
+    const radios = collectTimeRadios();
+    const idx = preferredSlotIndex(radios.length);
     await pickTimeSlotDual({
-      slotIndex,
+      slotIndex: idx,
       time: "00:00",
       maxMs: 800,
       pollMs: DEFAULT_POLL_MS,

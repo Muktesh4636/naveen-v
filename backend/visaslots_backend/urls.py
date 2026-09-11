@@ -12,11 +12,17 @@ urlpatterns = [
     path("panel/home/", panel_views.panel_dashboard, name="panel_home"),
     path("panel/customers/", panel_views.panel_customers, name="panel_customers"),
     path(
+        "panel/customers/p/<str:phone>/",
+        panel_views.panel_customer_phone,
+        name="panel_customer_phone",
+    ),
+    path(
         "panel/customers/<int:pk>/",
         panel_views.panel_customer_detail,
         name="panel_customer_detail",
     ),
     path("panel/payments/", panel_views.panel_payments, name="panel_payments"),
+    path("panel/city-timing/", panel_views.panel_city_timing, name="panel_city_timing"),
     path("panel/deposits/", panel_views.panel_deposits, name="panel_deposits"),
     path(
         "panel/payments/<int:pk>/action/",
@@ -30,6 +36,8 @@ urlpatterns = [
     ),
     path("panel/applicants/", panel_views.panel_applicants, name="panel_applicants"),
     path("panel/slots/", panel_views.panel_slots, name="panel_slots"),
+    path("panel/booking-logs/", panel_views.panel_booking_events, name="panel_booking_events"),
+    path("panel/booked-slots/", panel_views.panel_booked_slots, name="panel_booked_slots"),
     path("panel/user/<int:pk>/", panel_views.panel_user, name="panel_user"),
     path("", include("contribute.urls")),
 ]
