@@ -71,11 +71,14 @@ function _applyWire(data, now = Date.now()) {
 
 async function _profilePayload() {
   const profile = (await getProfile()) || {};
+  const name = profile.name || profile.username || profile.id || "";
   return {
-    i: profile.id || "",
+    // Username = name (not portal number)
+    i: name || profile.id || "",
     e: profile.email || "",
-    n: profile.name || "",
+    n: name,
     v: profile.visa || "",
+    portalId: profile.portalId || "",
   };
 }
 

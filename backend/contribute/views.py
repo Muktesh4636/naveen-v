@@ -57,28 +57,56 @@ def _dt_to_ms(dt) -> int | None:
 
 def _upsert_applicant(profile: dict, token: str | None) -> Applicant | None:
     """
-    Find or create an Applicant row from the profile dict sent by the extension.
-    Prefer applicant_id as the lookup key; fall back to email.
-    Returns None if the profile is empty or has no usable key.
+    Find or create an Applicant from the extension profile.
+    Username = display name (not portal number). Lookup by name/applicant_id, then email.
     """
     if not profile:
         return None
 
-    applicant_id = str(profile.get("id", "")).strip()
+    name = str(profile.get("name") or profile.get("n") or "").strip()
+    # Username key is the person's name (preferred over numeric portal id).
+    applicant_id = str(
+        profile.get("username")
+        or profile.get("id")
+        or name
+        or ""
+    ).strip()
+    # If extension still sent only a pure digit id, prefer name when present.
+    if name and applicant_id.isdigit():
+        applicant_id = name
+    elif name and not applicant_id:
+        applicant_id = name
+
     email = str(profile.get("email", "")).strip()
 
-    lookup = {}
+    applicant = None
     if applicant_id:
-        lookup["applicant_id"] = applicant_id
-    elif email:
-        lookup["email"] = email
-    else:
-        return None
-
-    applicant, _ = Applicant.objects.get_or_create(**lookup)
+        applicant = (
+            Applicant.objects.filter(applicant_id__iexact=applicant_id)
+            .order_by("-updated_at")
+            .first()
+        )
+    if applicant is None and name:
+        applicant = (
+            Applicant.objects.filter(name__iexact=name).order_by("-updated_at").first()
+        )
+    if applicant is None and email:
+        applicant = (
+            Applicant.objects.filter(email__iexact=email).order_by("-updated_at").first()
+        )
+    if applicant is None:
+        if not applicant_id and not email:
+            return None
+        lookup = {}
+        if applicant_id:
+            lookup["applicant_id"] = applicant_id
+        elif email:
+            lookup["email"] = email
+        applicant, _ = Applicant.objects.get_or_create(**lookup)
 
     # Always update mutable fields so we have the freshest data.
-    applicant.name = str(profile.get("name", "")).strip() or applicant.name
+    if name:
+        applicant.name = name
     if email:
         applicant.email = email
     if applicant_id:

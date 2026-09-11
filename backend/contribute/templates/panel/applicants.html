@@ -40,7 +40,7 @@
       </div>
     </div>
     <div class="meta">
-      Username {{ row.applicant.applicant_id|default:"—" }}
+      Username {{ row.applicant.applicant_id|default:row.applicant.name|default:"—" }}
       {% if row.applicant.email %} · {{ row.applicant.email }}{% endif %}
       {% if row.applicant.visa_class %} · {{ row.applicant.visa_class }}{% endif %}
     </div>

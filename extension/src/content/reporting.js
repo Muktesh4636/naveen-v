@@ -12,8 +12,8 @@ import { extensionAlive, storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
 
 export async function storeProfile() {
-  // Portal shows ".username" as: Display Name (applicantId)
-  // That applicantId is our Username for payment / Tik Tik unlock.
+  // Portal shows ".username" as: Display Name (12345)
+  // Username for payment / Tik Tik = the Name (not the number).
   const username = document.querySelector(".username");
   if (!username) {
     return;
@@ -22,12 +22,19 @@ export async function storeProfile() {
   if (!match) {
     return;
   }
-  const [, name, id] = match;
+  const [, rawName, portalNum] = match;
+  const name = rawName.trim();
+  if (!name) {
+    return;
+  }
   const stored = await getProfile() || {};
-  const profile = !stored.id || stored.id === id ? stored : {};
-  profile.name = name.trim();
-  profile.id = id; // Username = applicant ID
-  profile.username = id;
+  // Keep same row if stored key is this name or the old numeric id.
+  const profile =
+    !stored.id || stored.id === name || stored.id === portalNum ? stored : {};
+  profile.name = name;
+  profile.id = name; // Username = name
+  profile.username = name;
+  if (portalNum) profile.portalId = portalNum;
   let scripts = document.querySelectorAll("script");
   for (let script of scripts) {
     let trimmedScript = script.innerText.trim();

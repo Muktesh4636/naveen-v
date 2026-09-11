@@ -110,6 +110,9 @@ export function isCitiesEnabled(cfg) {
 
 export async function getAccountId() {
   const profile = await getProfile();
+  // Username = display name (not portal number)
+  if (profile?.name) return String(profile.name).trim();
+  if (profile?.username) return String(profile.username).trim();
   return profile?.id ? String(profile.id) : null;
 }
 
