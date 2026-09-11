@@ -542,17 +542,17 @@ function _paintStatus(cfg, accountId) {
   if (!unlocked) {
     const amt = pay.amount && pay.amount !== "0.00" ? `₹${pay.amount}` : "fee";
     if (pay.pending) {
-      status.textContent = `Account ${accountId || "—"}: waiting request — please wait until payment is approved.`;
+      status.textContent = `Username ${accountId || "—"}: waiting request — please wait until payment is approved.`;
     } else {
-      status.textContent = `Account ${accountId || "—"}: pay ${amt} via QR/UPI, then Enter UTR → Submit payment.`;
+      status.textContent = `Username ${accountId || "—"}: pay ${amt} via QR/UPI, then Enter UTR → Submit payment.`;
     }
     return;
   }
 
   if (citiesOn) {
-    status.textContent = `Account ${accountId || "—"}: City Change ON (${_cityNames(cfg)}, timing from server)`;
+    status.textContent = `Username ${accountId || "—"}: City Change ON (${_cityNames(cfg)}, timing from server)`;
   } else {
-    status.textContent = `Account ${accountId || "—"}: City Change OFF`;
+    status.textContent = `Username ${accountId || "—"}: City Change OFF`;
   }
 }
 
