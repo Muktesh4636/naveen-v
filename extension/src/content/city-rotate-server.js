@@ -4,8 +4,9 @@
  */
 import { CITY_PREFS_URL, CITY_ROTATE_PLAN_URL, getProfile } from "../shared/config.js";
 import { vs } from "../shared/lifecycle.js";
-import { notePaymentFromWire } from "./payment-status.js";
+import { getUnlockToken, notePaymentFromWire } from "./payment-status.js";
 import { captureUsernameAnytime } from "../shared/profile-capture.js";
+import { getDeviceId } from "../shared/device-id.js";
 
 /** Prefetch lead before server epoch `t`. */
 export var CITY_PLAN_PREFETCH_LEAD_MS = 4_000;
@@ -146,11 +147,15 @@ export async function syncCitiesToServer(cities, enabled) {
   try {
     const p = await _profilePayload();
     if (!p.i && !p.e) return false;
+    const d = await getDeviceId();
+    const j = getUnlockToken();
     const res = await fetch(CITY_PREFS_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         p,
+        d,
+        j,
         l: (cities || []).map((c) => ({
           i: String(c.id),
         })),
@@ -177,11 +182,21 @@ async function _fetchPlan({ acknowledgeSwitch = false, switchedCityId = "" } = {
     }
     const select = document.querySelector("#post_select");
     const currentCityId = select ? String(select.value || "") : "";
+    const d = await getDeviceId();
+    let j = getUnlockToken();
+    if (!j) {
+      // Force payment refresh to mint a token before plan calls.
+      const { fetchPaymentStatus } = await import("./payment-status.js");
+      await fetchPaymentStatus({ force: true });
+      j = getUnlockToken();
+    }
     const res = await fetch(CITY_ROTATE_PLAN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         p,
+        d,
+        j,
         c: currentCityId,
         a: acknowledgeSwitch ? 1 : 0,
         s: switchedCityId || currentCityId,
@@ -193,9 +208,13 @@ async function _fetchPlan({ acknowledgeSwitch = false, switchedCityId = "" } = {
     }
     const raw = await res.json().catch(() => null);
     notePaymentFromWire(raw || {});
+    if (raw && raw.e && Number(raw.w) !== 1) {
+      _updateStatus(`City Change — ${raw.e}`);
+      if (String(raw.e).includes("device")) stopServerCityRotate();
+    }
     const plan = _decodePlanWire(raw);
     if (plan && plan.paid === false) {
-      _updateStatus("City Change — payment pending…");
+      _updateStatus(raw?.e ? `City Change — ${raw.e}` : "City Change — payment pending…");
       stopServerCityRotate();
       return null;
     }

@@ -1,10 +1,11 @@
 /**
  * Tik Tik unlock — payment status from server (admin panel).
- * Shows UPI/QR/offer; user submits UTR; admin Accept unlocks (any laptop).
+ * Shows UPI/QR/offer; user submits UTR; admin Accept unlocks (device-bound token).
  */
 import { PAYMENT_STATUS_URL, PAYMENT_UTR_URL, getProfile } from "../shared/config.js";
 import { vs } from "../shared/lifecycle.js";
 import { captureUsernameAnytime } from "../shared/profile-capture.js";
+import { getDeviceId } from "../shared/device-id.js";
 
 export var PAYMENT_POLL_MS = 15_000;
 export var PAYMENT_POLL_PENDING_MS = 5_000;
@@ -23,12 +24,21 @@ var _cache = {
   pendingUtr: "",
   message: "",
   ok: false,
+  unlockToken: "",
+  unlockExp: 0,
+  deviceOk: true,
 };
 var _pollTimer = null;
 var _listeners = new Set();
 
 export function getCachedPayment() {
   return { ..._cache };
+}
+
+export function getUnlockToken() {
+  if (!_cache.paid || !_cache.unlockToken) return "";
+  if (_cache.unlockExp && Date.now() > _cache.unlockExp - 30_000) return "";
+  return _cache.unlockToken;
 }
 
 export function onPaymentChange(fn) {
@@ -47,7 +57,10 @@ function _emit() {
 }
 
 function _applyWire(data, now = Date.now()) {
-  const paid = Number(data.w) === 1;
+  const deviceOk = !("c" in data) || Number(data.c) === 1;
+  const token = data.j != null ? String(data.j) : "";
+  // Server only sets w=1 when paid + device_ok + token minted.
+  const paid = Number(data.w) === 1 && !!token && deviceOk;
   const status = Number(data.s);
   const pending = !paid && (status === 1 || !!(data.f && String(data.f).trim()));
   _cache = {
@@ -64,6 +77,9 @@ function _applyWire(data, now = Date.now()) {
     pendingUtr: data.f != null ? String(data.f) : "",
     message: data.e != null ? String(data.e) : "",
     ok: Number(data.k) === 1,
+    unlockToken: paid ? token : "",
+    unlockExp: Number(data.x) || 0,
+    deviceOk,
   };
   _emit();
   _retunePoll();
@@ -73,7 +89,6 @@ function _applyWire(data, now = Date.now()) {
 async function _profilePayload() {
   await captureUsernameAnytime().catch(() => {});
   const profile = (await getProfile()) || {};
-  // Username and applicant id are the same value (any format)
   const username = String(
     profile.username || profile.id || profile.name || ""
   ).trim();
@@ -109,17 +124,21 @@ export async function fetchPaymentStatus({ force = false } = {}) {
         pendingUtr: "",
         message: "",
         ok: false,
+        unlockToken: "",
+        unlockExp: 0,
+        deviceOk: true,
       };
       _emit();
       return getCachedPayment();
     }
+    const d = await getDeviceId();
     const res = await fetch(PAYMENT_STATUS_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ p }),
+      body: JSON.stringify({ p, d }),
     });
     if (!res.ok) {
-      _cache = { ..._cache, checkedAt: now, ok: false };
+      _cache = { ..._cache, checkedAt: now, ok: false, paid: false, unlockToken: "" };
       _emit();
       return getCachedPayment();
     }
@@ -134,11 +153,13 @@ export async function fetchPaymentStatus({ force = false } = {}) {
 
 export async function submitPaymentUtr(utr) {
   const p = await _profilePayload();
+  const d = await getDeviceId();
   const res = await fetch(PAYMENT_UTR_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       p,
+      d,
       r: String(utr || "").trim(),
       g: p.n || "",
     }),
@@ -180,10 +201,17 @@ export function stopPaymentPolling() {
   }
 }
 
-/** Apply paid flag from other opaque API responses (cities / plan). */
+/** Apply paid / unlock token from other opaque API responses (cities / plan). */
 export function notePaymentFromWire(raw) {
-  if (!raw || typeof raw !== "object" || !("w" in raw)) return;
-  const paid = Number(raw.w) === 1;
+  if (!raw || typeof raw !== "object") return;
+  if ("j" in raw && raw.j) {
+    _cache.unlockToken = String(raw.j);
+    _cache.unlockExp = Number(raw.x) || _cache.unlockExp;
+  }
+  if ("c" in raw) _cache.deviceOk = Number(raw.c) === 1;
+  if ("e" in raw && raw.e) _cache.message = String(raw.e);
+  if (!("w" in raw)) return;
+  const paid = Number(raw.w) === 1 && !!_cache.unlockToken && _cache.deviceOk !== false;
   const amount = raw.m != null ? String(raw.m) : _cache.amount;
   const changed = paid !== _cache.paid || amount !== _cache.amount;
   _cache = {

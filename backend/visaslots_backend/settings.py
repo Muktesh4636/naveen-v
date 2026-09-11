@@ -110,3 +110,16 @@ CSRF_HEADER_NAME = "HTTP_X_CSRFTOKEN"
 LOGIN_URL = "/panel/login/"
 LOGIN_REDIRECT_URL = "/panel/"
 LOGOUT_REDIRECT_URL = "/panel/login/"
+
+# Hardening — unlock tokens + device caps (override via env).
+UNLOCK_TOKEN_TTL_SEC = int(os.environ.get("UNLOCK_TOKEN_TTL_SEC", str(6 * 60 * 60)))
+APPLICANT_MAX_DEVICES = int(os.environ.get("APPLICANT_MAX_DEVICES", "2"))
+API_RATE_LIMIT_PER_MIN = int(os.environ.get("API_RATE_LIMIT_PER_MIN", "90"))
+UNLOCK_SIGNING_SECRET = os.environ.get("UNLOCK_SIGNING_SECRET", "")
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "visaslots-rl",
+    }
+}

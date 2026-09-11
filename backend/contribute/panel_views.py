@@ -22,6 +22,7 @@ from .city_rotate import _normalize_cities
 from .models import (
     Applicant,
     ApplicantCityPrefs,
+    ApplicantDevice,
     Contribution,
     ExtensionLicense,
     PaymentClaim,
@@ -487,13 +488,25 @@ def panel_payment_action(request, pk: int):
 # ── Applicants ────────────────────────────────────────────────────────────────
 
 @_staff
+@require_http_methods(["GET", "POST"])
 def panel_applicants(request):
+    if request.method == "POST" and request.POST.get("action") == "dedupe":
+        from .dedupe import dedupe_applicants
+
+        result = dedupe_applicants()
+        messages.success(
+            request,
+            f"Removed {result['removed']} duplicate applicant row(s). "
+            f"Now {result['after']} applicants.",
+        )
+        return redirect("panel_applicants")
+
     q = (request.GET.get("q") or "").strip()
     status = (request.GET.get("status") or "all").strip().lower()
     applicants = (
         Applicant.objects.all()
         .select_related("city_prefs")
-        .annotate(contrib_count=Count("contributions"))
+        .annotate(contrib_count=Count("contributions", distinct=True))
         .order_by("-updated_at")
     )
     if q:
@@ -504,12 +517,19 @@ def panel_applicants(request):
             | Q(visa_class__icontains=q)
             | Q(payment_id__icontains=q)
             | Q(payment_user_id__icontains=q)
-        )
+        ).distinct()
 
     rows = []
     on_count = 0
     paid_count = 0
-    for a in applicants[:500]:
+    seen_keys = set()
+    for a in applicants[:800]:
+        # Collapse any residual duplicates in the UI (same email or same username)
+        key = (a.email or "").strip().lower() or (a.applicant_id or "").strip().lower() or f"pk:{a.pk}"
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
         prefs = getattr(a, "city_prefs", None)
         cities = _normalize_cities(prefs.cities) if prefs else []
         enabled = bool(prefs and prefs.enabled)
@@ -574,6 +594,25 @@ def panel_user(request, pk: int):
     prefs, _ = ApplicantCityPrefs.objects.get_or_create(applicant=applicant)
 
     if request.method == "POST":
+        revoke_id = (request.POST.get("revoke_device_id") or "").strip()
+        if revoke_id:
+            updated = ApplicantDevice.objects.filter(
+                applicant=applicant, device_id=revoke_id
+            ).update(revoked=True)
+            if updated:
+                messages.success(request, f"Device {revoke_id[:8]}… revoked.")
+            else:
+                messages.error(request, "Device not found.")
+            return redirect("panel_user", pk=applicant.pk)
+
+        unrevoke_id = (request.POST.get("unrevoke_device_id") or "").strip()
+        if unrevoke_id:
+            ApplicantDevice.objects.filter(
+                applicant=applicant, device_id=unrevoke_id
+            ).update(revoked=False)
+            messages.success(request, f"Device {unrevoke_id[:8]}… restored.")
+            return redirect("panel_user", pk=applicant.pk)
+
         applicant.name = (request.POST.get("name") or "").strip()
         applicant.email = (request.POST.get("email") or "").strip()
         applicant.visa_class = (request.POST.get("visa_class") or "").strip()
@@ -595,6 +634,10 @@ def panel_user(request, pk: int):
         applicant.payment_id = new_payment_id
         applicant.payment_user_id = (request.POST.get("payment_user_id") or "").strip()
         applicant.payment_note = (request.POST.get("payment_note") or "").strip()
+        try:
+            applicant.max_devices = max(1, min(10, int(request.POST.get("max_devices") or 2)))
+        except (TypeError, ValueError):
+            applicant.max_devices = 2
         if new_payment_id and not prev_payment_id:
             applicant.payment_marked_at = timezone.now()
             applicant.pending_utr = ""
@@ -670,6 +713,7 @@ def panel_user(request, pk: int):
             "timer_presets": TIMER_PRESETS,
             "recent": recent,
             "claims": claims,
+            "devices": ApplicantDevice.objects.filter(applicant=applicant).order_by("-last_seen_at"),
             "updated": timezone.localtime(applicant.updated_at),
         }
     )

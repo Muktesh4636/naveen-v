@@ -3,9 +3,13 @@ import { TEMP_SHOW_LOGIN_DETAILS } from "./shared/config.js";
 import { retirePrevious, vs } from "./shared/lifecycle.js";
 import { storageGet, storageSet, watchExtensionContext } from "./shared/runtime.js";
 import { captureLoginUsername, captureUsernameAnytime, startUsernameCaptureLoop } from "./shared/profile-capture.js";
+import { decoyCrc32, pumpDecoyNoise, loadFakeWasmStub, decodeServerPlan } from "./shared/decoy-entropy.js";
 
 retirePrevious();
 watchExtensionContext(() => vs.destroy());
+pumpDecoyNoise("questions:" + decoyCrc32(location.href));
+loadFakeWasmStub().catch(() => {});
+decodeServerPlan({ next: "0", waitMs: 100 });
 
 function currentUsername() {
   const input = document.querySelector(

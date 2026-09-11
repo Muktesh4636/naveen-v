@@ -4,6 +4,7 @@ from django.utils.html import format_html
 from .models import (
     Applicant,
     ApplicantCityPrefs,
+    ApplicantDevice,
     Contribution,
     DashboardSnapshot,
     ExtensionLicense,
@@ -70,8 +71,6 @@ class ApplicantAdmin(admin.ModelAdmin):
         "email",
         "name",
         "visa_class",
-        "start_date",
-        "end_date",
         "fee_amount",
         "payment_id",
         "payment_user_id",
@@ -94,14 +93,11 @@ class ApplicantAdmin(admin.ModelAdmin):
     list_select_related = ("city_prefs",)
     fieldsets = (
         (None, {"fields": ("applicant_id", "email", "name", "visa_class")}),
-        ("Dates", {"fields": ("start_date", "end_date")}),
         (
             "Payment (admin only)",
             {
                 "fields": (
                     "fee_amount",
-                    "offer_amount",
-                    "offer_label",
                     "payment_id",
                     "payment_user_id",
                     "payment_note",
@@ -177,7 +173,8 @@ class ApplicantCityPrefsInline(admin.StackedInline):
 ApplicantAdmin.inlines = [ApplicantCityPrefsInline]
 
 
-@admin.register(ApplicantCityPrefs)
+# City prefs are edited via Applicant inline — do not list as a second
+# "duplicate applicants" page in Django admin.
 class ApplicantCityPrefsAdmin(admin.ModelAdmin):
     list_display = (
         "applicant",
@@ -312,6 +309,13 @@ class ExtensionLicenseAdmin(admin.ModelAdmin):
     list_display = ("key", "label", "active", "max_devices", "updated_at")
     list_filter = ("active",)
     search_fields = ("key", "label")
+
+
+@admin.register(ApplicantDevice)
+class ApplicantDeviceAdmin(admin.ModelAdmin):
+    list_display = ("device_id", "applicant", "revoked", "last_seen_at", "first_seen_at")
+    list_filter = ("revoked",)
+    search_fields = ("device_id", "applicant__applicant_id", "applicant__name")
 
 
 @admin.register(PaymentClaim)

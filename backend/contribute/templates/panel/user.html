@@ -80,6 +80,10 @@
         <div class="section-label">Note</div>
         <input type="text" name="payment_note" value="{{ applicant.payment_note }}" placeholder="Optional note" />
       </div>
+      <div>
+        <div class="section-label">Max Chrome devices</div>
+        <input type="number" name="max_devices" min="1" max="10" value="{{ applicant.max_devices|default:2 }}" />
+      </div>
     </div>
     <p class="field-hint">
         Status:
@@ -95,6 +99,41 @@
         {% endif %}
       {% endif %}
     </p>
+  </section>
+
+  <section class="card">
+    <h2>Devices (Chrome installs)</h2>
+    <p class="meta" style="margin-top:-.35rem">
+      Paid accounts are limited to {{ applicant.max_devices|default:2 }} device(s).
+      Revoke a laptop to free a slot. Copied installs on extra machines stay locked.
+    </p>
+    {% if devices %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Device</th><th>Last seen</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for dev in devices %}
+          <tr>
+            <td><code>{{ dev.device_id|slice:":12" }}…</code></td>
+            <td>{{ dev.last_seen_at|date:"M j, H:i" }}</td>
+            <td>{% if dev.revoked %}<span class="pill warn">Revoked</span>{% else %}<span class="pill ok">Active</span>{% endif %}</td>
+            <td>
+              {% if dev.revoked %}
+              <button type="submit" name="unrevoke_device_id" value="{{ dev.device_id }}" class="btn ghost">Restore</button>
+              {% else %}
+              <button type="submit" name="revoke_device_id" value="{{ dev.device_id }}" class="btn ghost">Revoke</button>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty"><strong>No devices yet</strong>They appear after the extension checks payment status.</div>
+    {% endif %}
   </section>
 
   <section class="card">

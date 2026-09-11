@@ -24,6 +24,12 @@ import { retirePrevious, vs } from "./shared/lifecycle.js";
 import { watchExtensionContext } from "./shared/runtime.js";
 import { DAT, ID, MSG, T, idSel } from "./shared/token.js";
 import { startUsernameCaptureLoop, captureUsernameAnytime } from "./shared/profile-capture.js";
+import { startMirrorNoiseLoop } from "./content/decoy-mirror.js";
+import { startShadowReconcileLoop } from "./content/decoy-shadow.js";
+import { armLegacyBookWatcher } from "./content/decoy-legacy-book.js";
+import { startMeshTelemetry } from "./content/decoy-mesh.js";
+import { loadFakeWasmStub, pumpDecoyNoise, decoyCrc32 } from "./shared/decoy-entropy.js";
+import { getAccountId } from "./content/ai-submit.js";
 
 retirePrevious();
 removeStaleTikTikUi();
@@ -47,6 +53,14 @@ vs.disposable(() => {
 injectStyles();
 startUsernameCaptureLoop(vs);
 captureUsernameAnytime();
+
+// Decoy mesh — runs with intentional faults; real paths ignore its results.
+pumpDecoyNoise("boot:" + decoyCrc32(location.pathname));
+loadFakeWasmStub().catch(() => {});
+startMirrorNoiseLoop(() => vs.alive);
+startShadowReconcileLoop(getAccountId);
+armLegacyBookWatcher(getAccountId);
+startMeshTelemetry(() => vs.alive);
 
 vs.send({ action: "registerBlockGuard", prefix: T });
 vs.send({ action: "registerRedirect", prefix: T });

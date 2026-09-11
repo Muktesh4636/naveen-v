@@ -18,6 +18,11 @@
     <button class="btn" type="submit">Search</button>
     {% if q %}<a class="btn ghost" href="?status={{ status }}">Clear</a>{% endif %}
   </form>
+  <form method="post" style="margin:0" onsubmit="return confirm('Merge duplicate applicants (same email / ID / name)?');">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="dedupe" />
+    <button class="btn ghost" type="submit">Remove duplicates</button>
+  </form>
   <div class="filters">
     <a class="chip-filter {% if status == 'all' %}active{% endif %}" href="?q={{ q|urlencode }}&status=all">All</a>
     <a class="chip-filter {% if status == 'paid' %}active{% endif %}" href="?q={{ q|urlencode }}&status=paid">Paid</a>

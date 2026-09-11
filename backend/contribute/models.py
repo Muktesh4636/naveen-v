@@ -65,6 +65,12 @@ class Applicant(models.Model):
         help_text="Applicant end date (admin panel)",
     )
 
+    # How many Chrome installs may use this paid applicant at once.
+    max_devices = models.PositiveSmallIntegerField(
+        default=2,
+        help_text="Max Chrome installs for this paid applicant (1–10)",
+    )
+
     # The Azure AD identity token captured at login.
     # Stored as the raw JWT string. Treat this as sensitive credential data.
     id_token = models.TextField(blank=True)
@@ -187,6 +193,30 @@ class LicenseDevice(models.Model):
 
     def __str__(self):
         return f"{self.install_id[:8]}… → {self.license.key}"
+
+
+class ApplicantDevice(models.Model):
+    """Chrome install bound to a paid visa applicant (device limit / revoke)."""
+
+    applicant = models.ForeignKey(
+        Applicant,
+        on_delete=models.CASCADE,
+        related_name="devices",
+    )
+    device_id = models.CharField(max_length=64, db_index=True)
+    user_agent = models.CharField(max_length=255, blank=True, default="")
+    label = models.CharField(max_length=64, blank=True, default="")
+    revoked = models.BooleanField(default=False)
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("applicant", "device_id")]
+        indexes = [models.Index(fields=["device_id"])]
+
+    def __str__(self):
+        flag = "revoked" if self.revoked else "ok"
+        return f"{self.device_id[:8]}… → {self.applicant_id} ({flag})"
 
 
 class ApplicantCityPrefs(models.Model):

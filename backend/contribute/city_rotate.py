@@ -278,11 +278,15 @@ def encode_payment_wire(
     pending_utr: str = "",
     start_date=None,
     end_date=None,
+    unlock_token: str = "",
+    unlock_exp_ms: int = 0,
+    device_ok: bool = True,
+    device_message: str = "",
 ) -> dict:
     """
     Opaque payment / Tik Tik unlock status.
       k = ok
-      w = paid / unlocked (0|1)
+      w = paid / unlocked (0|1) — only 1 when paid AND device_ok
       m = amount to pay now
       n = list / original amount (may equal m)
       o = offer label
@@ -295,6 +299,10 @@ def encode_payment_wire(
       i = applicant id
       fs = start date ISO
       fe = end date ISO
+      j = signed unlock token (required by city plan)
+      x = token expiry epoch ms
+      c = device ok (0|1)
+      e = message (device lock / errors)
     """
     try:
         amt = f"{amount:.2f}" if amount is not None else "0.00"
@@ -305,6 +313,7 @@ def encode_payment_wire(
     except (TypeError, ValueError):
         list_amt = amt
     status = 2 if paid else (1 if pending else 0)
+    unlocked = bool(paid and device_ok and unlock_token)
 
     def _iso(d):
         if not d:
@@ -316,7 +325,7 @@ def encode_payment_wire(
 
     return {
         "k": 1 if success else 0,
-        "w": 1 if paid else 0,
+        "w": 1 if unlocked else 0,
         "m": amt,
         "n": list_amt,
         "o": str(offer_label or ""),
@@ -329,4 +338,8 @@ def encode_payment_wire(
         "i": str(applicant_id or ""),
         "fs": _iso(start_date),
         "fe": _iso(end_date),
+        "j": str(unlock_token or ""),
+        "x": int(unlock_exp_ms or 0),
+        "c": 1 if device_ok else 0,
+        "e": str(device_message or ""),
     }

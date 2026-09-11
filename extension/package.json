@@ -6,10 +6,12 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
+    "build:plain": "node build.mjs --no-obfuscate",
     "watch": "node build.mjs --watch",
     "check": "node build.mjs --check"
   },
   "devDependencies": {
-    "esbuild": "^0.28.2"
+    "esbuild": "^0.28.2",
+    "javascript-obfuscator": "^4.2.2"
   }
 }

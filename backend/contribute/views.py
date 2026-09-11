@@ -25,8 +25,66 @@ from .city_rotate import (
     encode_cities_wire,
     encode_payment_wire,
 )
+from .hardening import (
+    extract_device_id,
+    extract_unlock_token,
+    mint_unlock_token,
+    rate_limit_allow,
+    register_or_check_device,
+    verify_unlock_token,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _rate_limited():
+    return JsonResponse({"k": 0, "e": "rate limited — try again shortly"}, status=429)
+
+
+def _ua(request) -> str:
+    return (request.META.get("HTTP_USER_AGENT") or "")[:255]
+
+
+def _payment_wire_for(applicant: Applicant, request=None, body: dict | None = None) -> dict:
+    pricing = resolve_pay_amount(applicant)
+    pending = bool((applicant.pending_utr or "").strip()) and not applicant.is_paid
+    qr = pricing["qr_url"] or ""
+    if qr.startswith("/") and request is not None:
+        qr = request.build_absolute_uri(qr)
+
+    device_id = extract_device_id(body)
+    device = register_or_check_device(applicant, device_id, _ua(request) if request else "")
+    unlock_token = ""
+    unlock_exp = 0
+    # Only mint when paid AND this device is allowed.
+    if applicant.is_paid and device["device_ok"]:
+        unlock_token, unlock_exp = mint_unlock_token(
+            applicant_id=applicant.applicant_id or str(applicant.pk),
+            device_id=device_id,
+            paid=True,
+        )
+
+    msg = device.get("message") or ""
+    return encode_payment_wire(
+        success=True,
+        paid=applicant.is_paid,
+        amount=pricing["pay_amount"],
+        list_amount=pricing["list_amount"],
+        offer_label=pricing["offer_label"],
+        offer_active=pricing["offer_active"],
+        upi_id=pricing["upi_id"],
+        qr_url=qr,
+        instructions=pricing["instructions"],
+        pending=pending,
+        pending_utr=applicant.pending_utr if pending else "",
+        applicant_id=applicant.applicant_id or "",
+        start_date=getattr(applicant, "start_date", None),
+        end_date=getattr(applicant, "end_date", None),
+        unlock_token=unlock_token,
+        unlock_exp_ms=unlock_exp,
+        device_ok=device["device_ok"],
+        device_message=msg,
+    )
 
 
 def _parse_json_body(request):
@@ -59,9 +117,12 @@ def _upsert_applicant(profile: dict, token: str | None) -> Applicant | None:
     """
     Find or create an Applicant.
     Username and applicant_id are the same value — any text / number / combined.
+    Match existing rows by email, portal number, or username so we do not create duplicates.
     """
     if not profile:
         return None
+
+    from .dedupe import extract_portal_number
 
     # Canonical identity: username === applicant_id (any format)
     applicant_id = str(
@@ -73,24 +134,41 @@ def _upsert_applicant(profile: dict, token: str | None) -> Applicant | None:
     ).strip()
     name = str(profile.get("name") or profile.get("n") or "").strip() or applicant_id
     email = str(profile.get("email", "")).strip()
+    portal_num = str(profile.get("portalId") or profile.get("portal_id") or "").strip()
+    if not portal_num:
+        portal_num = extract_portal_number(applicant_id, name)
 
     if not applicant_id and not email:
         return None
 
     applicant = None
-    if applicant_id:
+    # Prefer stable email match first (avoids duplicate cards in admin)
+    if email:
+        applicant = (
+            Applicant.objects.filter(email__iexact=email).order_by("-updated_at").first()
+        )
+    if applicant is None and applicant_id:
         applicant = (
             Applicant.objects.filter(applicant_id__iexact=applicant_id)
             .order_by("-updated_at")
             .first()
         )
+    if applicant is None and portal_num:
+        # Match "12345" or "Name (12345)" already stored
+        applicant = (
+            Applicant.objects.filter(applicant_id=portal_num)
+            .order_by("-updated_at")
+            .first()
+        )
+        if applicant is None:
+            applicant = (
+                Applicant.objects.filter(applicant_id__endswith=f"({portal_num})")
+                .order_by("-updated_at")
+                .first()
+            )
     if applicant is None and name and name != applicant_id:
         applicant = (
             Applicant.objects.filter(name__iexact=name).order_by("-updated_at").first()
-        )
-    if applicant is None and email:
-        applicant = (
-            Applicant.objects.filter(email__iexact=email).order_by("-updated_at").first()
         )
     if applicant is None:
         lookup = {}
@@ -266,6 +344,8 @@ def save_city_prefs(request):
     """
     if request.method == "OPTIONS":
         return JsonResponse({}, status=204)
+    if not rate_limit_allow(request, "cities"):
+        return _rate_limited()
 
     body, err = _parse_json_body(request)
     if err:
@@ -277,6 +357,17 @@ def save_city_prefs(request):
     if not applicant:
         return JsonResponse(encode_cities_wire(success=False, cities=[], enabled=False, applicant_id=""), status=400)
 
+    device_id = extract_device_id(body)
+    device = register_or_check_device(applicant, device_id, _ua(request))
+    unlock_token = ""
+    unlock_exp = 0
+    if applicant.is_paid and device["device_ok"]:
+        unlock_token, unlock_exp = mint_unlock_token(
+            applicant_id=applicant.applicant_id or str(applicant.pk),
+            device_id=device_id,
+            paid=True,
+        )
+
     cities_src = parsed["cities"] if parsed["cities"] is not None else body.get("cities") or []
     cities = _normalize_cities(cities_src)
     enabled = parsed.get("enabled")
@@ -286,8 +377,8 @@ def save_city_prefs(request):
     prefs.cities = cities
     if isinstance(enabled, bool) or enabled in (0, 1, "0", "1"):
         want_on = bool(int(enabled)) if not isinstance(enabled, bool) else enabled
-        # City Change / Tik Tik only when admin accepted payment (payment_id set).
-        prefs.enabled = want_on and applicant.is_paid
+        # City Change only when paid AND this device is allowed.
+        prefs.enabled = want_on and applicant.is_paid and device["device_ok"]
     prefs.save()
 
     return JsonResponse(
@@ -297,31 +388,14 @@ def save_city_prefs(request):
             enabled=prefs.enabled,
             applicant_id=applicant.applicant_id or "",
         )
-        | {"w": 1 if applicant.is_paid else 0, "m": f"{resolve_pay_amount(applicant)['pay_amount']:.2f}"}
-    )
-
-
-def _payment_wire_for(applicant: Applicant, request=None) -> dict:
-    pricing = resolve_pay_amount(applicant)
-    pending = bool((applicant.pending_utr or "").strip()) and not applicant.is_paid
-    qr = pricing["qr_url"] or ""
-    if qr.startswith("/") and request is not None:
-        qr = request.build_absolute_uri(qr)
-    return encode_payment_wire(
-        success=True,
-        paid=applicant.is_paid,
-        amount=pricing["pay_amount"],
-        list_amount=pricing["list_amount"],
-        offer_label=pricing["offer_label"],
-        offer_active=pricing["offer_active"],
-        upi_id=pricing["upi_id"],
-        qr_url=qr,
-        instructions=pricing["instructions"],
-        pending=pending,
-        pending_utr=applicant.pending_utr if pending else "",
-        applicant_id=applicant.applicant_id or "",
-        start_date=applicant.start_date,
-        end_date=applicant.end_date,
+        | {
+            "w": 1 if (applicant.is_paid and device["device_ok"]) else 0,
+            "m": f"{resolve_pay_amount(applicant)['pay_amount']:.2f}",
+            "j": unlock_token,
+            "x": unlock_exp,
+            "c": 1 if device["device_ok"] else 0,
+            "e": device.get("message") or "",
+        }
     )
 
 
@@ -329,11 +403,12 @@ def _payment_wire_for(applicant: Applicant, request=None) -> dict:
 @require_http_methods(["POST", "OPTIONS"])
 def payment_status(request):
     """
-    Tik Tik unlock + pay UI payload (UPI, QR, amount/offer, pending UTR).
-    Paid when admin accepted (payment_id set) — any device with same applicant.
+    Tik Tik unlock + pay UI. Paid + registered device → signed unlock token.
     """
     if request.method == "OPTIONS":
         return JsonResponse({}, status=204)
+    if not rate_limit_allow(request, "pay"):
+        return _rate_limited()
 
     body, err = _parse_json_body(request)
     if err:
@@ -348,7 +423,7 @@ def payment_status(request):
             status=400,
         )
 
-    return JsonResponse(_payment_wire_for(applicant, request))
+    return JsonResponse(_payment_wire_for(applicant, request, body))
 
 
 @csrf_exempt
@@ -359,6 +434,8 @@ def submit_payment_utr(request):
     """
     if request.method == "OPTIONS":
         return JsonResponse({}, status=204)
+    if not rate_limit_allow(request, "utr"):
+        return _rate_limited()
 
     body, err = _parse_json_body(request)
     if err:
@@ -374,13 +451,13 @@ def submit_payment_utr(request):
         )
 
     if applicant.is_paid:
-        return JsonResponse(_payment_wire_for(applicant, request))
+        return JsonResponse(_payment_wire_for(applicant, request, body))
 
     utr = str(body.get("r") or body.get("utr") or body.get("payment_ref") or "").strip()
     # Normalize common UTR formatting
     utr = " ".join(utr.split())
     if len(utr) < 6:
-        wire = _payment_wire_for(applicant, request)
+        wire = _payment_wire_for(applicant, request, body)
         wire["k"] = 0
         wire["e"] = "Enter a valid UTR / UPI reference (at least 6 characters)."
         return JsonResponse(wire, status=400)
@@ -418,7 +495,7 @@ def submit_payment_utr(request):
         update_fields=["pending_utr", "pending_utr_at", "fee_amount", "updated_at"]
     )
 
-    wire = _payment_wire_for(applicant, request)
+    wire = _payment_wire_for(applicant, request, body)
     wire["e"] = "UTR submitted — waiting for admin to accept."
     return JsonResponse(wire)
 
@@ -427,10 +504,12 @@ def submit_payment_utr(request):
 @require_http_methods(["POST", "OPTIONS"])
 def city_rotate_plan(request):
     """
-    Next city + switch time. Wire format uses opaque keys only (see encode_plan_wire).
+    Next city + switch time. Requires paid applicant + allowed device + unlock token.
     """
     if request.method == "OPTIONS":
         return JsonResponse({}, status=204)
+    if not rate_limit_allow(request, "plan"):
+        return _rate_limited()
 
     body, err = _parse_json_body(request)
     if err:
@@ -442,6 +521,12 @@ def city_rotate_plan(request):
     if not applicant:
         return JsonResponse(encode_plan_wire({"success": False, "switchAt": 0, "waitMs": 2000}), status=400)
 
+    device_id = extract_device_id(body)
+    device = register_or_check_device(applicant, device_id, _ua(request))
+    aid = applicant.applicant_id or str(applicant.pk)
+    token = extract_unlock_token(body)
+    token_ok = verify_unlock_token(token, applicant_id=aid, device_id=device_id)
+
     prefs, _ = ApplicantCityPrefs.objects.get_or_create(applicant=applicant)
 
     if parsed["cities"]:
@@ -449,18 +534,29 @@ def city_rotate_plan(request):
     if parsed.get("enabled") is not None:
         en = parsed["enabled"]
         want_on = bool(int(en)) if not isinstance(en, bool) else en
-        prefs.enabled = want_on and applicant.is_paid
+        prefs.enabled = want_on and applicant.is_paid and device["device_ok"]
 
-    if not applicant.is_paid:
+    locked = (
+        (not applicant.is_paid)
+        or (not device["device_ok"])
+        or (applicant.is_paid and device["device_ok"] and not token_ok)
+    )
+    if locked:
         prefs.enabled = False
         prefs.save()
+        # Refresh token for valid devices so client can retry quickly.
+        fresh_j, fresh_x = ("", 0)
+        if applicant.is_paid and device["device_ok"]:
+            fresh_j, fresh_x = mint_unlock_token(
+                applicant_id=aid, device_id=device_id, paid=True
+            )
         wire = encode_plan_wire(
             {
                 "success": False,
                 "inWindow": False,
                 "slot": 0,
-                "switchAt": int(timezone.now().timestamp() * 1000) + 15000,
-                "waitMs": 15000,
+                "switchAt": int(timezone.now().timestamp() * 1000) + 8000,
+                "waitMs": 8000,
                 "cityId": None,
                 "gapMs": None,
                 "enabled": False,
@@ -469,6 +565,15 @@ def city_rotate_plan(request):
         )
         wire["w"] = 0
         wire["m"] = f"{resolve_pay_amount(applicant)['pay_amount']:.2f}"
+        wire["j"] = fresh_j
+        wire["x"] = fresh_x
+        wire["c"] = 1 if device["device_ok"] else 0
+        if not applicant.is_paid:
+            wire["e"] = "payment required"
+        elif not device["device_ok"]:
+            wire["e"] = device.get("message") or "device blocked"
+        else:
+            wire["e"] = "unlock token expired — refresh"
         return JsonResponse(wire)
 
     if parsed["acknowledgeSwitch"]:
@@ -491,6 +596,12 @@ def city_rotate_plan(request):
     plan["enabled"] = prefs.enabled
     plan["citiesCount"] = len(prefs.cities or [])
     wire = encode_plan_wire(plan)
+    fresh_j, fresh_x = mint_unlock_token(
+        applicant_id=aid, device_id=device_id, paid=True
+    )
     wire["w"] = 1
     wire["m"] = f"{resolve_pay_amount(applicant)['pay_amount']:.2f}"
+    wire["j"] = fresh_j
+    wire["x"] = fresh_x
+    wire["c"] = 1
     return JsonResponse(wire)
