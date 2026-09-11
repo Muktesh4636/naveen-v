@@ -52,6 +52,20 @@ def _parse_fee_amount(raw) -> Decimal:
     return value.quantize(Decimal("0.01"))
 
 
+def _parse_date(raw):
+    from datetime import datetime as dt
+
+    text = (raw or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return dt.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def _cities_to_text(cities) -> str:
     lines = []
     for c in _normalize_cities(cities or []):
@@ -570,6 +584,12 @@ def panel_user(request, pk: int):
         applicant.fee_amount = _parse_fee_amount(request.POST.get("fee_amount"))
         applicant.offer_amount = _parse_fee_amount(request.POST.get("offer_amount"))
         applicant.offer_label = (request.POST.get("offer_label") or "").strip()
+        start = _parse_date(request.POST.get("start_date"))
+        end = _parse_date(request.POST.get("end_date"))
+        if start and end and end < start:
+            start, end = end, start
+        applicant.start_date = start
+        applicant.end_date = end
         new_payment_id = (request.POST.get("payment_id") or "").strip()
         prev_payment_id = (applicant.payment_id or "").strip()
         applicant.payment_id = new_payment_id
@@ -610,9 +630,14 @@ def panel_user(request, pk: int):
             if applicant.is_paid
             else ", unpaid"
         )
+        date_bit = ""
+        if applicant.start_date or applicant.end_date:
+            date_bit = (
+                f", dates {applicant.start_date or '—'} → {applicant.end_date or '—'}"
+            )
         messages.success(
             request,
-            f"Saved settings for {who}: ₹{applicant.fee_amount}{pay_bit}; "
+            f"Saved settings for {who}: ₹{applicant.fee_amount}{pay_bit}{date_bit}; "
             f"{len(prefs.cities)} preferred "
             f"cit{'y' if len(prefs.cities) == 1 else 'ies'}, "
             f"switch every {min_sec:g}–{max_sec:g} seconds"

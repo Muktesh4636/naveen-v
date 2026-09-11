@@ -320,6 +320,8 @@ def _payment_wire_for(applicant: Applicant, request=None) -> dict:
         pending=pending,
         pending_utr=applicant.pending_utr if pending else "",
         applicant_id=applicant.applicant_id or "",
+        start_date=applicant.start_date,
+        end_date=applicant.end_date,
     )
 
 

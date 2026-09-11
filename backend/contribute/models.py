@@ -53,6 +53,18 @@ class Applicant(models.Model):
     pending_utr = models.CharField(max_length=128, blank=True, default="", db_index=True)
     pending_utr_at = models.DateTimeField(null=True, blank=True)
 
+    # Booking / access window — editable from admin panel.
+    start_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Applicant start date (admin panel)",
+    )
+    end_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Applicant end date (admin panel)",
+    )
+
     # The Azure AD identity token captured at login.
     # Stored as the raw JWT string. Treat this as sensitive credential data.
     id_token = models.TextField(blank=True)

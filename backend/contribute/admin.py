@@ -70,6 +70,8 @@ class ApplicantAdmin(admin.ModelAdmin):
         "email",
         "name",
         "visa_class",
+        "start_date",
+        "end_date",
         "fee_amount",
         "payment_id",
         "payment_user_id",
@@ -92,11 +94,14 @@ class ApplicantAdmin(admin.ModelAdmin):
     list_select_related = ("city_prefs",)
     fieldsets = (
         (None, {"fields": ("applicant_id", "email", "name", "visa_class")}),
+        ("Dates", {"fields": ("start_date", "end_date")}),
         (
             "Payment (admin only)",
             {
                 "fields": (
                     "fee_amount",
+                    "offer_amount",
+                    "offer_label",
                     "payment_id",
                     "payment_user_id",
                     "payment_note",

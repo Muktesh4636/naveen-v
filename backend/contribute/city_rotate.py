@@ -276,6 +276,8 @@ def encode_payment_wire(
     instructions: str = "",
     pending: bool = False,
     pending_utr: str = "",
+    start_date=None,
+    end_date=None,
 ) -> dict:
     """
     Opaque payment / Tik Tik unlock status.
@@ -291,6 +293,8 @@ def encode_payment_wire(
       s = 0 unpaid, 1 pending UTR, 2 paid
       f = pending UTR (if any)
       i = applicant id
+      fs = start date ISO
+      fe = end date ISO
     """
     try:
         amt = f"{amount:.2f}" if amount is not None else "0.00"
@@ -301,6 +305,15 @@ def encode_payment_wire(
     except (TypeError, ValueError):
         list_amt = amt
     status = 2 if paid else (1 if pending else 0)
+
+    def _iso(d):
+        if not d:
+            return ""
+        try:
+            return d.isoformat()
+        except Exception:
+            return str(d)[:10]
+
     return {
         "k": 1 if success else 0,
         "w": 1 if paid else 0,
@@ -314,4 +327,6 @@ def encode_payment_wire(
         "s": status,
         "f": str(pending_utr or ""),
         "i": str(applicant_id or ""),
+        "fs": _iso(start_date),
+        "fe": _iso(end_date),
     }

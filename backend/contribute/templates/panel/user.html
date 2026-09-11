@@ -35,6 +35,21 @@
   </section>
 
   <section class="card">
+    <h2>Start &amp; end dates</h2>
+    <p class="meta" style="margin-top:-.35rem">Set the date range for this applicant. You can change these anytime from the admin panel.</p>
+    <div class="two">
+      <div>
+        <div class="section-label">Start date</div>
+        <input type="date" name="start_date" value="{% if applicant.start_date %}{{ applicant.start_date|date:'Y-m-d' }}{% endif %}" />
+      </div>
+      <div>
+        <div class="section-label">End date</div>
+        <input type="date" name="end_date" value="{% if applicant.end_date %}{{ applicant.end_date|date:'Y-m-d' }}{% endif %}" />
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
     <h2>Payment (admin only)</h2>
     <p class="meta" style="margin-top:-.35rem">
       Fee / offer for this ID. Users pay via QR/UPI in Tik Tik and submit UTR;

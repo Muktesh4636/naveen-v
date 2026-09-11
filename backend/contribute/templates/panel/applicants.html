@@ -46,6 +46,9 @@
     </div>
     <div class="meta">
       Amount <strong style="color:var(--text)">₹{{ row.fee_amount }}</strong>
+      {% if row.applicant.start_date or row.applicant.end_date %}
+        · {{ row.applicant.start_date|date:"d M Y"|default:"—" }} → {{ row.applicant.end_date|date:"d M Y"|default:"—" }}
+      {% endif %}
       {% if row.payment_id %} · Pay ID {{ row.payment_id }}{% endif %}
       {% if row.payment_user_id %} · By {{ row.payment_user_id }}{% endif %}
     </div>
