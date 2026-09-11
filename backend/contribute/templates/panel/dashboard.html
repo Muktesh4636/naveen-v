@@ -39,7 +39,7 @@
   </section>
 
   <section class="card">
-    <h2>Recent payments</h2>
+    <h2>Recent deposit requests</h2>
     {% if recent_payments %}
     <table>
       <thead><tr><th>Applicant ID</th><th>Amount</th><th>Status</th></tr></thead>
@@ -51,14 +51,15 @@
           <td>
             {% if p.status == "accepted" %}<span class="pill on">Accepted</span>
             {% elif p.status == "rejected" %}<span class="pill bad">Rejected</span>
-            {% else %}<span class="pill off">Pending</span>{% endif %}
+            {% else %}<span class="pill off">Waiting</span>{% endif %}
           </td>
         </tr>
       {% endfor %}
       </tbody>
     </table>
+    <p class="meta"><a href="{% url 'panel_deposits' %}">Open Deposit requests →</a></p>
     {% else %}
-    <div class="empty"><strong>No payment claims</strong>Add one from the Payments page.</div>
+    <div class="empty"><strong>No deposit requests</strong>Configure scanner on <a href="{% url 'panel_payments' %}">Payments</a>; UTRs appear here after submit.</div>
     {% endif %}
   </section>
 </div>
