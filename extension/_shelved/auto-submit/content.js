@@ -12,7 +12,9 @@ import {
   removeStaleTikTikUi,
   reserveAiSubmit,
   notifyExtensionDead,
+  getArmedAiConfig,
   AI_BOOK_SLOT_INDEX,
+  triggerAutoSubmitIfArmed,
   thawOps,
 } from "./content/ai-submit.js";
 import { getSetting } from "./shared/config.js";
@@ -110,7 +112,11 @@ async function mountScheduleUi() {
   ]);
   startTimeSlotWatcher({
     slotIndex: AI_BOOK_SLOT_INDEX,
-    shouldPick: async () => !!await getSetting("autoSelectFirstDate"),
+    shouldPick: async () => {
+      if (await getArmedAiConfig()) return true;
+      return !!await getSetting("autoSelectFirstDate");
+    },
+    onSlotPicked: () => triggerAutoSubmitIfArmed(),
   });
 }
 

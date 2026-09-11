@@ -11,7 +11,8 @@ export var TELEGRAM_ADB_URL = "http://127.0.0.1:9333/send";
 export var DASHBOARD_POLL_ATTEMPTS = 20;
 export var MAX_TOKEN_AGE_MS = 72 * 60 * 60 * 1e3;
 
-// TEMP — login details UI hidden; restore from _shelved/auto-submit when needed.
+// TEMP feature switches — set back to true when you want these again.
+export var TEMP_SHOW_AUTO_SUBMIT = false;
 export var TEMP_SHOW_LOGIN_DETAILS = false;
 
 // Keep polls very short so missing DOM nodes barely affect page feel.

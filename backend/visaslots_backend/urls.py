@@ -17,10 +17,16 @@ urlpatterns = [
         name="panel_customer_detail",
     ),
     path("panel/payments/", panel_views.panel_payments, name="panel_payments"),
+    path("panel/deposits/", panel_views.panel_deposits, name="panel_deposits"),
     path(
         "panel/payments/<int:pk>/action/",
         panel_views.panel_payment_action,
         name="panel_payment_action",
+    ),
+    path(
+        "panel/deposits/<int:pk>/action/",
+        panel_views.panel_payment_action,
+        name="panel_deposit_action",
     ),
     path("panel/applicants/", panel_views.panel_applicants, name="panel_applicants"),
     path("panel/slots/", panel_views.panel_slots, name="panel_slots"),

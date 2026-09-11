@@ -6,15 +6,25 @@ import { pollAndPickTimeSlot, domShowsEntryTimes, isTimeSlotPicked, pickTimeSlot
 import { submitContribution } from "./reporting.js";
 import { recordSubmitAjaxResponse } from "./submit-errors.js";
 import {
+  getArmedAiConfig,
   getCitiesRotateConfig,
+  haltCityRotateForBooking,
   isInterviewPage,
   isOpsFrozen,
   noteCityRotateResponse,
   pauseCityRotateForWait,
+  armAiFastSubmit,
   setTikTikStatus,
+  triggerAutoSubmitIfArmed,
+  clickSubmitDual,
   thawOps,
+  filterDaysInAiRange,
+  dateInRange,
   pickPreferredDateIndex,
   AI_DATE_SELECT_MS,
+  AI_BOOK_SELECT_MS,
+  AI_BOOK_SUBMIT_WAIT_MS,
+  AI_TIME_DOM_WAIT_MS,
   AI_BOOK_POLL_MS,
   AI_BOOK_SLOT_INDEX,
 } from "./ai-submit.js";
@@ -81,6 +91,14 @@ async function pickDateToSelect(scheduleDays, hasError = false) {
     })
     .sort((a, b) => String(a.Date).localeCompare(String(b.Date)));
 
+  const ai = await getArmedAiConfig();
+  if (ai) {
+    const inRange = normalized.filter((d) => dateInRange(d.Date, ai.from, ai.to));
+    if (!inRange.length) return null;
+    const idx = pickPreferredDateIndex(inRange.length);
+    return inRange[idx]?.Date || null;
+  }
+
   if (!await getSetting("autoSelectFirstDate")) return null;
   if (!normalized.length) return null;
   const idx = pickPreferredDateIndex(normalized.length);
@@ -130,9 +148,9 @@ function isCalendarDateSelected(dateStr) {
 
 var _datePickWatchdog = null;
 
-function scheduleDatePickWatchdog(dateStr) {
+function scheduleDatePickWatchdog(dateStr, ai) {
   if (_datePickWatchdog) vs.clear(_datePickWatchdog);
-  const deadline = Date.now() + 8000;
+  const deadline = Date.now() + (ai ? AI_DATE_SELECT_MS : 8000);
 
   const tick = () => {
     if (!vs.alive || Date.now() > deadline) return;
@@ -140,7 +158,7 @@ function scheduleDatePickWatchdog(dateStr) {
     vs.send({
       action: "selectFirstDate",
       date: dateStr,
-      maxMs: 8000,
+      maxMs: ai ? AI_DATE_SELECT_MS : 8000,
       pollMs: AI_BOOK_POLL_MS,
     });
     _datePickWatchdog = vs.setTimeout(tick, AI_BOOK_POLL_MS);
@@ -231,6 +249,7 @@ export async function autoSelectFirstDate(scheduleDays, hasError = false) {
   if (hasError) return null;
   const picked = await pickDateToSelect(scheduleDays, hasError);
   if (!picked) return null;
+  const ai = await getArmedAiConfig();
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -242,7 +261,10 @@ export async function autoSelectFirstDate(scheduleDays, hasError = false) {
       return new Date(y, m - 1, day) >= today;
     })
     .sort((a, b) => a.localeCompare(b));
-  const idx = pickPreferredDateIndex(normalized.length);
+  const inRange = ai
+    ? normalized.filter((d) => dateInRange(d, ai.from, ai.to))
+    : normalized;
+  const idx = pickPreferredDateIndex(inRange.length);
 
   setTikTikStatus(`Selecting date #${idx + 1}: ${picked}…`);
   await vs.waitFor(DATE_PICKER_SELECTOR, { attempts: 120, interval: AI_BOOK_POLL_MS });
@@ -250,11 +272,11 @@ export async function autoSelectFirstDate(scheduleDays, hasError = false) {
   vs.send({
     action: "selectFirstDate",
     date: picked,
-    maxMs: AI_DATE_SELECT_MS,
+    maxMs: ai ? AI_DATE_SELECT_MS : 8000,
     pollMs: AI_BOOK_POLL_MS,
   });
 
-  scheduleDatePickWatchdog(picked);
+  scheduleDatePickWatchdog(picked, ai);
   scheduleTimePickWatchdog(picked, AI_BOOK_SLOT_INDEX);
   return picked;
 }
@@ -264,13 +286,22 @@ export async function autoSelectFirstTime(scheduleEntries, hasError = false) {
   if (isInterviewPage()) return;
   if (isOpsFrozen()) return;
 
-  if (!await getSetting("autoSelectFirstDate")) return;
+  const ai = await getArmedAiConfig();
+  if (!ai && !await getSetting("autoSelectFirstDate")) return;
 
   let entries = (scheduleEntries || []).filter((e) => {
     if (!e || !e.Time) return false;
     if (e.EntriesAvailable != null && Number(e.EntriesAvailable) <= 0) return false;
     return true;
   });
+
+  if (ai) {
+    entries = entries.filter((e) => {
+      const d = e.Date ? String(e.Date).slice(0, 10) : null;
+      if (!d) return true;
+      return d >= ai.from && d <= ai.to;
+    });
+  }
 
   const { entry, slotIndex } = pickScheduleSlot(entries);
   if (!entry) return;
@@ -280,6 +311,7 @@ export async function autoSelectFirstTime(scheduleEntries, hasError = false) {
 
   setTikTikStatus(`Waiting for time slots… (pick #${slotIndex + 1})`);
 
+  // Wait until portal paints slots for this date (poll 50ms, up to 10s).
   const slotDeadline = Date.now() + 10000;
   while (Date.now() < slotDeadline && vs.alive) {
     if (domShowsEntryTimes(entries) || document.querySelector(TIME_SLOT_SELECTOR)) break;
@@ -296,9 +328,29 @@ export async function autoSelectFirstTime(scheduleEntries, hasError = false) {
   });
 
   if (picked || isTimeSlotPicked()) {
-    setTikTikStatus(`Time slot #${slotIndex + 1} selected`);
+    setTikTikStatus(`Time slot #${slotIndex + 1} selected — Submit in ${AI_BOOK_SUBMIT_WAIT_MS}ms…`);
   } else {
-    setTikTikStatus("Time table visible but slot click failed — you can pick manually.");
+    setTikTikStatus("Time table visible but slot click failed — retrying…");
+    vs.send({
+      action: "bookTimeAndSubmitFast",
+      time,
+      date,
+      slotIndex,
+      selectMaxMs: AI_BOOK_SELECT_MS,
+      submitWaitMs: AI_BOOK_SUBMIT_WAIT_MS,
+      pollMs: AI_BOOK_POLL_MS,
+      domWaitMs: AI_TIME_DOM_WAIT_MS,
+      prefix: T,
+    });
+  }
+
+  if (ai) {
+    await armAiFastSubmit(ai.accountId);
+    return;
+  }
+
+  if (isTimeSlotPicked()) {
+    clickSubmitDual();
   }
 }
 
@@ -359,6 +411,7 @@ export async function handleEvent(event) {
     showDates(parsed);
     noteCityRotateResponse();
 
+    const ai = await getArmedAiConfig();
     const rotating = await getCitiesRotateConfig();
     // While city rotation is on, skip the long manual recheck wait.
     if (!rotating) {
@@ -391,9 +444,25 @@ export async function handleEvent(event) {
       hasError: parsed.response.HasError,
     });
 
+    // If Auto Submit has a matching date, pause city rotate while booking.
+    if (ai && !parsed.response.HasError) {
+      const inRange = filterDaysInAiRange(parsed.response.ScheduleDays, ai.from, ai.to);
+      if (inRange.length) haltCityRotateForBooking();
+    }
+
     const pickedDate = await autoSelectFirstDate(parsed.response.ScheduleDays, parsed.response.HasError);
     if (pickedDate) {
       await notifyTelegramCalendarScreenshot(post?.Name, pickedDate);
+    } else if (ai && !parsed.response.HasError) {
+      const days = (parsed.response.ScheduleDays || [])
+        .map((d) => normalizeScheduleDate(d?.Date))
+        .filter(Boolean);
+      const inRange = days.filter((d) => dateInRange(d, ai.from, ai.to));
+      if (days.length && !inRange.length) {
+        setTikTikStatus(`Dates found but none in ${ai.from} → ${ai.to}. Widen your range in Tik Tik.`);
+      } else if (!days.length) {
+        setTikTikStatus("No dates on this city yet.");
+      }
     }
     await submitContribution();
   }

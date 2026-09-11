@@ -239,7 +239,7 @@ export async function notifyTelegramSubmit() {
   ];
   if (profile?.email) lines.push(`👤 <b>Account:</b> ${profile.email}`);
   if (profile?.visa) lines.push(`🪪 <b>Visa:</b> ${profile.visa}`);
-  lines.push(`🕐 <b>When:</b> ${when} IST`, "", "📲 Visa Slot 6 — Auto Submit");
+  lines.push(`🕐 <b>When:</b> ${when} IST`, "", "📲 Visa Slot 6 — Submit");
 
   const text = lines.join("\n");
   await _relayText(text, { kind: "submit", skipDedup: true, notifyMuktesh: true });

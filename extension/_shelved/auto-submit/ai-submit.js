@@ -1,17 +1,23 @@
 /**
- * Tik Tik — City Change + payment unlock.
- * Auto Submit is temporarily removed from the live extension; full copy lives in
- * extension/_shelved/auto-submit/ (restore later, then rebuild).
+ * Tik Tik — per-account helper with two independent switches:
+ *  1. Auto Submit — date range → select date/time → Submit once
+ *  2. City Change — next city + timing come from the.gopg.online (extension only executes)
  *
- * TEMP_SHOW_LOGIN_DETAILS: ID / password / security Qs form in the panel
+ * Either can be enabled/disabled on its own. Interview pages: do nothing.
+ *
+ * TEMP (set back to true later when you want these features again):
+ *  - TEMP_SHOW_AUTO_SUBMIT: Auto Submit button + auto booking Submit
+ *  - TEMP_SHOW_LOGIN_DETAILS: ID / password / security Qs form in the panel
+ *  Flags live in shared/config.js
  */
 
-import { getProfile, TEMP_SHOW_LOGIN_DETAILS } from "../shared/config.js";
+import { getPosts, getProfile, SCHEDULE_UI_WAIT_ATTEMPTS, TEMP_SHOW_AUTO_SUBMIT, TEMP_SHOW_LOGIN_DETAILS } from "../shared/config.js";
 import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
-import { CLS, DAT, ID, idSel } from "../shared/token.js";
+import { CLS, DAT, ID, MSG, T, idSel } from "../shared/token.js";
 import { ensureSelectorRow } from "./scheduling-controls.js";
 import { armSubmitErrorWatch } from "./submit-errors.js";
+import { isTimeSlotPicked } from "./time-select.js";
 import {
   clearCityRotateBusy,
   ensureServerCityRotate,
@@ -30,22 +36,23 @@ import {
 
 export var AI_SUBMIT_KEY = "aiSubmitByAccount";
 
-/** Kept for date/time auto-select (popup setting) — not Auto Submit. */
+/** Ultra mode — poll every 25ms, pick 1st slot, Submit 50ms after slot. */
 export var AI_DATE_SELECT_MS = 8000;
 export var AI_BOOK_SELECT_MS = 3500;
 export var AI_TIME_DOM_WAIT_MS = 0;
 export var AI_BOOK_POLL_MS = 25;
 export var AI_BOOK_SUBMIT_WAIT_MS = 80;
 export var AI_BOOK_SLOT_INDEX = 0;
+export var AI_SUBMIT_ARM_MS = 6000;
 
-/** Calendar: 2 dates → 2nd; 3 → 3rd; 4+ → 3rd only (never 1st or 4th+). */
+/** Calendar: 2 dates → 2nd; 3 → 3rd; 4+ → 2nd or 3rd only (never 1st or 4th+). */
 export function pickPreferredDateIndex(count) {
   const n = Math.max(0, Number(count) || 0);
   if (n <= 0) return -1;
   if (n === 1) return 0;
   if (n === 2) return 1;
   if (n === 3) return 2;
-  return 2;
+  return 2; // 4+ available → 3rd (not 1st, not 4th)
 }
 
 /** City Change gap / windows are owned by the server — not hard-coded here. */
@@ -103,6 +110,32 @@ function _securityOptionsHtml(setIndex, selected) {
   }).join("");
 }
 
+function _todayISO() {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+function _pretty(iso) {
+  try {
+    const [y, m, d] = iso.split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString("en-IN", {
+      day: "numeric", month: "short", year: "numeric",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+/** Auto-submit on (supports legacy `enabled`). */
+export function isSubmitEnabled(cfg) {
+  if (!TEMP_SHOW_AUTO_SUBMIT) return false;
+  if (!cfg) return false;
+  if (typeof cfg.submitEnabled === "boolean") return cfg.submitEnabled;
+  return !!cfg.enabled;
+}
+
 /** Preferred-city rotation on. */
 export function isCitiesEnabled(cfg) {
   return !!(cfg && cfg.citiesEnabled && cfg.cities?.length);
@@ -128,7 +161,7 @@ export async function setAiConfig(accountId, cfg) {
   await storageSet({ [AI_SUBMIT_KEY]: all });
 }
 
-/** After Submit, freeze Tik Tik ops (no city rotate). */
+/** After Submit, freeze all Tik Tik ops (no city rotate, no auto-select, no more submit). */
 var _opsFrozen = false;
 
 export function isOpsFrozen() {
@@ -137,14 +170,17 @@ export function isOpsFrozen() {
 
 export function freezeAllOps() {
   _opsFrozen = true;
+  clearPendingSubmit();
   stopCityRotate();
 }
 
 export function thawOps() {
   _opsFrozen = false;
+  _submitArmed = false;
+  clearPendingSubmit();
 }
 
-/** Turn off city change after Submit — no further operations. */
+/** Turn off auto-submit AND city change after Submit — no further operations. */
 export async function disarmAiSubmit(accountId) {
   freezeAllOps();
   const cfg = await getAiConfig(accountId);
@@ -160,9 +196,23 @@ export async function disarmAiSubmit(accountId) {
   refreshAiSubmitUi();
 }
 
-/** Auto Submit removed — always unarmed. */
+export function dateInRange(dateStr, from, to) {
+  const d = String(dateStr || "").slice(0, 10);
+  if (!d || d.length < 10) return false;
+  if (from && d < from) return false;
+  if (to && d > to) return false;
+  return true;
+}
+
+/** Armed for auto-submit (date range active). */
 export async function getArmedAiConfig() {
-  return null;
+  if (_opsFrozen) return null;
+  if (isInterviewPage() || !isSchedulePage()) return null;
+  const id = await getAccountId();
+  if (!id) return null;
+  const cfg = await getAiConfig(id);
+  if (!isSubmitEnabled(cfg) || !cfg.from || !cfg.to) return null;
+  return { ...cfg, accountId: id };
 }
 
 /** Armed for preferred-city rotation only. */
@@ -176,9 +226,26 @@ export async function getCitiesRotateConfig() {
   return { ...cfg, accountId: id };
 }
 
+export function filterDaysInAiRange(scheduleDays, from, to) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return (scheduleDays || [])
+    .filter((d) => d && typeof d.Date === "string" && d.Date.length >= 10)
+    .filter((d) => dateInRange(d.Date, from, to))
+    .filter((d) => {
+      const [y, m, day] = d.Date.slice(0, 10).split("-").map(Number);
+      return new Date(y, m - 1, day) >= today;
+    })
+    .sort((a, b) => String(a.Date).localeCompare(String(b.Date)));
+}
+
+var _submitArmed = false;
+var _submitTimer = null;
 var _postSelectRotateBound = false;
 var _citiesOptionsKey = "";
 var _aiSubmitMounted = false;
+var _lastProbeAt = 0;
+var _rotatePausedUntil = 0;
 
 function _citiesOptionsKeyFrom(opts) {
   return (opts || []).map((o) => o.id).join("\u0001");
@@ -198,21 +265,74 @@ function _setAllCitiesChecked(checked) {
   }
 }
 
+export function clearPendingSubmit() {
+  if (_submitTimer) {
+    vs.clear(_submitTimer);
+    _submitTimer = null;
+  }
+  _submitArmed = false;
+}
+
 export function stopCityRotate() {
   stopServerCityRotate();
 }
 
 export function pauseCityRotateForWait(seconds) {
   const ms = Math.max(0, Number(seconds) || 0) * 1000;
+  _rotatePausedUntil = Math.max(_rotatePausedUntil, Date.now() + ms);
   // Dates / wait pill — release busy so server can plan after pause.
   clearCityRotateBusy();
-  void ms;
 }
 
 /** After schedule-days (dates / no slots) or 40s busy timeout — ask server for next plan. */
 export function noteCityRotateResponse(_info = {}) {
   clearCityRotateBusy();
   updateAiStatus("City Change — dates settled; requesting next plan from server…");
+}
+
+export function haltCityRotateForBooking() {
+  stopCityRotate();
+}
+
+/** Re-check current city when Auto Submit turns on (once — not on a loop). */
+export async function probeAutoSubmitForCurrentCity() {
+  const ai = await getArmedAiConfig();
+  if (!ai) return;
+
+  const now = Date.now();
+  if (now - _lastProbeAt < 60_000) return;
+  _lastProbeAt = now;
+
+  const select = document.querySelector("#post_select");
+  const postId = select?.value;
+  if (!postId) {
+    updateAiStatus("Auto Submit ON — pick a city first.");
+    return;
+  }
+
+  const posts = await getPosts();
+  const post = posts.find((p) => String(p.ID) === String(postId));
+  const days = post?.Days;
+  if (Array.isArray(days) && days.length) {
+    const inRange = filterDaysInAiRange(days, ai.from, ai.to);
+    if (inRange.length) {
+      haltCityRotateForBooking();
+      const idx = pickPreferredDateIndex(inRange.length);
+      const date = inRange[idx].Date;
+      updateAiStatus(`Auto Submit: picking date #${idx + 1} (${date.slice(0, 10)})…`);
+      vs.send({ action: "selectFirstDate", date, maxMs: AI_DATE_SELECT_MS, pollMs: AI_BOOK_POLL_MS });
+      return;
+    }
+    updateAiStatus(`Auto Submit ON — no dates in your range on ${post.Name || "this city"} yet.`);
+    return;
+  }
+
+  updateAiStatus("Auto Submit ON — loading slots for current city…");
+  vs.send({ action: "selectPost", postId: String(postId) });
+}
+
+export function resetAutoSubmitProbe() {
+  _lastProbeAt = 0;
 }
 
 function _postOptions() {
@@ -230,6 +350,13 @@ function _readSelectedCities() {
     id: String(cb.value),
     name: cb.dataset.name || cb.value,
   }));
+}
+
+function _readFormDates() {
+  return {
+    from: document.querySelector(idSel(ID.aiFrom))?.value || null,
+    to: document.querySelector(idSel(ID.aiTo))?.value || null,
+  };
 }
 
 function _fillCitiesChecklist(selectedIds = [], { force = false } = {}) {
@@ -277,9 +404,12 @@ function _cityNames(cfg) {
 
 async function _persistForm(accountId, patch = {}) {
   const prev = (await getAiConfig(accountId)) || {};
+  const { from, to } = _readFormDates();
   const cities = _readSelectedCities();
   const next = {
     ...prev,
+    from: from || prev.from || null,
+    to: to || prev.to || null,
     cities: cities.length ? cities : (prev.cities || []),
     loginId: document.querySelector(idSel(ID.aiLogin))?.value?.trim() || prev.loginId || "",
     loginPass: document.querySelector(idSel(ID.aiPass))?.value || prev.loginPass || "",
@@ -292,10 +422,9 @@ async function _persistForm(accountId, patch = {}) {
         set: i + 1,
       };
     }),
-    submitEnabled: false,
-    enabled: false,
     ...patch,
   };
+  // Keep legacy `enabled` in sync with submitEnabled
   if (typeof next.submitEnabled === "boolean") next.enabled = next.submitEnabled;
   await setAiConfig(accountId, next);
   return next;
@@ -311,6 +440,7 @@ function _bindPostSelectRotateWatch() {
 export async function startCityRotate() {
   if (_opsFrozen) return;
   if (isInterviewPage() || !isOfcSchedulePage()) return;
+  if (_submitArmed) return;
 
   const pay = await fetchPaymentStatus();
   if (!pay.paid) {
@@ -333,7 +463,7 @@ export async function startCityRotate() {
 
 /** Restart rotation if City Change is ON but the timer was lost (e.g. slow page load). */
 export async function ensureCityRotateRunning() {
-  if (_opsFrozen || isInterviewPage() || !isOfcSchedulePage() || !vs.alive) return;
+  if (_opsFrozen || _submitArmed || isInterviewPage() || !isOfcSchedulePage() || !vs.alive) return;
   const cfg = await getCitiesRotateConfig();
   if (!cfg?.cities?.length) return;
   if (!document.querySelector("#post_select")) return;
@@ -341,12 +471,163 @@ export async function ensureCityRotateRunning() {
   await ensureServerCityRotate();
 }
 
-export function notifyExtensionDead() {
-  updateAiStatus("Extension reloaded — refresh this visa page, then turn City Change ON again.");
+function _findSubmitButton() {
+  return document.querySelector("#submitbtn")
+    || document.querySelector('button#submitbtn')
+    || document.querySelector('input#submitbtn')
+    || [...document.querySelectorAll("button, input[type=submit]")].find((b) =>
+      /submit/i.test(b.textContent || b.value || "")
+    );
 }
 
+/** Content-script + MAIN-world Submit click (retries until enabled). */
+export function clickSubmitDual() {
+  const btn = _findSubmitButton();
+  if (btn && !btn.disabled) {
+    try {
+      btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+      btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+      btn.click();
+    } catch {}
+  }
+  vs.send({
+    action: "forceClickSubmit",
+    prefix: T,
+    pollMs: AI_BOOK_POLL_MS,
+    maxMs: AI_SUBMIT_ARM_MS,
+  });
+}
+
+function _isBookingReadyToSubmit() {
+  if (!isTimeSlotPicked()) return false;
+  const submit = _findSubmitButton();
+  return !!(submit && !submit.disabled);
+}
+
+export function notifyExtensionDead() {
+  updateAiStatus("Extension reloaded — refresh this visa page, then turn Auto Submit ON again.");
+}
+
+export async function armAiFastSubmit(accountId) {
+  if (_opsFrozen) return;
+  if (isInterviewPage()) return;
+  if (_submitArmed) return;
+  const cfg = await getAiConfig(accountId);
+  if (!isSubmitEnabled(cfg)) return;
+
+  haltCityRotateForBooking();
+  _submitArmed = true;
+  armSubmitErrorWatch();
+
+  const started = Date.now();
+  let done = false;
+  let timePickedAt = isTimeSlotPicked() ? Date.now() : 0;
+
+  const finish = async (submitted) => {
+    if (done || !_submitArmed || !vs.alive) return;
+    done = true;
+    window.removeEventListener("message", onSubmitMsg);
+    if (_submitTimer) {
+      vs.clear(_submitTimer);
+      _submitTimer = null;
+    }
+    if (isInterviewPage()) {
+      _submitArmed = false;
+      return;
+    }
+    _submitArmed = false;
+    if (submitted) {
+      await disarmAiSubmit(accountId);
+      updateAiStatus("Submit clicked — all Tik Tik operations stopped.");
+      return;
+    }
+    updateAiStatus("Auto Submit — Submit not clicked in time; still watching…");
+  };
+
+  const onSubmitMsg = (event) => {
+    if (!vs.alive || event.source !== window) return;
+    if (event.data?.action !== MSG.sub) return;
+    finish(true);
+  };
+  window.addEventListener("message", onSubmitMsg);
+
+  const tryFinish = async () => {
+    if (done || !_submitArmed || !vs.alive) return;
+
+    const now = Date.now();
+    const elapsed = now - started;
+
+    if (isTimeSlotPicked() && !timePickedAt) {
+      timePickedAt = now;
+      updateAiStatus(`Time slot selected — Submit in ${AI_BOOK_SUBMIT_WAIT_MS}ms…`);
+    }
+
+    if (timePickedAt && now - timePickedAt >= AI_BOOK_SUBMIT_WAIT_MS) {
+      clickSubmitDual();
+      if (_isBookingReadyToSubmit()) {
+        updateAiStatus("Clicking Submit…");
+      }
+    }
+
+    if (elapsed >= AI_SUBMIT_ARM_MS) {
+      return finish(false);
+    }
+
+    _submitTimer = vs.setTimeout(tryFinish, AI_BOOK_POLL_MS);
+  };
+
+  tryFinish();
+}
+
+/** Call after watcher or manual slot pick when Auto Submit is ON. */
 export async function triggerAutoSubmitIfArmed() {
-  /* Auto Submit shelved — no-op */
+  if (!isTimeSlotPicked() || _submitArmed || _opsFrozen) return;
+  const ai = await getArmedAiConfig();
+  if (!ai) return;
+  await armAiFastSubmit(ai.accountId);
+}
+
+export async function scheduleAiSubmitClick(accountId) {
+  if (_opsFrozen) return;
+  if (isInterviewPage()) return;
+  if (_submitArmed) return;
+  const cfg = await getAiConfig(accountId);
+  if (!isSubmitEnabled(cfg)) return;
+
+  haltCityRotateForBooking();
+  _submitArmed = true;
+  const started = Date.now();
+  const minWaitMs = 0;
+  const maxWaitMs = 100;
+
+  const trySubmit = async () => {
+    if (!_submitArmed || !vs.alive) return;
+    const elapsed = Date.now() - started;
+    const ready = _isBookingReadyToSubmit();
+
+    if ((ready && elapsed >= minWaitMs) || elapsed >= maxWaitMs) {
+      _submitTimer = null;
+      if (isInterviewPage()) {
+        _submitArmed = false;
+        return;
+      }
+      await disarmAiSubmit(accountId);
+      vs.send({ action: "clickSubmit", prefix: T });
+      updateAiStatus("Submit clicked — all Tik Tik operations stopped.");
+      _submitArmed = false;
+      return;
+    }
+
+    updateAiStatus(
+      ready
+        ? "Time slot ready — clicking Submit…"
+        : `Waiting for time slot to register (${(elapsed / 1000).toFixed(1)}s)…`
+    );
+    _submitTimer = vs.setTimeout(() => { trySubmit(); }, 10);
+  };
+
+  updateAiStatus("Time picked — waiting for slot to register…");
+  trySubmit();
 }
 
 function updateAiStatus(text) {
@@ -359,11 +640,18 @@ export function setTikTikStatus(text) {
 }
 
 function _paintToggleButtons(cfg) {
+  const submitBtn = document.querySelector(idSel(ID.aiSubmitBtn));
   const citiesBtn = document.querySelector(idSel(ID.aiCitiesBtn));
   const pay = getCachedPayment();
   const unlocked = !!pay.paid;
+  const submitOn = unlocked && isSubmitEnabled(cfg);
   const citiesOn = unlocked && isCitiesEnabled(cfg);
 
+  if (submitBtn) {
+    submitBtn.disabled = !unlocked;
+    submitBtn.classList.toggle(CLS.aiOnBtn, submitOn);
+    submitBtn.textContent = submitOn ? "Auto Submit: ON" : "Auto Submit: OFF";
+  }
   if (citiesBtn) {
     citiesBtn.disabled = !unlocked;
     citiesBtn.classList.toggle(CLS.aiOnBtn, citiesOn);
@@ -401,32 +689,12 @@ function _paintPaymentLock() {
          <button type="button" data-copy-upi="1" style="margin-left:6px">Copy</button>
        </div>`
     : "";
-
-  if (pay.pending) {
-    box.innerHTML = `
-      <div style="font-weight:700;color:#065f46;margin-bottom:8px;font-size:15px">Waiting request</div>
-      <div style="background:#ecfdf5;border:1px solid #6ee7b7;padding:12px;border-radius:10px;line-height:1.5;margin-bottom:10px">
-        <div style="font-weight:700;margin-bottom:6px">Please wait until payment is approved</div>
-        Your UTR <b>${pay.pendingUtr || "—"}</b> was submitted.
-        Tik Tik unlocks automatically after an admin accepts this deposit request.
-        You can leave this open — status refreshes every few seconds.
-      </div>
-      <div style="font-size:13px;margin-bottom:8px">Amount: <b>${amt}</b></div>
-      <button type="button" id="${ID.aiPayRefresh}">Check approval status</button>
-    `;
-    const refreshBtn = box.querySelector(idSel(ID.aiPayRefresh));
-    if (refreshBtn) {
-      vs.on(refreshBtn, "click", async () => {
-        refreshBtn.disabled = true;
-        refreshBtn.textContent = "Checking…";
-        await fetchPaymentStatus({ force: true });
-        await _applyPaymentGate();
-        refreshBtn.disabled = false;
-        refreshBtn.textContent = "Check approval status";
-      });
-    }
-    return;
-  }
+  const pendingBlock = pay.pending
+    ? `<div style="background:#ecfdf5;border:1px solid #6ee7b7;padding:8px;border-radius:8px;margin:8px 0;line-height:1.4">
+         UTR submitted: <b>${pay.pendingUtr || "—"}</b><br/>
+         Waiting for admin to <b>Accept</b> — Tik Tik unlocks automatically (checks every few seconds).
+       </div>`
+    : "";
 
   box.innerHTML = `
     <div style="font-weight:700;color:#9a3412;margin-bottom:4px">Complete payment to unlock Tik Tik</div>
@@ -435,17 +703,17 @@ function _paintPaymentLock() {
     <div style="font-size:12px;line-height:1.4;margin-bottom:6px">${pay.instructions || "Scan QR or pay UPI, then enter UTR below."}</div>
     ${qr}
     ${upi}
-    <div style="margin-top:10px;padding-top:10px;border-top:1px solid #fed7aa">
-      <div style="font-weight:700;font-size:13px;margin-bottom:6px;color:#9a3412">Enter UTR</div>
-      <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">UTR number</label>
-      <input type="text" id="${ID.aiPayUtr}" placeholder="Enter UTR after payment" value="" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #fdba74;border-radius:6px" />
+    ${pendingBlock}
+    <div style="margin-top:8px">
+      <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">UTR / UPI reference</label>
+      <input type="text" id="${ID.aiPayUtr}" placeholder="Enter UTR after payment" value="${pay.pendingUtr || ""}" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #fdba74;border-radius:6px" />
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-      <button type="button" id="${ID.aiPaySubmit}">Submit payment</button>
+      <button type="button" id="${ID.aiPaySubmit}">Submit UTR</button>
       <button type="button" id="${ID.aiPayRefresh}">Check status</button>
     </div>
     <div style="font-size:11px;color:#78716c;margin-top:8px;line-height:1.35">
-      After submit you will see a waiting request until payment is approved.
+      Same visa account on another laptop unlocks too — payment is tied to this applicant ID, not the device.
     </div>
   `;
 
@@ -474,13 +742,13 @@ function _paintPaymentLock() {
       submitBtn.textContent = "Submitting…";
       try {
         await submitPaymentUtr(utr);
-        updateAiStatus("Waiting request — please wait until payment is approved.");
+        updateAiStatus("UTR submitted — waiting for admin Accept.");
         await _applyPaymentGate();
       } catch (e) {
-        updateAiStatus(e?.message || "Payment submit failed.");
+        updateAiStatus(e?.message || "UTR submit failed.");
       } finally {
         submitBtn.disabled = false;
-        submitBtn.textContent = "Submit payment";
+        submitBtn.textContent = "Submit UTR";
       }
     });
   }
@@ -505,7 +773,7 @@ async function _applyPaymentGate() {
   const cfg = accountId ? await getAiConfig(accountId) : null;
   if (!pay.paid) {
     stopCityRotate();
-    if (accountId && cfg && isCitiesEnabled(cfg)) {
+    if (accountId && cfg && (isCitiesEnabled(cfg) || isSubmitEnabled(cfg))) {
       await _persistForm(accountId, {
         citiesEnabled: false,
         submitEnabled: false,
@@ -526,12 +794,14 @@ function _paintStatus(cfg, accountId) {
   _paintToggleButtons(cfg);
   _paintPaymentLock();
 
+  const submitOn = unlocked && isSubmitEnabled(cfg);
   const citiesOn = unlocked && isCitiesEnabled(cfg);
+  const anyOn = submitOn || citiesOn;
 
   if (!unlocked) {
     btn.classList.remove(CLS.aiOn);
     btn.textContent = "Tik Tik · Pay";
-  } else if (citiesOn) {
+  } else if (anyOn) {
     btn.classList.add(CLS.aiOn);
     btn.textContent = "Tik Tik ON";
   } else {
@@ -542,24 +812,39 @@ function _paintStatus(cfg, accountId) {
   if (!unlocked) {
     const amt = pay.amount && pay.amount !== "0.00" ? `₹${pay.amount}` : "fee";
     if (pay.pending) {
-      status.textContent = `Account ${accountId || "—"}: waiting request — please wait until payment is approved.`;
+      status.textContent = `Account ${accountId || "—"}: UTR pending admin Accept (${pay.pendingUtr || amt}).`;
     } else {
-      status.textContent = `Account ${accountId || "—"}: pay ${amt} via QR/UPI, then Enter UTR → Submit payment.`;
+      status.textContent = `Account ${accountId || "—"}: pay ${amt} via QR/UPI, then submit UTR.`;
     }
     return;
   }
 
-  if (citiesOn) {
-    status.textContent = `Account ${accountId || "—"}: City Change ON (${_cityNames(cfg)}, timing from server)`;
-  } else {
-    status.textContent = `Account ${accountId || "—"}: City Change OFF`;
+  const parts = [];
+  if (TEMP_SHOW_AUTO_SUBMIT) {
+    if (submitOn && cfg.from && cfg.to) {
+      parts.push(
+        `Auto Submit ON (${_pretty(cfg.from)} – ${_pretty(cfg.to)}, clicks Submit as soon as time slot is ready)`
+      );
+    } else {
+      parts.push("Auto Submit OFF");
+    }
   }
+  if (citiesOn) {
+    parts.push(`City Change ON (${_cityNames(cfg)}, :14–:21 & :24–:31)`);
+  } else {
+    parts.push("City Change OFF");
+  }
+  status.textContent = `Account ${accountId || "—"}: ${parts.join(" · ")}`;
 }
 
 export async function refreshAiSubmitUi() {
   const accountId = await getAccountId();
   const cfg = accountId ? await getAiConfig(accountId) : null;
   _paintStatus(cfg, accountId);
+  const from = document.querySelector(idSel(ID.aiFrom));
+  const to = document.querySelector(idSel(ID.aiTo));
+  if (from && cfg?.from) from.value = cfg.from;
+  if (to && cfg?.to) to.value = cfg.to;
   const savedIds = (cfg?.cities || []).map((c) => c.id);
   const panel = document.querySelector(idSel(ID.aiPanel));
   const panelOpen = panel && !panel.classList.contains(CLS.hidden);
@@ -595,6 +880,65 @@ function _togglePanel(show) {
   }
 }
 
+async function _onToggleSubmit() {
+  if (!TEMP_SHOW_AUTO_SUBMIT) {
+    updateAiStatus("Auto Submit is temporarily disabled.");
+    return;
+  }
+  const pay = await fetchPaymentStatus({ force: true });
+  if (!pay.paid) {
+    updateAiStatus("Complete payment first — Tik Tik unlocks when admin accepts.");
+    await _applyPaymentGate();
+    return;
+  }
+  const accountId = await getAccountId();
+  if (!accountId) {
+    updateAiStatus("Open a logged-in schedule page so we can bind this to your account.");
+    return;
+  }
+  const prev = (await getAiConfig(accountId)) || {};
+  const turningOn = !isSubmitEnabled(prev);
+  const { from, to } = _readFormDates();
+
+  if (turningOn) {
+    if (!from || !to) {
+      updateAiStatus("Select both From and To dates before enabling Auto Submit.");
+      return;
+    }
+    if (from > to) {
+      updateAiStatus("From date must be before To date.");
+      return;
+    }
+    const ok = window.confirm(
+      `Enable Auto Submit?\n\n` +
+      `Range: ${_pretty(from)} – ${_pretty(to)}\n` +
+      `If a matching slot appears on the current city, it will select date + time and Submit once.\n\n` +
+      `City Change is separate — use its own ON/OFF button.`
+    );
+    if (!ok) return;
+    thawOps();
+    clearPendingSubmit();
+    resetAutoSubmitProbe();
+    await _persistForm(accountId, {
+      submitEnabled: true,
+      from,
+      to,
+      confirmedAt: Date.now(),
+    });
+  } else {
+    clearPendingSubmit();
+    await _persistForm(accountId, {
+      submitEnabled: false,
+      from: from || prev.from,
+      to: to || prev.to,
+    });
+  }
+  await refreshAiSubmitUi();
+  if (turningOn) {
+    await probeAutoSubmitForCurrentCity();
+  }
+}
+
 async function _onToggleCities() {
   const pay = await fetchPaymentStatus({ force: true });
   if (!pay.paid) {
@@ -620,14 +964,14 @@ async function _onToggleCities() {
       `Enable City Change?\n\n` +
       `Cities: ${cities.map((c) => c.name).join(", ")}\n` +
       `Cities are saved on the server for this applicant.\n` +
-      `Switch timing and next city come from the server (prefetch 4s early).`
+      `Switch timing and next city come from the server (prefetch 4s early).\n\n` +
+      `Auto Submit is separate — use its own ON/OFF button.`
     );
     if (!ok) return;
     thawOps();
     await _persistForm(accountId, {
       citiesEnabled: true,
       cities,
-      submitEnabled: false,
     });
     await syncCitiesToServer(cities, true);
     await refreshAiSubmitUi();
@@ -640,7 +984,6 @@ async function _onToggleCities() {
   await _persistForm(accountId, {
     citiesEnabled: false,
     cities: cities.length ? cities : (prev.cities || []),
-    submitEnabled: false,
   });
   await syncCitiesToServer(cities.length ? cities : (prev.cities || []), false);
   await refreshAiSubmitUi();
@@ -656,6 +999,8 @@ async function _onSaveLogin() {
     updateAiStatus("Open a logged-in schedule page so we can bind this to your account.");
     return;
   }
+  const { from, to } = _readFormDates();
+  const cities = _readSelectedCities();
   const loginId = document.querySelector(idSel(ID.aiLogin))?.value?.trim();
   const loginPass = document.querySelector(idSel(ID.aiPass))?.value;
   const security = [0, 1, 2].map((i) => ({
@@ -737,8 +1082,18 @@ export function ensureAiSubmitUi() {
     <div id="${ID.aiPayBox}" class="${CLS.aiHint}" style="display:none;border:1px solid #fdba74;background:#fff7ed;padding:10px;border-radius:8px;margin-bottom:8px"></div>
     <div id="${ID.aiControls}">
     <p class="${CLS.aiHint}">
-      <b>City Change</b> saves your cities on the server — next city and timing are sent from the server (4s prefetch).
+      ${TEMP_SHOW_AUTO_SUBMIT
+        ? `Two separate switches: <b>Auto Submit</b> books a matching date once;
+      <b>City Change</b> saves your cities on the server — next city and timing are sent from the server (4s prefetch).`
+        : `<b>City Change</b> saves your cities on the server — next city and timing are sent from the server (4s prefetch).
+      Auto Submit is temporarily disabled.`}
     </p>
+    ${TEMP_SHOW_AUTO_SUBMIT ? `
+    <div class="${CLS.aiRow}">
+      <label>From <input type="date" id="${ID.aiFrom}" min="${_todayISO()}" /></label>
+      <label>To <input type="date" id="${ID.aiTo}" min="${_todayISO()}" /></label>
+    </div>
+    ` : ""}
     <div class="${CLS.aiHint}" style="margin-bottom:4px;font-weight:600;color:#334155">
       Preferred cities
       <button type="button" id="${ID.aiCitiesAll}" class="${CLS.aiCityAct}">Select all</button>
@@ -784,6 +1139,7 @@ export function ensureAiSubmitUi() {
     </div>
     ` : ""}
     <div class="${CLS.aiRow}">
+      ${TEMP_SHOW_AUTO_SUBMIT ? `<button type="button" id="${ID.aiSubmitBtn}">Auto Submit: OFF</button>` : ""}
       <button type="button" id="${ID.aiCitiesBtn}">City Change: OFF</button>
       <button type="button" id="${ID.aiClose}">Close</button>
     </div>
@@ -800,12 +1156,22 @@ export function ensureAiSubmitUi() {
     payBox.style.display = "";
   }
 
+  const submitBtn = panel.querySelector(idSel(ID.aiSubmitBtn));
+  if (submitBtn) vs.on(submitBtn, "click", _onToggleSubmit);
   vs.on(panel.querySelector(idSel(ID.aiCitiesBtn)), "click", _onToggleCities);
   const saveLoginBtn = panel.querySelector(idSel(ID.aiSaveLogin));
   if (saveLoginBtn) vs.on(saveLoginBtn, "click", _onSaveLogin);
   vs.on(panel.querySelector(idSel(ID.aiClose)), "click", () => _togglePanel(false));
   vs.on(panel.querySelector(idSel(ID.aiCitiesAll)), "click", () => _setAllCitiesChecked(true));
   vs.on(panel.querySelector(idSel(ID.aiCitiesNone)), "click", () => _setAllCitiesChecked(false));
+
+  const fromEl = panel.querySelector(idSel(ID.aiFrom));
+  if (fromEl) {
+    vs.on(fromEl, "change", (e) => {
+      const to = panel.querySelector(idSel(ID.aiTo));
+      if (to && e.target.value) to.min = e.target.value;
+    });
+  }
 
   onPaymentChange(() => {
     _applyPaymentGate();
@@ -838,7 +1204,7 @@ export async function reserveAiSubmit() {
     removeTikTikUi();
     return;
   }
-  if (!await vs.waitFor("#post_select", { attempts: 40 })) return;
+  if (!await vs.waitFor("#post_select", { attempts: SCHEDULE_UI_WAIT_ATTEMPTS })) return;
   ensureAiSubmitUi();
   startPaymentPolling();
   await fetchPaymentStatus({ force: true });
@@ -848,4 +1214,8 @@ export async function reserveAiSubmit() {
   if (_aiSubmitMounted) return;
   _aiSubmitMounted = true;
   vs.setTimeout(() => refreshAiSubmitUi(), 800);
+  vs.setTimeout(async () => {
+    const pay = getCachedPayment();
+    if (pay.paid && (await getArmedAiConfig())) await probeAutoSubmitForCurrentCity();
+  }, 1500);
 }

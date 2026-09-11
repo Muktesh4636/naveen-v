@@ -331,8 +331,9 @@
       <a class="brand" href="{% url 'panel_dashboard' %}">Visa<em>Slot</em> <small>Admin</small></a>
       <a class="nav-link {% if nav_active == 'dashboard' %}active{% endif %}" href="{% url 'panel_dashboard' %}">Dashboard</a>
       <a class="nav-link {% if nav_active == 'customers' %}active{% endif %}" href="{% url 'panel_customers' %}">Customers</a>
-      <a class="nav-link {% if nav_active == 'payments' %}active{% endif %}" href="{% url 'panel_payments' %}">
-        <span>Payments</span>
+      <a class="nav-link {% if nav_active == 'payments' %}active{% endif %}" href="{% url 'panel_payments' %}">Payments</a>
+      <a class="nav-link {% if nav_active == 'deposits' %}active{% endif %}" href="{% url 'panel_deposits' %}">
+        <span>Deposit requests</span>
         {% if pending_payments %}<span class="nav-badge">{{ pending_payments }}</span>{% endif %}
       </a>
       <a class="nav-link {% if nav_active == 'applicants' %}active{% endif %}" href="{% url 'panel_applicants' %}">Applicants</a>

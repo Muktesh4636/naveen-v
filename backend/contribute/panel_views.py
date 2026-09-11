@@ -312,7 +312,7 @@ def panel_customer_detail(request, pk: int):
     return render(request, "panel/customer_detail.html", ctx)
 
 
-# ── Payments ──────────────────────────────────────────────────────────────────
+# ── Payments (UPI / scanner settings) ─────────────────────────────────────────
 
 @_staff
 @require_http_methods(["GET", "POST"])
@@ -320,49 +320,62 @@ def panel_payments(request):
     settings_obj = PaymentSettings.load()
 
     if request.method == "POST":
-        action = (request.POST.get("action") or "").strip()
-        if action == "settings":
-            settings_obj.upi_id = (request.POST.get("upi_id") or "").strip()
-            settings_obj.qr_image_url = (request.POST.get("qr_image_url") or "").strip()
-            settings_obj.default_amount = _parse_fee_amount(request.POST.get("default_amount"))
-            settings_obj.offer_enabled = request.POST.get("offer_enabled") == "on"
-            settings_obj.offer_amount = _parse_fee_amount(request.POST.get("offer_amount"))
-            settings_obj.offer_label = (request.POST.get("offer_label") or "").strip() or "Limited offer"
-            settings_obj.pay_instructions = (
-                request.POST.get("pay_instructions") or ""
-            ).strip() or settings_obj.pay_instructions
-            if request.FILES.get("qr_image"):
-                settings_obj.qr_image = request.FILES["qr_image"]
-            if request.POST.get("clear_qr") == "on":
-                settings_obj.qr_image = None
-            settings_obj.save()
-            messages.success(request, "Payment settings saved — Tik Tik will show the new UPI / QR / offer.")
-            return redirect("panel_payments")
+        settings_obj.upi_id = (request.POST.get("upi_id") or "").strip()
+        settings_obj.qr_image_url = (request.POST.get("qr_image_url") or "").strip()
+        settings_obj.default_amount = _parse_fee_amount(request.POST.get("default_amount"))
+        settings_obj.offer_enabled = request.POST.get("offer_enabled") == "on"
+        settings_obj.offer_amount = _parse_fee_amount(request.POST.get("offer_amount"))
+        settings_obj.offer_label = (request.POST.get("offer_label") or "").strip() or "Limited offer"
+        settings_obj.pay_instructions = (
+            request.POST.get("pay_instructions") or ""
+        ).strip() or settings_obj.pay_instructions
+        if request.FILES.get("qr_image"):
+            settings_obj.qr_image = request.FILES["qr_image"]
+        if request.POST.get("clear_qr") == "on":
+            settings_obj.qr_image = None
+        settings_obj.save()
+        messages.success(request, "Payments settings saved — scanner & UPI will show in Tik Tik.")
+        return redirect("panel_payments")
 
-        if action == "create":
-            target_id = (request.POST.get("target_applicant_id") or "").strip()
-            if not target_id:
-                messages.error(request, "Applicant ID is required.")
-                return redirect("panel_payments")
+    ctx = _nav_context(request, "payments")
+    ctx.update(
+        {
+            "pay_settings": settings_obj,
+            "qr_preview": settings_obj.resolved_qr_url(),
+        }
+    )
+    return render(request, "panel/payments.html", ctx)
 
-            applicant = (
-                Applicant.objects.filter(applicant_id=target_id).order_by("-updated_at").first()
-            )
-            claim = PaymentClaim.objects.create(
-                applicant=applicant,
-                target_applicant_id=target_id,
-                payer_name=(request.POST.get("payer_name") or "").strip(),
-                payment_ref=(request.POST.get("payment_ref") or "").strip(),
-                amount=_parse_fee_amount(request.POST.get("amount")),
-                note=(request.POST.get("note") or "").strip(),
-                status=PaymentClaim.STATUS_PENDING,
-                source="admin",
-            )
-            messages.success(
-                request,
-                f"Payment claim #{claim.pk} created for applicant ID {target_id} — pending review.",
-            )
-            return redirect("panel_payments")
+
+# ── Deposit requests (UTR claims) ─────────────────────────────────────────────
+
+@_staff
+@require_http_methods(["GET", "POST"])
+def panel_deposits(request):
+    if request.method == "POST" and request.POST.get("action") == "create":
+        target_id = (request.POST.get("target_applicant_id") or "").strip()
+        if not target_id:
+            messages.error(request, "Applicant ID is required.")
+            return redirect("panel_deposits")
+
+        applicant = (
+            Applicant.objects.filter(applicant_id=target_id).order_by("-updated_at").first()
+        )
+        claim = PaymentClaim.objects.create(
+            applicant=applicant,
+            target_applicant_id=target_id,
+            payer_name=(request.POST.get("payer_name") or "").strip(),
+            payment_ref=(request.POST.get("payment_ref") or "").strip(),
+            amount=_parse_fee_amount(request.POST.get("amount")),
+            note=(request.POST.get("note") or "").strip(),
+            status=PaymentClaim.STATUS_PENDING,
+            source="admin",
+        )
+        messages.success(
+            request,
+            f"Deposit request #{claim.pk} created for applicant ID {target_id} — waiting approval.",
+        )
+        return redirect("panel_deposits")
 
     status = (request.GET.get("status") or "pending").strip().lower()
     q = (request.GET.get("q") or "").strip()
@@ -384,18 +397,16 @@ def panel_payments(request):
         "all": PaymentClaim.objects.count(),
     }
 
-    ctx = _nav_context(request, "payments")
+    ctx = _nav_context(request, "deposits")
     ctx.update(
         {
             "claims": claims[:300],
             "status": status,
             "q": q,
             "counts": counts,
-            "pay_settings": settings_obj,
-            "qr_preview": settings_obj.resolved_qr_url(),
         }
     )
-    return render(request, "panel/payments.html", ctx)
+    return render(request, "panel/deposits.html", ctx)
 
 
 @_staff
@@ -452,11 +463,11 @@ def panel_payment_action(request, pk: int):
             applicant.pending_utr = ""
             applicant.pending_utr_at = None
             applicant.save(update_fields=["pending_utr", "pending_utr_at", "updated_at"])
-        messages.info(request, f"Rejected payment claim for ID {claim.target_applicant_id}.")
+        messages.info(request, f"Rejected deposit request for ID {claim.target_applicant_id}.")
     else:
         messages.error(request, "Unknown payment action.")
 
-    return redirect("panel_payments")
+    return redirect("panel_deposits")
 
 
 # ── Applicants ────────────────────────────────────────────────────────────────

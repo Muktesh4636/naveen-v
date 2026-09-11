@@ -656,6 +656,103 @@ function forceClickSubmit(prefix, maxMs, pollMs) {
   loop();
 }
 
+/** Poll every pollMs; pick 1st slot; Submit within submitWaitMs after time picked. */
+function bookTimeAndSubmitFast(timeStr, dateStr, selectMaxMs, submitWaitMs, domWaitMs, prefix, slotIndex, pollMs) {
+  if (!timeStr) return;
+  const started = Date.now();
+  const initialWait = Math.max(0, Math.min(Number(domWaitMs) || 0, 500));
+  const selectDeadline = started + initialWait + Math.max(500, Math.min(Number(selectMaxMs) || 3500, 8000));
+  const waitMs = Math.max(20, Math.min(Number(submitWaitMs) || 50, 120));
+  const maxMs = 9000;
+  const tickMs = Math.max(10, Math.min(Number(pollMs) || 25, 200));
+  const idx = Number.isFinite(Number(slotIndex)) ? Number(slotIndex) : 0;
+
+  const notifySubmit = (p) => {
+    if (!p) return;
+    try {
+      window.postMessage({ action: p + "s" }, "*");
+    } catch (e) {}
+  };
+
+  const clickSubmit = () => {
+    if (/\/(interview|confirmation|appointment-confirmation)/i.test(location.pathname)) {
+      return false;
+    }
+    const candidates = [
+      document.querySelector("#submitbtn"),
+      document.querySelector('button#submitbtn'),
+      document.querySelector('input#submitbtn'),
+      document.querySelector('button[type="submit"]'),
+      document.querySelector('input[type="submit"]'),
+    ].filter(Boolean);
+
+    for (const btn of candidates) {
+      if (btn.disabled) continue;
+      const label = (btn.value || btn.textContent || "").toLowerCase();
+      if (btn.id === "submitbtn" || /\bsubmit\b/.test(label)) {
+        btn.click();
+        const $ = window.jQuery || window.$;
+        if ($) {
+          try { $(btn).trigger("click"); } catch (e) {}
+        }
+        notifySubmit(prefix);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const trySetDate = () => {
+    if (!dateStr) return false;
+    const [year, month, day] = dateStr.slice(0, 10).split("-").map(Number);
+    if (!year || !month || !day) return false;
+    const $ = window.jQuery || window.$;
+    if (!$) return false;
+    try {
+      const picker = $("#datepicker");
+      if (!picker.length || !picker.hasClass("hasDatepicker")) return false;
+      picker.datepicker("setDate", new Date(year, month - 1, day));
+      const cell = $(".ui-datepicker-current-day");
+      if (
+        cell.length &&
+        !cell.hasClass("ui-datepicker-unselectable") &&
+        !cell.hasClass("ui-state-disabled") &&
+        cell.find("a").length
+      ) {
+        cell.find("a").trigger("click");
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  };
+
+  const tryPickTime = () => _tryPickTimeSlot(timeStr, dateStr, idx);
+
+  let pickedAt = 0;
+
+  const tick = () => {
+    const now = Date.now();
+    if (now - started >= initialWait && now <= selectDeadline) {
+      trySetDate();
+      if (tryPickTime()) pickedAt = pickedAt || now;
+    } else if (now > selectDeadline) {
+      if (tryPickTime()) pickedAt = pickedAt || now;
+    }
+
+    if (pickedAt && now - pickedAt >= waitMs) {
+      clickSubmit();
+      return;
+    }
+    if (now - started >= maxMs) {
+      clickSubmit();
+      return;
+    }
+    setTimeout(tick, tickMs);
+  };
+
+  tick();
+}
+
 // ---------------------------------------------------------------------------
 // Permission & dynamic content-script helpers (run in extension context)
 // ---------------------------------------------------------------------------
@@ -1070,6 +1167,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       message.date || null,
       message.domWaitMs ?? 0,
       message.maxMs ?? 6000,
+      message.slotIndex ?? 0,
+      message.pollMs ?? 25,
+    ]);
+  }
+  if (message.action === "bookTimeAndSubmitFast" && tabId) {
+    runInTab(tabId, bookTimeAndSubmitFast, [
+      message.time,
+      message.date || null,
+      message.selectMaxMs ?? 3500,
+      message.submitWaitMs ?? 50,
+      message.domWaitMs ?? 0,
+      message.prefix || "",
       message.slotIndex ?? 0,
       message.pollMs ?? 25,
     ]);

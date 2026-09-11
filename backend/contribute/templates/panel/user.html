@@ -38,7 +38,7 @@
     <h2>Payment (admin only)</h2>
     <p class="meta" style="margin-top:-.35rem">
       Fee / offer for this ID. Users pay via QR/UPI in Tik Tik and submit UTR;
-      Accept on Payments to unlock (or paste accepted UTR here).
+      Accept on Deposit requests to unlock (or paste accepted UTR here).
     </p>
     <div class="two">
       <div>
@@ -74,7 +74,7 @@
       {% else %}
         <strong style="color:var(--warn, #9a5b00)">Unpaid — Tik Tik locked</strong>
         {% if applicant.pending_utr %}
-          · pending UTR <code>{{ applicant.pending_utr }}</code> — Accept it on Payments to unlock
+          · pending UTR <code>{{ applicant.pending_utr }}</code> — Accept it on Deposit requests to unlock
         {% else %}
           — user pays via QR/UPI in Tik Tik and submits UTR
         {% endif %}
