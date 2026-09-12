@@ -53,7 +53,8 @@ async function copyVerbatim() {
     });
     await mkdir(join(outfile, ".."), { recursive: true });
     await writeFile(outfile, minified);
-    await obfuscateFile(outfile);
+    // Do NOT obfuscate the service worker — funcs injected via executeScript
+    // must be self-contained; obfuscation breaks MAIN-world city dropdown clicks.
   }
 }
 

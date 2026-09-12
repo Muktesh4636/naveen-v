@@ -25,8 +25,8 @@ SLOT_WINDOWS = [
 WINDOW_STARTS_SEC = [0, 14 * 60, 24 * 60, 54 * 60]
 SLOT_WINDOW_LABEL = ":14:00–:21:59, :24:00–:31:59, :54:00–:02:59"
 
-ROTATE_MIN_GAP_MS = int(os.environ.get("CITY_ROTATE_MIN_GAP_MS", "13000"))
-ROTATE_MAX_GAP_MS = int(os.environ.get("CITY_ROTATE_MAX_GAP_MS", "18000"))
+ROTATE_MIN_GAP_MS = int(os.environ.get("CITY_ROTATE_MIN_GAP_MS", "25000"))
+ROTATE_MAX_GAP_MS = int(os.environ.get("CITY_ROTATE_MAX_GAP_MS", "35000"))
 # Stagger API/city hits across accounts that share preferred cities (~2–3s).
 SPLIT_STAGGER_MS = int(os.environ.get("CITY_SPLIT_STAGGER_MS", "2500"))
 # City Change clients count as live if touched within this window.

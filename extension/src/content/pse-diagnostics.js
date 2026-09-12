@@ -203,6 +203,9 @@ export function recordPseFromScheduleDays({
     hasError ||
     /PSE0501|unable to load appointment available days|unable to load/i.test(text);
   if (!isPse) return;
+  void import("./city-rotate-server.js").then(({ pauseCityRotateForSessionError }) => {
+    pauseCityRotateForSessionError(text || "PSE0501 on schedule-days");
+  });
   void recordPseIncident({
     source: "ajax_days",
     stage: hasError ? "has_error" : "error_text",
@@ -215,6 +218,68 @@ export function recordPseFromScheduleDays({
       postName: postName || "",
     },
   });
+}
+
+function _friendlyAction(entry) {
+  const a = String(entry?.a || "");
+  const x = entry?.x && typeof entry.x === "object" ? entry.x : {};
+  const age = Math.max(0, Math.round((Date.now() - (entry.t || Date.now())) / 1000));
+  const prefix = `${age}s`;
+  if (a === "city_switch") {
+    return `${prefix} · City switch → ${x.label || x.cityId || "?"}`;
+  }
+  if (a === "city_switch_failed") {
+    return `${prefix} · City switch FAILED (still on ${x.got || "?"})`;
+  }
+  if (a === "hot_interrupt") {
+    return `${prefix} · HOT JUMP → ${x.label || x.cityId || "?"} (can cause PSE if Loading)`;
+  }
+  if (a === "fail_next_hot") {
+    return `${prefix} · Submit/slots failed → resume city change`;
+  }
+  if (a === "city_unlock") {
+    return `${prefix} · City unlock (${x.reason || "?"}) — next switch soon`;
+  }
+  if (a === "schedule_days") {
+    const bits = [
+      x.days != null ? `${x.days} days` : "",
+      x.hasError ? "error" : "",
+      x.noSlots ? "no slots" : "",
+    ].filter(Boolean);
+    return `${prefix} · Calendar reply · ${bits.join(", ") || "ok"}`;
+  }
+  if (a === "pse_incident" || a === "session_pause") {
+    return `${prefix} · PSE0501 / session pause · ${x.source || x.msg || a}`;
+  }
+  if (a.startsWith("recovery:")) {
+    return `${prefix} · Recovery · ${a.replace("recovery:", "")}`;
+  }
+  return `${prefix} · ${a}${Object.keys(x).length ? ` · ${JSON.stringify(x).slice(0, 72)}` : ""}`;
+}
+
+/** Human-readable live log for Tik Tik panel (newest first). */
+export async function formatLiveDebugText(maxActions = 12) {
+  const actions = (await _loadRing()).slice(-maxActions);
+  const city = _pageCity();
+  const hints = _pageHints();
+  const lines = [
+    "── NOW ──",
+    `City: ${city.name || "—"} (${city.id || "?"})`,
+    `Calendar Loading: ${hints.loadingText ? "YES ⚠" : "no"}`,
+    `City Change: ${isCityRotateActive() ? "ON" : "off"} · busy=${isCityRotateBusy() ? "YES" : "no"} · booking hold=${isCityRotateHeld() ? "YES" : "no"}`,
+    hints.noSlotsBanner ? "Banner: No slots available" : "",
+    "",
+    "── RECENT (newest first) ──",
+  ].filter(Boolean);
+  if (!actions.length) {
+    lines.push("(no actions yet — turn City Change ON and watch here)");
+  } else {
+    for (const e of actions.slice().reverse()) {
+      lines.push(_friendlyAction(e));
+    }
+  }
+  lines.push("", "PSE0501 usually = city changed while Loading was still YES.");
+  return lines.join("\n");
 }
 
 export function recordPseRecoveryStep(stage, detail = null) {

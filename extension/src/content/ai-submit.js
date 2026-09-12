@@ -16,7 +16,9 @@ import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
 import { CLS, DAT, ID, MSG, T, idSel } from "../shared/token.js";
 import { ensureSelectorRow } from "./scheduling-controls.js";
+import { SLOT_WINDOW_LABEL } from "../shared/slotSchedule.js";
 import { armSubmitErrorWatch } from "./submit-errors.js";
+import { formatLiveDebugText } from "./pse-diagnostics.js";
 import { isTimeSlotPicked } from "./time-select.js";
 import {
   clearCityRotateBusy,
@@ -24,14 +26,18 @@ import {
   pauseCityRotateForSessionError,
   ensureServerCityRotate,
   fetchAutoSubmitFromServer,
+  isCityRotateActive,
   isCityRotateBusy,
   holdCityRotateForBooking,
   releaseCityRotateHold,
+  requestSelectPost,
   setCityRotateStatusSink,
+  setRotateCityList,
   startServerCityRotate,
   stopServerCityRotate,
   syncAutoSubmitToServer,
   syncCitiesToServer,
+  pauseCityRotateForWait as pauseCityRotateForWaitLocal,
 } from "./city-rotate-server.js";
 import { reportBookingEvent } from "./booking-log.js";
 import {
@@ -135,7 +141,7 @@ export function pickPreferredDateIndex(count) {
   return Math.min(want, n - 1);
 }
 
-/** City Change gap / windows are owned by the server — not hard-coded here. */
+/** City Change: local 13–18s rotation inside IST slot windows (5296b0f style). */
 export function isSchedulePage() {
   return /\/(schedule|ofc-schedule|c-schedule)\/?$/i.test(location.pathname) ||
     /\/(schedule|ofc-schedule|c-schedule)\b/i.test(location.pathname);
@@ -336,7 +342,7 @@ export async function getArmedAiConfig() {
 /** Armed for preferred-city rotation only. */
 export async function getCitiesRotateConfig() {
   if (_opsFrozen) return null;
-  if (isInterviewPage() || !isSchedulePage()) return null;
+  if (isInterviewPage() || !isOfcSchedulePage()) return null;
   const id = await getAccountId();
   if (!id) return null;
   const cfg = await getAiConfig(id);
@@ -447,8 +453,7 @@ export function resumeCityRotateAfterBooking() {
 }
 
 export function pauseCityRotateForWait(seconds) {
-  // Cloudflare / retry wait — do not treat as dates-loaded (keeps Loading busy intact).
-  void seconds;
+  pauseCityRotateForWaitLocal(seconds);
 }
 
 /** After schedule-days (dates / no slots) or busy timeout — unlock + 13–18s gap. */
@@ -506,8 +511,14 @@ export async function probeAutoSubmitForCurrentCity() {
     return;
   }
 
+  // City Change ON → rotation loads cities; probe must not also selectPost.
+  if (isCityRotateActive() || isCityRotateBusy()) {
+    updateAiStatus("Auto Submit ON — City Change is loading cities…");
+    return;
+  }
+
   updateAiStatus("Auto Submit ON — loading slots for current city…");
-  vs.send({ action: "selectPost", postId: String(postId) });
+  requestSelectPost(String(postId), "auto_submit_probe");
 }
 
 export function resetAutoSubmitProbe() {
@@ -622,27 +633,32 @@ export async function startCityRotate() {
   const pay = await fetchPaymentStatus();
   if (!pay.paid) {
     stopServerCityRotate();
+    updateAiStatus("City Change needs payment unlock first.");
     return;
   }
 
   const cfg = await getCitiesRotateConfig();
-  if (!cfg?.cities?.length) return;
-
-  setCityRotateStatusSink(() => {});
-  const synced = await syncCitiesToServer(cfg.cities, true);
-  if (!synced) {
-    /* keep quiet — rotation will keep retrying */
+  if (!cfg?.cities?.length) {
+    updateAiStatus("City Change — select cities in Tik Tik first.");
+    return;
   }
+
+  setCityRotateStatusSink(updateAiStatus);
+  setRotateCityList(cfg.cities);
+  await syncCitiesToServer(cfg.cities, true);
   await startServerCityRotate();
 }
 
 /** Restart rotation if City Change is ON but the timer was lost (e.g. slow page load). */
 export async function ensureCityRotateRunning() {
-  if (_opsFrozen || isInterviewPage() || !isOfcSchedulePage() || !vs.alive) return;
+  if (_opsFrozen || _submitArmed || isInterviewPage() || !isOfcSchedulePage() || !vs.alive) return;
+  const pay = getCachedPayment();
+  if (!pay.paid && !pay.markedPaid) return;
   const cfg = await getCitiesRotateConfig();
   if (!cfg?.cities?.length) return;
   if (!document.querySelector("#post_select")) return;
-  setCityRotateStatusSink(() => {});
+  setCityRotateStatusSink(updateAiStatus);
+  setRotateCityList(cfg.cities);
   await ensureServerCityRotate();
 }
 
@@ -820,6 +836,7 @@ var _payDraftPhone = "";
 var _payUiSig = "";
 var _paySubmitInFlight = false;
 var _deviceBindNudge = false;
+var _liveDebugTimer = null;
 
 function _payDisplaySig(pay) {
   return [
@@ -1242,6 +1259,34 @@ function _togglePanel(show) {
       const cfg = id ? await getAiConfig(id) : null;
       _fillCitiesChecklist((cfg?.cities || []).map((c) => c.id), { force: true });
     });
+    _startLiveDebugLoop();
+  } else {
+    _stopLiveDebugLoop();
+  }
+}
+
+async function _refreshLiveDebug() {
+  const el = document.querySelector(idSel(ID.aiDebugLog));
+  if (!el) return;
+  try {
+    el.textContent = await formatLiveDebugText(14);
+  } catch {
+    el.textContent = "Live log unavailable — refresh page.";
+  }
+}
+
+function _startLiveDebugLoop() {
+  _stopLiveDebugLoop();
+  void _refreshLiveDebug();
+  _liveDebugTimer = vs.setInterval(() => {
+    void _refreshLiveDebug();
+  }, 1500);
+}
+
+function _stopLiveDebugLoop() {
+  if (_liveDebugTimer) {
+    vs.clear(_liveDebugTimer);
+    _liveDebugTimer = null;
   }
 }
 
@@ -1351,6 +1396,7 @@ async function _onToggleCities() {
     await syncCitiesToServer(cities, true);
     await refreshAiSubmitUi();
     _bindPostSelectRotateWatch();
+    setRotateCityList(cities);
     await startCityRotate();
     return;
   }
@@ -1471,8 +1517,8 @@ export function ensureAiSubmitUi() {
     <p class="${CLS.aiHint}">
       ${TEMP_SHOW_AUTO_SUBMIT
         ? `Two separate switches: <b>Auto Submit</b> books a matching date once;
-      <b>City Change</b> saves your cities on the server — next city and timing come from the server.`
-        : `<b>City Change</b> saves your cities on the server — next city and timing come from the server.`}
+      <b>City Change</b> rotates your preferred cities every 13–18s during IST slot windows (${SLOT_WINDOW_LABEL}).`
+        : `<b>City Change</b> rotates your preferred cities every 13–18s during IST slot windows (${SLOT_WINDOW_LABEL}).`}
     </p>
     ${TEMP_SHOW_AUTO_SUBMIT ? `
     <div class="${CLS.aiRow}">
@@ -1531,6 +1577,11 @@ export function ensureAiSubmitUi() {
     </div>
     </div>
     <div id="${ID.aiStatus}" class="${CLS.aiHint}"></div>
+    <div class="${CLS.aiHint}" style="margin:8px 0 4px;font-weight:600;color:#334155">
+      Live log
+      <button type="button" id="${ID.aiDebugCopy}" class="${CLS.aiCityAct}">Copy</button>
+    </div>
+    <pre id="${ID.aiDebugLog}" class="${CLS.aiHint}" style="margin:0;max-height:180px;overflow:auto;white-space:pre-wrap;font:11px/1.35 ui-monospace,monospace;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:8px"></pre>
   `;
 
   row.insertAdjacentElement("afterend", panel);
@@ -1548,6 +1599,18 @@ export function ensureAiSubmitUi() {
   const saveLoginBtn = panel.querySelector(idSel(ID.aiSaveLogin));
   if (saveLoginBtn) vs.on(saveLoginBtn, "click", _onSaveLogin);
   vs.on(panel.querySelector(idSel(ID.aiClose)), "click", () => _togglePanel(false));
+  const copyDbg = panel.querySelector(idSel(ID.aiDebugCopy));
+  if (copyDbg) {
+    vs.on(copyDbg, "click", async () => {
+      const text = await formatLiveDebugText(20).catch(() => "");
+      try {
+        await navigator.clipboard.writeText(text);
+        updateAiStatus("Live log copied — paste in WhatsApp or email.");
+      } catch {
+        updateAiStatus("Copy failed — select text in Live log manually.");
+      }
+    });
+  }
   vs.on(panel.querySelector(idSel(ID.aiCitiesAll)), "click", () => _setAllCitiesChecked(true));
   vs.on(panel.querySelector(idSel(ID.aiCitiesNone)), "click", () => _setAllCitiesChecked(false));
   const citiesBox = panel.querySelector(idSel(ID.aiCities));
@@ -1591,16 +1654,31 @@ export async function reserveAiSubmit() {
   }
   if (!await vs.waitFor("#post_select", { attempts: SCHEDULE_UI_WAIT_ATTEMPTS })) return;
   ensureAiSubmitUi();
-  startPaymentPolling();
-  await fetchPaymentStatus({ force: true });
-  await _applyPaymentGate();
-  _bindPostSelectRotateWatch();
-  if (_aiSubmitMounted) return;
-  _aiSubmitMounted = true;
-  vs.setTimeout(() => refreshAiSubmitUi(), 800);
-  vs.setTimeout(async () => {
-    await hydrateAutoSubmitFromServer();
+
+  if (!_aiSubmitMounted) {
+    startPaymentPolling();
+    await fetchPaymentStatus({ force: true });
+    await _applyPaymentGate();
+    _bindPostSelectRotateWatch();
+    const accountId = await getAccountId();
+    const cfg = accountId ? await getAiConfig(accountId) : null;
     const pay = getCachedPayment();
-    if (pay.paid && (await getArmedAiConfig())) await probeAutoSubmitForCurrentCity();
-  }, 1500);
+    if (pay.paid && cfg && isCitiesEnabled(cfg)) {
+      setCityRotateStatusSink(updateAiStatus);
+      setRotateCityList(cfg.cities);
+      await startCityRotate();
+    }
+    _aiSubmitMounted = true;
+    vs.setTimeout(() => refreshAiSubmitUi(), 800);
+    vs.setTimeout(async () => {
+      await hydrateAutoSubmitFromServer();
+      const pay2 = getCachedPayment();
+      if (pay2.paid && (await getArmedAiConfig())) await probeAutoSubmitForCurrentCity();
+    }, 1500);
+    return;
+  }
+
+  // Mounted already — do not re-fetch payment every 2.5s (that was stopping rotation).
+  setCityRotateStatusSink(updateAiStatus);
+  await ensureCityRotateRunning();
 }

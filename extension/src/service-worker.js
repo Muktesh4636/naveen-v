@@ -563,24 +563,55 @@ function selectFirstTimeSlot(timeStr, dateStr, domWaitMs, maxMs, slotIndex, poll
   }
 }
 
-function selectConsularPost(postId) {
+function findPostSelectEl() {
+  const top = document.querySelector("#post_select");
+  if (top) return top;
+  for (const frame of document.querySelectorAll("iframe")) {
+    try {
+      const el = frame.contentDocument?.querySelector("#post_select");
+      if (el) return el;
+    } catch (e) {}
+  }
+  return null;
+}
+
+function selectConsularPost(postId, source) {
   if (!postId) return false;
-  const el = document.querySelector("#post_select");
+  const el = findPostSelectEl();
   if (!el) return false;
   const id = String(postId);
   if (String(el.value) === id) return false;
   const option = [...el.options].find((o) => String(o.value) === id);
   if (!option) return false;
+
+  // Block rapid repeats for probe/submit — not city rotation (13–18s local loop).
+  const src = String(source || "");
+  const K_DEDUPE = "__vsPostSelectDedupe";
+  const now = Date.now();
+  if (src !== "city_rotate") {
+    try {
+      const prev = window[K_DEDUPE] || { id: "", at: 0 };
+      if (now - prev.at < 20000) return true;
+      window[K_DEDUPE] = { id, at: now, source: src };
+    } catch (e) {}
+  }
+
   el.value = option.value;
   const $ = window.jQuery || window.$;
   if ($) {
     try {
-      $(el).val(option.value).trigger("change");
+      $(el).val(option.value).trigger("input").trigger("change");
+      if (typeof el.onchange === "function") el.onchange.call(el);
       return true;
     } catch (e) {}
   }
-  el.dispatchEvent(new Event("change", { bubbles: true }));
   el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  if (typeof el.onchange === "function") {
+    try {
+      el.onchange.call(el);
+    } catch (e) {}
+  }
   return true;
 }
 
@@ -659,9 +690,9 @@ function forceClickSubmit(prefix, maxMs, pollMs) {
 // ---------------------------------------------------------------------------
 // Permission & dynamic content-script helpers (run in extension context)
 // ---------------------------------------------------------------------------
-function runInTab(tabId, func, args = []) {
+function runInTab(tabId, func, args = [], opts = {}) {
   return chrome.scripting.executeScript({
-    target: { tabId },
+    target: { tabId, allFrames: !!opts.allFrames },
     func,
     args,
     world: "MAIN",
@@ -1142,7 +1173,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     runInTab(tabId, clickSubmitButton, [message.prefix || ""]);
   }
   if (message.action === "selectPost" && tabId) {
-    runInTab(tabId, selectConsularPost, [message.postId]);
+    runInTab(
+      tabId,
+      selectConsularPost,
+      [message.postId, message.source || ""],
+      { allFrames: true }
+    ).catch(() => {});
   }
   if (message.action === "registerAlertGuard" && tabId) {
     runInTab(tabId, interceptNativeDialogs, [message.prefix]);

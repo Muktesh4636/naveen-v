@@ -48,7 +48,12 @@ export function msUntilSlotWindow(date = new Date()) {
     if (elapsedSec < startSec) return (startSec - elapsedSec) * 1000;
   }
 
-  return 0;
+  // Gap between windows (e.g. :33–:53) — wait until :54, not 0.
+  const tailStartSec = 54 * 60;
+  if (elapsedSec < tailStartSec) return (tailStartSec - elapsedSec) * 1000;
+
+  // After :59 — next hour slot-3 tail at :00.
+  return (3600 - elapsedSec) * 1000;
 }
 
 export function formatSlotWait(ms) {

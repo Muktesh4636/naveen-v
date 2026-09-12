@@ -1,0 +1,9 @@
+{
+  "name": "mock-visa-site",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Local mock OFC schedule page for Visa Slot extension testing",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

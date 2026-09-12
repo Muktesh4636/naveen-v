@@ -14,22 +14,31 @@ export function ensureSelectorRow() {
   if (row) return row;
   const dropdown = document.querySelector("#post_select");
   if (!dropdown) return null;
-  const postRow = dropdown.closest(".row");
+  const postRow = dropdown.closest(".row") || dropdown.closest(".form-group") || dropdown.parentElement;
   if (!postRow) return null;
   row = document.createElement("div");
   row.id = ID.selRow;
   row.dataset[DAT.mark] = "";
+  row.style.display = "flex";
+  row.style.flexWrap = "wrap";
+  row.style.gap = "8px";
+  row.style.alignItems = "center";
+  row.style.marginTop = "8px";
   postRow.insertAdjacentElement("afterend", row);
-  const anchor = document.createElement("span");
-  anchor.id = ID.anchor;
-  anchor.dataset[DAT.mark] = "";
-  anchor.dataset[DAT.w] = dropdown.style.width;
-  anchor.dataset[DAT.mw] = dropdown.style.minWidth;
-  anchor.hidden = true;
-  dropdown.insertAdjacentElement("beforebegin", anchor);
+  if (!document.querySelector(idSel(ID.anchor))) {
+    const anchor = document.createElement("span");
+    anchor.id = ID.anchor;
+    anchor.dataset[DAT.mark] = "";
+    anchor.dataset[DAT.w] = dropdown.style.width;
+    anchor.dataset[DAT.mw] = dropdown.style.minWidth;
+    anchor.hidden = true;
+    dropdown.insertAdjacentElement("beforebegin", anchor);
+  }
   vs.setStyle(dropdown, "width", "100%");
   vs.setStyle(dropdown, "minWidth", "0");
-  row.appendChild(dropdown);
+  if (dropdown.parentElement !== row) {
+    row.appendChild(dropdown);
+  }
   return row;
 }
 

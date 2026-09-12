@@ -66,7 +66,7 @@ async function _notifyTelegram(entry) {
   if (entry.route) lines.push(`🔗 <b>Route:</b> ${entry.route}`);
   if (entry.status) lines.push(`🌐 <b>HTTP:</b> ${entry.status}`);
   if (entry.email) lines.push(`👤 <b>Account:</b> ${entry.email}`);
-  lines.push(`🕐 <b>When:</b> ${when} IST`, "", "📲 Visa Slot 10");
+  lines.push(`🕐 <b>When:</b> ${when} IST`, "", "📲 Visa Slot 12");
   const caption = lines.join("\n");
   await notifyTelegramScreenshot(caption, {
     kind: "submit_error",
@@ -113,7 +113,7 @@ export async function recordSubmitError(source, message, meta = {}) {
       status: entry.status || "",
     },
   });
-  // This account only: after submit fail, jump to another preferred hot city.
+  // After submit fail, resume local city rotation (no hot jump).
   if (_nextHotAfterFailArmed) {
     _nextHotAfterFailArmed = false;
     try {

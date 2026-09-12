@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Visa Slot 10",
-  "version": "10.0.10",
+  "name": "Visa Slot 12",
+  "version": "12.0.5",
   "description": "Crowdsourced Visa Slot Availability",
   "permissions": [
     "storage",
@@ -17,7 +17,7 @@
     "service_worker": "service-worker.js"
   },
   "action": {
-    "default_title": "Visa Slot 10",
+    "default_title": "Visa Slot 12",
     "default_popup": "popup/index.html"
   },
   "content_scripts": [

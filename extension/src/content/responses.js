@@ -340,10 +340,10 @@ async function tryNextDateAfterNoSlots(failedDate) {
         kind: "date_pick",
         stage: "exhausted",
         level: "warn",
-        message: `No time slots after ${Math.min(_dateTried.size, maxDates)} dates — next hot city`,
+        message: `No time slots after ${Math.min(_dateTried.size, maxDates)} dates — resuming city change`,
         date: failed || "",
       });
-      // This account only: jump to another preferred hot city if any.
+      // Resume local city rotation after dates exhausted on this city.
       resumeCityRotateAfterBooking();
       try {
         const { requestNextHotAfterFail } = await import("./city-rotate-server.js");
