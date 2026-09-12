@@ -36,19 +36,22 @@
     {% if timing.updated_at %} · updated {{ timing.updated_at|date:"M j, H:i" }}{% endif %}
   </p>
   <p class="meta">
+    These times repeat <strong>every IST hour</strong> (minute:second only — not the clock hour).
+    Blank rows at the bottom are for <strong>adding new timings</strong>.
+  </p>
+  <p class="meta">
     <strong>Point (once):</strong> set From and To to the <em>same</em> time —
-    e.g. <code>12</code>:<code>44</code> → <code>12</code>:<code>44</code> and
-    <code>12</code>:<code>54</code> → <code>12</code>:<code>54</code>.
-    City changes <strong>once</strong> at each of those seconds, then waits for the next row.
+    e.g. <code>12</code>:<code>44</code> → <code>12</code>:<code>44</code>.
+    City changes <strong>once</strong> at that second, then waits for the next row.
   </p>
   <p class="meta">
     <strong>Range:</strong> From earlier than To —
-    e.g. <code>14</code>:<code>00</code> → <code>21</code>:<code>30</code>, or a short
-    10-second window. While inside, cities keep rotating every <strong>13–18s</strong>
-    (or that applicant’s Fast/Normal/Slow). Outside all rows, City Change waits.
+    e.g. <code>14</code>:<code>00</code> → <code>21</code>:<code>30</code>.
+    While inside, cities keep rotating every <strong>13–18s</strong>.
+    Outside all rows, City Change waits.
   </p>
 
-  <form method="post">
+  <form method="post" id="city-timing-form">
     {% csrf_token %}
     <input type="hidden" name="action" value="save" />
     <div class="table-wrap">
@@ -61,12 +64,13 @@
             <th>To min</th>
             <th>To sec</th>
             <th>Preview</th>
+            <th></th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="timing-rows">
           {% for row in form_rows %}
-          <tr>
-            <td>{{ forloop.counter }}</td>
+          <tr class="timing-row">
+            <td class="row-num">{{ forloop.counter }}</td>
             <td>
               <input type="number" name="from_{{ forloop.counter }}" min="0" max="59" step="1"
                      value="{{ row.from_min }}" placeholder="14" style="width:4.5rem" />
@@ -83,7 +87,7 @@
               <input type="number" name="to_sec_{{ forloop.counter }}" min="0" max="59" step="1"
                      value="{{ row.to_sec }}" placeholder="59" style="width:4.5rem" />
             </td>
-            <td class="meta">
+            <td class="meta preview-cell">
               {% if row.from_min != "" and row.to_min != "" %}
                 {% if row.from_min == row.to_min and row.from_sec == row.to_sec %}
                   :{{ row.from_min|stringformat:"02d" }}:{{ row.from_sec|default_if_none:0|stringformat:"02d" }} <em>(once)</em>
@@ -91,8 +95,11 @@
                   :{{ row.from_min|stringformat:"02d" }}:{{ row.from_sec|default_if_none:0|stringformat:"02d" }}–:{{ row.to_min|stringformat:"02d" }}:{{ row.to_sec|default_if_none:0|stringformat:"02d" }}
                 {% endif %}
               {% else %}
-                —
+                <em>new — fill to add</em>
               {% endif %}
+            </td>
+            <td>
+              <button class="btn ghost timing-delete" type="button" title="Delete this timing">Delete</button>
             </td>
           </tr>
           {% endfor %}
@@ -100,10 +107,11 @@
       </table>
     </div>
     <p class="field-hint">
-      Leave a row blank to remove it. Same From/To = one switch at that second.
-      Different From/To = keep rotating with 13–18s while inside.
+      Fill a blank row or use <b>+ Add timing row</b>. Click <b>Delete</b> beside a row to remove it, then <b>Save city timing</b>.
+      Up to {{ max_windows }} windows.
     </p>
     <div style="margin-top:1rem;display:flex;gap:.6rem;flex-wrap:wrap">
+      <button class="btn ghost" type="button" id="add-timing-row">+ Add timing row</button>
       <button class="btn" type="submit">Save city timing</button>
     </div>
   </form>
@@ -181,4 +189,75 @@
     </div>
   </form>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const tbody = document.getElementById("timing-rows");
+  const addBtn = document.getElementById("add-timing-row");
+  const maxRows = {{ max_windows|default:16 }};
+  if (!tbody || !addBtn) return;
+
+  function rowHtml(n) {
+    return (
+      '<td class="row-num">' + n + "</td>" +
+      '<td><input type="number" name="from_' + n + '" min="0" max="59" step="1" placeholder="14" style="width:4.5rem" /></td>' +
+      '<td><input type="number" name="from_sec_' + n + '" min="0" max="59" step="1" placeholder="00" style="width:4.5rem" /></td>' +
+      '<td><input type="number" name="to_' + n + '" min="0" max="59" step="1" placeholder="21" style="width:4.5rem" /></td>' +
+      '<td><input type="number" name="to_sec_' + n + '" min="0" max="59" step="1" placeholder="59" style="width:4.5rem" /></td>' +
+      '<td class="meta preview-cell"><em>new — fill to add</em></td>' +
+      '<td><button class="btn ghost timing-delete" type="button" title="Delete this timing">Delete</button></td>'
+    );
+  }
+
+  function renumber() {
+    [...tbody.querySelectorAll("tr.timing-row")].forEach((tr, idx) => {
+      const n = idx + 1;
+      const num = tr.querySelector(".row-num");
+      if (num) num.textContent = String(n);
+      tr.querySelectorAll("input[type=number]").forEach((inp) => {
+        const name = inp.getAttribute("name") || "";
+        if (name.startsWith("from_sec_")) inp.name = "from_sec_" + n;
+        else if (name.startsWith("to_sec_")) inp.name = "to_sec_" + n;
+        else if (name.startsWith("from_")) inp.name = "from_" + n;
+        else if (name.startsWith("to_")) inp.name = "to_" + n;
+      });
+    });
+  }
+
+  function ensureOneBlank() {
+    if (tbody.querySelectorAll("tr.timing-row").length === 0) {
+      const tr = document.createElement("tr");
+      tr.className = "timing-row";
+      tr.innerHTML = rowHtml(1);
+      tbody.appendChild(tr);
+    }
+  }
+
+  tbody.addEventListener("click", function (ev) {
+    const btn = ev.target.closest(".timing-delete");
+    if (!btn) return;
+    const tr = btn.closest("tr.timing-row");
+    if (!tr) return;
+    tr.remove();
+    ensureOneBlank();
+    renumber();
+  });
+
+  addBtn.addEventListener("click", function () {
+    const count = tbody.querySelectorAll("tr.timing-row").length;
+    if (count >= maxRows) {
+      alert("Maximum " + maxRows + " timing windows.");
+      return;
+    }
+    const n = count + 1;
+    const tr = document.createElement("tr");
+    tr.className = "timing-row";
+    tr.innerHTML = rowHtml(n);
+    tbody.appendChild(tr);
+    renumber();
+  });
+})();
+</script>
 {% endblock %}

@@ -438,13 +438,16 @@ class PaymentSettings(models.Model):
 
 class HotCityState(models.Model):
     """
-    Singleton (pk=1): city where any applicant most recently found dates.
-    Other City Change clients jump here if that city is in their prefs.
+    Singleton (pk=1): cities where applicants recently found dates.
+    Multiple cities can be hot at once; City Change clients jump only if
+    that city is in their prefs — and stay if already on any preferred hot.
     """
 
     city_id = models.CharField(max_length=64, blank=True, default="")
     city_name = models.CharField(max_length=255, blank=True, default="")
     expires_at = models.DateTimeField(null=True, blank=True)
+    # [{id, name, expires_at ISO}, ...] — multi-hot; legacy fields = newest
+    cities = models.JSONField(default=list, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -458,6 +461,39 @@ class HotCityState(models.Model):
     def load(cls) -> "HotCityState":
         obj, _ = cls.objects.get_or_create(pk=1)
         return obj
+
+
+class DatePickClaim(models.Model):
+    """
+    Soft claim so Auto Submit accounts on the same hot city pick different
+    dates (still within each applicant's From/To range).
+    """
+
+    applicant = models.ForeignKey(
+        Applicant,
+        on_delete=models.CASCADE,
+        related_name="date_pick_claims",
+    )
+    city_id = models.CharField(max_length=64, db_index=True)
+    date = models.CharField(max_length=10, db_index=True)
+    expires_at = models.DateTimeField(db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Date pick claim"
+        verbose_name_plural = "Date pick claims"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["applicant", "city_id"],
+                name="uniq_date_claim_applicant_city",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["city_id", "date", "expires_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.city_id} {self.date} → {self.applicant_id}"
 
 
 DEFAULT_CITY_WINDOWS = [

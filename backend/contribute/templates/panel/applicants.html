@@ -57,6 +57,16 @@
       {% if row.payment_id %} · Pay ID {{ row.payment_id }}{% endif %}
       {% if row.payment_user_id %} · By {{ row.payment_user_id }}{% endif %}
     </div>
+    {% if row.current_city_name %}
+    <div class="meta">Now on <strong style="color:var(--text)">{{ row.current_city_name }}</strong></div>
+    {% endif %}
+    {% if row.cities %}
+    <div class="city-tags" style="margin-top:.45rem">
+      {% for c in row.cities %}
+        <span class="tag">{{ c.name }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
     <div class="row-actions">
       <span class="meta">Updated {{ row.updated|date:"M j, H:i" }}</span>
       <div style="display:flex;gap:.4rem;flex-wrap:wrap">

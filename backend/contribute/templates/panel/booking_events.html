@@ -3,7 +3,8 @@
 {% block content %}
 <h1 class="hero-line">Booking logs</h1>
 <p class="lede">
-  Live feed from Tik Tik: date pick, time slots, Submit errors, and City Change waits.
+  Live feed from Tik Tik: date pick, time slots, Submit errors, City Change waits,
+  and <b>PSE0501</b> soft-session diagnostics (filter kind = <code>pse0501</code>).
   Use this to see why a book failed without asking the user.
 </p>
 
@@ -74,13 +75,21 @@
               <a href="{% url 'panel_user' e.applicant.pk %}">{{ e.applicant.name|default:e.applicant.applicant_id|default:e.applicant.pk }}</a>
             {% else %}—{% endif %}
           </td>
-          <td>{{ e.city_name|default:e.city_id|default:"—" }}</td>
+          <td>{{ e.city_label|default:e.city_name|default:e.city_id|default:"—" }}</td>
           <td>
             {% if e.appt_date or e.appt_time %}
               {{ e.appt_date }}{% if e.appt_time %} {{ e.appt_time }}{% endif %}
             {% else %}—{% endif %}
           </td>
-          <td style="max-width:28rem;white-space:pre-wrap">{{ e.message|default:"—" }}</td>
+          <td style="max-width:36rem;white-space:pre-wrap">
+            {{ e.message|default:"—" }}
+            {% if e.kind == "pse0501" and e.detail_pretty %}
+            <details style="margin-top:.35rem">
+              <summary class="meta" style="cursor:pointer">snapshot + recent actions</summary>
+              <pre style="margin:.4rem 0 0;padding:.5rem;background:#0f172a;color:#e2e8f0;border-radius:6px;font-size:11px;overflow:auto;max-height:14rem">{{ e.detail_pretty }}</pre>
+            </details>
+            {% endif %}
+          </td>
         </tr>
         {% empty %}
         <tr><td colspan="7" class="meta">No booking events yet. Reload extension v2.0.54+ and run Auto Submit / City Change.</td></tr>

@@ -1062,12 +1062,18 @@ def city_rotate_plan(request):
         prefs.save()
 
     current_id = parsed["currentCityId"] or prefs.last_post_id
+    # Keep last_post_id in sync even without ACK so live split counts are accurate.
+    if current_id and str(prefs.last_post_id or "") != str(current_id):
+        prefs.last_post_id = str(current_id)
+        prefs.save(update_fields=["last_post_id", "updated_at"])
     plan = build_rotate_plan(
         cities=prefs.cities or [],
         current_city_id=current_id,
         last_switch_at_ms=_dt_to_ms(prefs.last_switch_at),
         min_gap_ms=prefs.rotate_min_gap_ms,
         max_gap_ms=prefs.rotate_max_gap_ms,
+        applicant_pk=int(applicant.pk),
+        fail_next_hot=bool(parsed.get("failNextHot")),
     )
     plan["enabled"] = prefs.enabled
     plan["citiesCount"] = len(prefs.cities or [])
@@ -1079,3 +1085,63 @@ def city_rotate_plan(request):
     wire["c"] = 1
     wire["e"] = ""
     return JsonResponse(wire)
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def claim_auto_submit_date(request):
+    """
+    Assign a calendar date so concurrent Auto Submit accounts spread across
+    available dates (still inside each applicant's From/To).
+    Opaque: p/d/j, c=cityId, l=[dates], f=from, g=to, x=[avoid dates]
+    Wire out: k, v=assigned date YYYY-MM-DD
+    """
+    if request.method == "OPTIONS":
+        return JsonResponse({}, status=204)
+    if not rate_limit_allow(request, "dclaim"):
+        return _rate_limited()
+
+    body, err = _parse_json_body(request)
+    if err:
+        return err
+
+    parsed = decode_plan_request(body)
+    profile = parsed["profile"] or {}
+    applicant = _upsert_applicant(profile, parsed.get("token") or None)
+    if not applicant:
+        return JsonResponse({"k": 0, "v": ""}, status=400)
+
+    device_id = extract_device_id(body)
+    device = register_or_check_device(applicant, device_id, _ua(request))
+    if not applicant.is_paid or not device["device_ok"]:
+        return JsonResponse({"k": 0, "v": "", "e": "locked"}, status=403)
+
+    city_id = str(body.get("c") or parsed.get("currentCityId") or "").strip()
+    dates_raw = body.get("l") if isinstance(body.get("l"), list) else body.get("dates")
+    if not isinstance(dates_raw, list):
+        dates_raw = []
+    dates = [str(x).strip()[:10] for x in dates_raw if str(x).strip()]
+    from_s = str(body.get("f") or body.get("from") or "").strip()[:10]
+    to_s = str(body.get("g") or body.get("to") or "").strip()[:10]
+    avoid_raw = body.get("x") if isinstance(body.get("x"), list) else body.get("avoid")
+    avoid = [str(x).strip()[:10] for x in (avoid_raw or []) if str(x).strip()]
+
+    # Prefer stored Auto Submit range when client omits f/g.
+    if not from_s or not to_s:
+        prefs, _ = ApplicantAutoSubmitPrefs.objects.get_or_create(applicant=applicant)
+        if not from_s and prefs.from_date:
+            from_s = prefs.from_date.isoformat()[:10]
+        if not to_s and prefs.to_date:
+            to_s = prefs.to_date.isoformat()[:10]
+
+    from .date_claim import claim_spread_date
+
+    picked = claim_spread_date(
+        applicant=applicant,
+        city_id=city_id,
+        available_dates=dates,
+        from_date=from_s,
+        to_date=to_s,
+        avoid_dates=avoid,
+    )
+    return JsonResponse({"k": 1 if picked else 0, "v": picked or ""})

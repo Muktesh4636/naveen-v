@@ -11,6 +11,7 @@ export var SUBMIT_ERROR_WATCH_MS = 45_000;
 var _watchUntil = 0;
 var _seen = new Set();
 var _domWatchTimer = null;
+var _nextHotAfterFailArmed = false;
 
 function _pageContext() {
   const select = document.querySelector("#post_select");
@@ -23,6 +24,7 @@ function _pageContext() {
 export function armSubmitErrorWatch() {
   _watchUntil = Date.now() + SUBMIT_ERROR_WATCH_MS;
   _seen.clear();
+  _nextHotAfterFailArmed = true;
   startSubmitErrorDomWatch();
 }
 
@@ -111,6 +113,14 @@ export async function recordSubmitError(source, message, meta = {}) {
       status: entry.status || "",
     },
   });
+  // This account only: after submit fail, jump to another preferred hot city.
+  if (_nextHotAfterFailArmed) {
+    _nextHotAfterFailArmed = false;
+    try {
+      const { requestNextHotAfterFail } = await import("./city-rotate-server.js");
+      void requestNextHotAfterFail();
+    } catch {}
+  }
   try {
     await _notifyTelegram(entry);
   } catch (e) {}

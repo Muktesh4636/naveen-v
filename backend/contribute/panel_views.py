@@ -113,11 +113,113 @@ def _parse_cities_payload(request) -> list[dict]:
     return _text_to_cities(request.POST.get("cities_text") or "")
 
 
+def _looks_like_city_id(value: str) -> bool:
+    s = str(value or "").strip()
+    if not s:
+        return True
+    # UUID / long opaque portal post IDs — not human labels like "CHENNAI VAC"
+    if len(s) >= 32 and "-" in s:
+        return True
+    if len(s) >= 20 and " " not in s and not s.upper().endswith("VAC"):
+        return True
+    return False
+
+
+def _city_id_name_map() -> dict[str, str]:
+    """
+    Map portal post IDs → readable names (CHENNAI VAC, …) for admin UI.
+    Built from contributions + booking events; cached briefly per request via
+    function attribute.
+    """
+    cached = getattr(_city_id_name_map, "_cache", None)
+    if isinstance(cached, dict) and cached.get("_ts"):
+        # simple process cache ~60s
+        import time
+
+        if time.time() - float(cached["_ts"]) < 60:
+            return cached["map"]
+
+    mapping: dict[str, str] = {}
+    # Prefer contribution rows (real CGI post names).
+    for row in (
+        Contribution.objects.exclude(post_id="")
+        .exclude(post_name="")
+        .order_by("-created_at")
+        .values_list("post_id", "post_name")[:8000]
+    ):
+        pid, pname = str(row[0] or "").strip(), str(row[1] or "").strip()
+        if pid and pname and not _looks_like_city_id(pname) and pid not in mapping:
+            mapping[pid] = pname
+
+    for row in (
+        BookingEvent.objects.exclude(city_id="")
+        .exclude(city_name="")
+        .order_by("-created_at")
+        .values_list("city_id", "city_name")[:4000]
+    ):
+        pid, pname = str(row[0] or "").strip(), str(row[1] or "").strip()
+        if pid and pname and not _looks_like_city_id(pname) and pid not in mapping:
+            mapping[pid] = pname
+
+    # Well-known India OFC posts (fallback if no contribution yet).
+    for pid, pname in (
+        ("3f6bf614-b0db-ec11-a7b4-001dd80234f6", "CHENNAI VAC"),
+        ("436bf614-b0db-ec11-a7b4-001dd80234f6", "HYDERABAD VAC"),
+        ("466bf614-b0db-ec11-a7b4-001dd80234f6", "KOLKATA VAC"),
+        ("486bf614-b0db-ec11-a7b4-001dd80234f6", "MUMBAI VAC"),
+        ("4a6bf614-b0db-ec11-a7b4-001dd80234f6", "NEW DELHI VAC"),
+    ):
+        mapping.setdefault(pid, pname)
+
+    import time
+
+    _city_id_name_map._cache = {"_ts": time.time(), "map": mapping}
+    return mapping
+
+
+def _display_city_name(city_id: str = "", city_name: str = "", mapping: dict | None = None) -> str:
+    """Return a clear city label for admins (never a raw UUID if we can avoid it)."""
+    cid = str(city_id or "").strip()
+    raw = str(city_name or "").strip()
+    if raw and not _looks_like_city_id(raw):
+        return raw
+    m = mapping if mapping is not None else _city_id_name_map()
+    if cid and cid in m:
+        return m[cid]
+    if raw and raw in m:
+        return m[raw]
+    # Last resort: short hint instead of a full UUID wall of text
+    if cid and _looks_like_city_id(cid):
+        return f"Unknown city ({cid[:8]}…)"
+    return raw or cid or "—"
+
+
+def _enrich_cities_for_display(cities) -> list[dict]:
+    mapping = _city_id_name_map()
+    out = []
+    for c in _normalize_cities(cities or []):
+        cid = str(c.get("id") or "").strip()
+        out.append(
+            {
+                "id": cid,
+                "name": _display_city_name(cid, c.get("name") or "", mapping),
+            }
+        )
+    return out
+
+
 def _known_cities() -> list[dict]:
     by_id: dict[str, str] = {}
+    mapping = _city_id_name_map()
+    by_id.update(mapping)
     for prefs in ApplicantCityPrefs.objects.exclude(cities=[]).only("cities")[:2000]:
         for c in _normalize_cities(prefs.cities):
-            by_id.setdefault(c["id"], c["name"])
+            cid = str(c.get("id") or "").strip()
+            if not cid:
+                continue
+            label = _display_city_name(cid, c.get("name") or "", mapping)
+            if cid not in by_id or _looks_like_city_id(by_id[cid]):
+                by_id[cid] = label
     defaults = [
         "NEW DELHI VAC",
         "MUMBAI VAC",
@@ -126,7 +228,7 @@ def _known_cities() -> list[dict]:
         "KOLKATA VAC",
         "BANGALORE VAC",
     ]
-    out = [{"id": i, "name": n} for i, n in by_id.items()]
+    out = [{"id": i, "name": n} for i, n in by_id.items() if n]
     known_names = {c["name"].upper() for c in out}
     for name in defaults:
         if name not in known_names:
@@ -134,6 +236,68 @@ def _known_cities() -> list[dict]:
     out.sort(key=lambda c: c["name"].upper())
     return out
 
+
+def _current_city_for_applicant(applicant, prefs: ApplicantCityPrefs | None) -> dict:
+    """
+    Best-effort current OFC city for admin display.
+    Prefers City Change last_post_id, then recent booking/contribution events.
+    """
+    mapping = _city_id_name_map()
+    city_id = ""
+    city_name = ""
+    switched_at = None
+    source = ""
+
+    if prefs and (prefs.last_post_id or "").strip():
+        city_id = str(prefs.last_post_id).strip()
+        switched_at = prefs.last_switch_at
+        source = "city_change"
+        for c in _normalize_cities(prefs.cities):
+            if str(c.get("id") or "") == city_id:
+                city_name = str(c.get("name") or "").strip()
+                break
+
+    if not city_id or _looks_like_city_id(city_name):
+        ev = (
+            BookingEvent.objects.filter(applicant=applicant)
+            .exclude(city_id="")
+            .order_by("-created_at")
+            .first()
+        )
+        if not ev:
+            ev = (
+                BookingEvent.objects.filter(applicant=applicant)
+                .exclude(city_name="")
+                .order_by("-created_at")
+                .first()
+            )
+        if ev:
+            if not city_id:
+                city_id = (ev.city_id or "").strip()
+                switched_at = switched_at or ev.created_at
+                source = source or "booking_log"
+            if not city_name or _looks_like_city_id(city_name):
+                city_name = (ev.city_name or "").strip()
+
+    if not city_id and not city_name:
+        contrib = (
+            Contribution.objects.filter(applicant=applicant)
+            .order_by("-created_at")
+            .first()
+        )
+        if contrib:
+            city_id = (contrib.post_id or "").strip()
+            city_name = (contrib.post_name or "").strip()
+            switched_at = contrib.created_at
+            source = "slot_check"
+
+    label = _display_city_name(city_id, city_name, mapping)
+    return {
+        "id": city_id,
+        "name": label if label != "—" else "",
+        "switched_at": switched_at,
+        "source": source,
+    }
 
 def _preset_for(min_sec: float, max_sec: float) -> str:
     for p in TIMER_PRESETS:
@@ -585,9 +749,9 @@ def panel_payments(request):
 # ── City Change timing (IST windows each hour) ────────────────────────────────
 
 def _parse_city_windows_from_post(request) -> list[dict]:
-    """Parse up to 8 from/to minute+second pairs from the timing form."""
+    """Parse up to 16 from/to minute+second pairs from the timing form."""
     windows = []
-    for i in range(1, 9):
+    for i in range(1, 17):
         raw_from = (request.POST.get(f"from_{i}") or "").strip()
         raw_to = (request.POST.get(f"to_{i}") or "").strip()
         raw_from_sec = (request.POST.get(f"from_sec_{i}") or "").strip()
@@ -704,7 +868,10 @@ def panel_city_timing(request):
 
     windows = settings_obj.normalized_windows()
     form_rows = list(windows)
-    while len(form_rows) < 6:
+    # Always leave blank rows so admins can add more timings (was stuck at 6).
+    empty_needed = max(4, 3)
+    target = min(16, len(form_rows) + empty_needed)
+    while len(form_rows) < target:
         form_rows.append({"from_min": "", "from_sec": "", "to_min": "", "to_sec": ""})
 
     hot = get_hot_city()
@@ -716,6 +883,7 @@ def panel_city_timing(request):
             "window_label": settings_obj.window_label(),
             "hot_city": hot,
             "asub_rules": asub_rules,
+            "max_windows": 16,
         }
     )
     return render(request, "panel/city_timing.html", ctx)
@@ -924,7 +1092,7 @@ def panel_applicants(request):
             seen_keys.add(k)
 
         prefs = getattr(a, "city_prefs", None)
-        cities = _normalize_cities(prefs.cities) if prefs else []
+        cities = _enrich_cities_for_display(prefs.cities if prefs else [])
         enabled = bool(prefs and prefs.enabled)
         paid = a.is_paid
         if enabled:
@@ -941,6 +1109,7 @@ def panel_applicants(request):
             continue
         if status == "unpaid" and paid:
             continue
+        current = _current_city_for_applicant(a, prefs)
         rows.append(
             {
                 "applicant": a,
@@ -948,6 +1117,7 @@ def panel_applicants(request):
                 "cities": cities,
                 "city_names": ", ".join(c["name"] for c in cities) or "No cities yet",
                 "city_count": len(cities),
+                "current_city_name": current.get("name") or "",
                 "enabled": enabled,
                 "paid": paid,
                 "fee_amount": a.fee_amount,
@@ -1181,12 +1351,28 @@ def panel_user(request, pk: int):
     recent = (
         Contribution.objects.filter(applicant=applicant).order_by("-created_at")[:12]
     )
-    cities = _normalize_cities(prefs.cities)
+    cities = _enrich_cities_for_display(prefs.cities)
     min_sec = prefs.rotate_min_sec
     max_sec = prefs.rotate_max_sec
     claims = PaymentClaim.objects.filter(
         Q(applicant=applicant) | Q(target_applicant_id=applicant.applicant_id)
     ).order_by("-created_at")[:20]
+
+    # Enrich booking / booked rows with readable city labels for admin.
+    mapping = _city_id_name_map()
+    booking_events = list(
+        BookingEvent.objects.filter(applicant=applicant).order_by("-created_at")[:25]
+    )
+    for e in booking_events:
+        e.city_label = _display_city_name(e.city_id, e.city_name, mapping)
+    booked_slots = list(
+        BookedSlot.objects.filter(applicant=applicant).order_by("-booked_at")[:25]
+    )
+    for b in booked_slots:
+        b.city_label = _display_city_name(b.city_id, b.city_name, mapping)
+    recent_list = list(recent)
+    for c in recent_list:
+        c.post_label = _display_city_name(c.post_id, c.post_name, mapping)
 
     ctx = _nav_context(request, "applicants")
     ctx.update(
@@ -1198,15 +1384,16 @@ def panel_user(request, pk: int):
             "cities_json": json.dumps(cities),
             "cities_text": _cities_to_text(cities),
             "known_cities": _known_cities(),
+            "current_city": _current_city_for_applicant(applicant, prefs),
             "min_sec": min_sec,
             "max_sec": max_sec,
             "timer_preset": _preset_for(min_sec, max_sec),
             "timer_presets": TIMER_PRESETS,
-            "recent": recent,
+            "recent": recent_list,
             "claims": claims,
             "devices": ApplicantDevice.objects.filter(applicant=applicant).order_by("-last_seen_at"),
-            "booking_events": BookingEvent.objects.filter(applicant=applicant).order_by("-created_at")[:25],
-            "booked_slots": BookedSlot.objects.filter(applicant=applicant).order_by("-booked_at")[:25],
+            "booking_events": booking_events,
+            "booked_slots": booked_slots,
             "updated": timezone.localtime(applicant.updated_at),
         }
     )
@@ -1296,10 +1483,21 @@ def panel_booking_events(request):
 
     since = timezone.now() - timedelta(hours=24)
     base_24h = BookingEvent.objects.filter(created_at__gte=since)
+    mapping = _city_id_name_map()
+    rows = list(qs[:300])
+    for e in rows:
+        e.city_label = _display_city_name(e.city_id, e.city_name, mapping)
+        if e.kind == "pse0501" and isinstance(e.detail, dict):
+            try:
+                e.detail_pretty = json.dumps(e.detail, indent=2, default=str)[:12000]
+            except Exception:
+                e.detail_pretty = str(e.detail)[:4000]
+        else:
+            e.detail_pretty = ""
     ctx = _nav_context(request, "booking_events")
     ctx.update(
         {
-            "rows": list(qs[:300]),
+            "rows": rows,
             "q": q,
             "level": level,
             "kind": kind,
@@ -1314,6 +1512,8 @@ def panel_booking_events(request):
                 "submit",
                 "city_change",
                 "auto_submit",
+                "pse0501",
+                "booked",
             ],
         }
     )
@@ -1346,10 +1546,14 @@ def panel_booked_slots(request):
 
     since = timezone.now() - timedelta(hours=24)
     base_24h = BookedSlot.objects.filter(booked_at__gte=since)
+    mapping = _city_id_name_map()
+    rows = list(qs[:300])
+    for b in rows:
+        b.city_label = _display_city_name(b.city_id, b.city_name, mapping)
     ctx = _nav_context(request, "booked_slots")
     ctx.update(
         {
-            "rows": list(qs[:300]),
+            "rows": rows,
             "q": q,
             "page_kind": page_kind,
             "total": BookedSlot.objects.count(),

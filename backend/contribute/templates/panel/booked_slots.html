@@ -63,7 +63,7 @@
             {% elif b.page_kind == "consular" %}Consular
             {% else %}Other{% endif %}
           </td>
-          <td>{{ b.city_name|default:b.city_id|default:"—" }}</td>
+          <td>{{ b.city_label|default:b.city_name|default:b.city_id|default:"—" }}</td>
           <td>{{ b.appt_date|default:"—" }}</td>
           <td style="max-width:14rem;white-space:pre-wrap">{{ b.appt_time|default:"—" }}</td>
         </tr>

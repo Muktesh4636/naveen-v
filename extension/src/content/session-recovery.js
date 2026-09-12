@@ -14,6 +14,7 @@ import {
 import { getSetting, TEMP_SHOW_LOGIN_DETAILS } from "../shared/config.js";
 import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
+import { notePseAction, recordPseIncident, recordPseRecoveryStep } from "./pse-diagnostics.js";
 
 var RECOVERY_KEY = "sessionRecovery";
 var _recoveryBusy = false;
@@ -252,19 +253,34 @@ async function _runHomeRecovery() {
 
   if (isCloudflareChallenge()) {
     await tryCloudflareTick();
+    notePseAction("recovery:cf_tick");
     return;
   }
   _tryPrivacyChecks();
-  if (await _fillSecurity(cfg)) return;
+  if (await _fillSecurity(cfg)) {
+    notePseAction("recovery:security_fill", {
+      loginUi: !!TEMP_SHOW_LOGIN_DETAILS,
+    });
+    return;
+  }
   if (_isLoginPage()) {
+    notePseAction("recovery:login_page", {
+      canFill: !!TEMP_SHOW_LOGIN_DETAILS,
+    });
     await _fillLogin(cfg);
     return;
   }
   if (_homeLooksLoggedIn()) {
+    notePseAction("recovery:home_ok");
     await storageSet({
       [RECOVERY_KEY]: { ...rec, active: false, doneAt: Date.now() },
     });
+    recordPseRecoveryStep("done", {
+      ofcUrl: rec.ofcUrl || "",
+      elapsedMs: rec.startedAt ? Date.now() - rec.startedAt : 0,
+    });
     vs.send({ action: "recoveryReturnToOfc" });
+    recordPseRecoveryStep("return", { ofcUrl: rec.ofcUrl || "" });
   }
 }
 
@@ -292,6 +308,13 @@ export async function handleNativeAlert(text) {
   if (!/PSE0501|unable to load appointment available days/i.test(String(text || ""))) {
     return;
   }
+  // Always record — even when recovery debounce skips a second start.
+  void recordPseIncident({
+    source: "alert",
+    stage: _recoveryBusy ? "alert_deduped" : "alert",
+    message: String(text || ""),
+    errorText: String(text || ""),
+  });
   if (_recoveryBusy) return;
   _recoveryBusy = true;
   vs.setTimeout(() => { _recoveryBusy = false; }, 8000);
@@ -304,6 +327,11 @@ export async function handleNativeAlert(text) {
       accountId,
       startedAt: Date.now(),
     },
+  });
+  recordPseRecoveryStep("start", {
+    accountId: accountId || "",
+    ofcUrl: location.href,
+    via: "native_alert",
   });
   vs.send({ action: "recoveryStart", ofcUrl: location.href });
 }

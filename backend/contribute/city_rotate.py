@@ -27,6 +27,10 @@ SLOT_WINDOW_LABEL = ":14:00–:21:59, :24:00–:31:59, :54:00–:02:59"
 
 ROTATE_MIN_GAP_MS = int(os.environ.get("CITY_ROTATE_MIN_GAP_MS", "13000"))
 ROTATE_MAX_GAP_MS = int(os.environ.get("CITY_ROTATE_MAX_GAP_MS", "18000"))
+# Stagger API/city hits across accounts that share preferred cities (~2–3s).
+SPLIT_STAGGER_MS = int(os.environ.get("CITY_SPLIT_STAGGER_MS", "2500"))
+# City Change clients count as live if touched within this window.
+LIVE_WATCHER_SEC = int(os.environ.get("CITY_LIVE_WATCHER_SEC", "600"))
 # After a point trigger (:MM:SS–:MM:SS same), stay "active" this long so polls can catch it.
 POINT_GRACE_SEC = 3
 
@@ -182,7 +186,126 @@ def _normalize_cities(raw) -> list[dict]:
     return out
 
 
-def pick_next_city(cities: list[dict], current_city_id: str | None) -> dict | None:
+def _as_aware(dt):
+    if dt is None:
+        return datetime.now(tz=dt_timezone.utc)
+    if getattr(dt, "tzinfo", None) is None:
+        return dt.replace(tzinfo=dt_timezone.utc)
+    return dt
+
+
+def _live_watchers() -> list[dict]:
+    """
+    Enabled City Change applicants recently active, with last city + prefs.
+    Used so shared preferred cities are split across accounts (not all on one).
+    """
+    try:
+        from .models import ApplicantCityPrefs
+
+        since = datetime.now(tz=dt_timezone.utc) - timedelta(
+            seconds=max(60, LIVE_WATCHER_SEC)
+        )
+        rows = (
+            ApplicantCityPrefs.objects.filter(enabled=True)
+            .select_related("applicant")
+            .order_by("applicant_id")
+        )
+        out = []
+        for p in rows:
+            touch = p.last_switch_at or p.updated_at
+            if touch and _as_aware(touch) < since:
+                continue
+            cities = _normalize_cities(p.cities)
+            if not cities:
+                continue
+            out.append(
+                {
+                    "applicant_id": int(p.applicant_id),
+                    "last_post_id": str(p.last_post_id or "").strip(),
+                    "city_ids": [c["id"] for c in cities],
+                }
+            )
+        return out
+    except Exception:
+        return []
+
+
+def _stagger_ms(applicant_pk: int | None, watchers: list[dict] | None = None) -> int:
+    """Offset switch time by ~2–3s × stable index among live City Change users."""
+    if not applicant_pk:
+        return 0
+    watchers = watchers if watchers is not None else _live_watchers()
+    ids = [w["applicant_id"] for w in watchers]
+    try:
+        idx = ids.index(int(applicant_pk))
+    except ValueError:
+        idx = int(applicant_pk) % max(1, len(ids) or 1)
+    return int(idx) * max(1500, SPLIT_STAGGER_MS)
+
+
+def pick_split_city(
+    cities: list[dict],
+    current_city_id: str | None,
+    *,
+    applicant_pk: int | None = None,
+) -> dict | None:
+    """
+    Prefer a preferred city that fewest other live users are on.
+    Never leaves the applicant's preferred list.
+    Ties: stable by applicant_pk so N users on 2 prefs split ~half/half.
+    """
+    cities = _normalize_cities(cities)
+    if not cities:
+        return None
+    if len(cities) == 1:
+        return cities[0]
+
+    watchers = _live_watchers()
+    counts: dict[str, int] = {c["id"]: 0 for c in cities}
+    for w in watchers:
+        if applicant_pk and w["applicant_id"] == int(applicant_pk):
+            continue
+        lid = w.get("last_post_id") or ""
+        if lid in counts:
+            counts[lid] += 1
+
+    cur = str(current_city_id or "").strip()
+    min_count = min(counts.values()) if counts else 0
+    under = [c for c in cities if counts.get(c["id"], 0) == min_count]
+    if not under:
+        under = list(cities)
+
+    # Stable pick among least-watched so the same applicants keep covering
+    # the same under-watched cities (half/half when everyone shares 2 prefs).
+    if applicant_pk is not None and len(under) > 1:
+        under_sorted = sorted(under, key=lambda c: c["id"])
+        target = under_sorted[int(applicant_pk) % len(under_sorted)]
+    else:
+        target = under[0]
+
+    # Already on target → still rotate to another preferred city so CGI
+    # keeps refreshing dates; prefer another under-watched city first.
+    if cur and cur == target["id"]:
+        others_under = [c for c in under if c["id"] != cur]
+        if others_under:
+            return others_under[0]
+        others = [c for c in cities if c["id"] != cur]
+        return others[0] if others else target
+    return target
+
+
+def pick_next_city(
+    cities: list[dict],
+    current_city_id: str | None,
+    *,
+    applicant_pk: int | None = None,
+) -> dict | None:
+    if applicant_pk is not None:
+        chosen = pick_split_city(
+            cities, current_city_id, applicant_pk=applicant_pk
+        )
+        if chosen:
+            return chosen
     cities = _normalize_cities(cities)
     if not cities:
         return None
@@ -195,54 +318,102 @@ def pick_next_city(cities: list[dict], current_city_id: str | None) -> dict | No
     return random.choice(others)
 
 
+def _pick_hot_target(
+    pref_hots: list[dict],
+    *,
+    applicant_pk: int | None = None,
+    exclude_id: str | None = None,
+) -> dict | None:
+    """Among preferred hot cities, prefer least-watched; stable split on ties."""
+    cands = [h for h in pref_hots if h.get("id") and h["id"] != (exclude_id or "")]
+    if not cands:
+        return None
+    if len(cands) == 1:
+        return cands[0]
+    watchers = _live_watchers()
+    counts: dict[str, int] = {h["id"]: 0 for h in cands}
+    for w in watchers:
+        if applicant_pk and w["applicant_id"] == int(applicant_pk):
+            continue
+        lid = w.get("last_post_id") or ""
+        if lid in counts:
+            counts[lid] += 1
+    min_c = min(counts.values()) if counts else 0
+    under = [h for h in cands if counts.get(h["id"], 0) == min_c] or cands
+    under_sorted = sorted(under, key=lambda h: h["id"])
+    if applicant_pk is not None and len(under_sorted) > 1:
+        return under_sorted[int(applicant_pk) % len(under_sorted)]
+    return under_sorted[0]
+
+
 def _hot_city_plan(
     *,
     cities: list[dict],
     current_city_id: str | None,
     now_ms: int,
+    applicant_pk: int | None = None,
+    fail_next_hot: bool = False,
 ) -> dict | None:
     """
-    If another applicant found dates in a preferred city, switch there now.
-    Returns a plan dict, or None to fall through to normal timing.
+    Hot cities (dates found):
+      - If already on a preferred hot city → stay (unless fail_next_hot).
+      - If fail_next_hot (booking / no time slots) → jump to another preferred hot.
+      - Else jump to a preferred hot (least-watched among hot prefs).
+    Never leaves the applicant's preferred list.
     """
     try:
-        from .hot_city import get_hot_city
+        from .hot_city import get_hot_cities
 
-        hot = get_hot_city()
+        hots = get_hot_cities()
     except Exception:
         return None
-    if not hot:
+    if not hots:
         return None
-    hot_id = str(hot.get("id") or "").strip()
-    if not hot_id:
+    pref_ids = {c["id"] for c in cities}
+    pref_hots = [h for h in hots if h.get("id") in pref_ids]
+    if not pref_hots:
         return None
-    match = next((c for c in cities if c["id"] == hot_id), None)
-    if not match:
-        return None
+
     cur = str(current_city_id or "").strip()
-    if cur == hot_id:
-        # Already on the hot city — stay; recheck soon.
-        return {
-            "success": True,
-            "inWindow": True,
-            "slot": 99,
-            "switchAt": now_ms + 1000,
-            "waitMs": 1000,
-            "cityId": None,
-            "gapMs": 0,
-            "citiesCount": len(cities),
-            "hot": True,
-        }
-    return {
+    base = {
         "success": True,
         "inWindow": True,
         "slot": 99,
-        "switchAt": now_ms,
-        "waitMs": 0,
-        "cityId": hot_id,
         "gapMs": 0,
         "citiesCount": len(cities),
         "hot": True,
+    }
+
+    if fail_next_hot:
+        target = _pick_hot_target(
+            pref_hots, applicant_pk=applicant_pk, exclude_id=cur
+        )
+        if not target:
+            return None
+        return {
+            **base,
+            "switchAt": now_ms,
+            "waitMs": 0,
+            "cityId": target["id"],
+        }
+
+    # Already on any preferred hot city → leave them (both Chennai & Hyd can book).
+    if cur and any(h["id"] == cur for h in pref_hots):
+        return {
+            **base,
+            "switchAt": now_ms + 1000,
+            "waitMs": 1000,
+            "cityId": None,
+        }
+
+    target = _pick_hot_target(pref_hots, applicant_pk=applicant_pk)
+    if not target:
+        return None
+    return {
+        **base,
+        "switchAt": now_ms,
+        "waitMs": 0,
+        "cityId": target["id"],
     }
 
 
@@ -254,6 +425,8 @@ def build_rotate_plan(
     now_ms: int | None = None,
     min_gap_ms: int | None = None,
     max_gap_ms: int | None = None,
+    applicant_pk: int | None = None,
+    fail_next_hot: bool = False,
 ) -> dict:
     """
     Internal plan dict (clear names). Call encode_plan_wire() before HTTP.
@@ -265,6 +438,8 @@ def build_rotate_plan(
       - Range row (From < To, e.g. 14:00–21:30): keep rotating using 13–18s (or
         applicant min/max gap) while inside the window.
       - Outside all rows: wait until the next From time.
+      - Multi-user: preferred cities only; split live users across prefs;
+        stagger switchAt by ~2–3s per account.
     """
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     cities = _normalize_cities(cities)
@@ -286,14 +461,40 @@ def build_rotate_plan(
             "gapMs": None,
             "enabled": False,
             "citiesCount": 0,
+            "hot": False,
         }
 
     # Dates found elsewhere → pull matching applicants onto that city now.
+    # Already on a preferred hot city → stay. fail_next_hot → other hot preferred.
     hot_plan = _hot_city_plan(
-        cities=cities, current_city_id=current_city_id, now_ms=now_ms
+        cities=cities,
+        current_city_id=current_city_id,
+        now_ms=now_ms,
+        applicant_pk=applicant_pk,
+        fail_next_hot=bool(fail_next_hot),
     )
     if hot_plan:
         return hot_plan
+
+    # Booking/slot fail with no other hot city → rotate to next preferred now.
+    if fail_next_hot:
+        nxt = pick_next_city(
+            cities, current_city_id, applicant_pk=applicant_pk
+        )
+        if nxt and nxt["id"] != str(current_city_id or "").strip():
+            return {
+                "success": True,
+                "inWindow": True,
+                "slot": 98,
+                "switchAt": now_ms,
+                "waitMs": 0,
+                "cityId": nxt["id"],
+                "gapMs": 0,
+                "citiesCount": len(cities),
+                "hot": True,
+            }
+
+    stagger = _stagger_ms(applicant_pk)
 
     win = find_active_window(ist)
     if not win:
@@ -309,6 +510,7 @@ def build_rotate_plan(
             "cityId": None,
             "gapMs": None,
             "citiesCount": len(cities),
+            "hot": False,
         }
 
     slot = int(win.get("slot") or 1)
@@ -334,6 +536,7 @@ def build_rotate_plan(
                 "cityId": None,
                 "gapMs": None,
                 "citiesCount": len(cities),
+                "hot": False,
             }
 
         # Not yet at the exact second → wait until it (cap 1s for hot-city recheck).
@@ -348,9 +551,12 @@ def build_rotate_plan(
                 "cityId": None,
                 "gapMs": None,
                 "citiesCount": len(cities),
+                "hot": False,
             }
 
-        nxt = pick_next_city(cities, current_city_id)
+        nxt = pick_next_city(
+            cities, current_city_id, applicant_pk=applicant_pk
+        )
         if not nxt:
             return {
                 "success": False,
@@ -361,16 +567,20 @@ def build_rotate_plan(
                 "cityId": None,
                 "gapMs": 0,
                 "citiesCount": len(cities),
+                "hot": False,
             }
+        # Stagger point hits so accounts don't all fire the CGI at once.
+        switch_at = now_ms + stagger
         return {
             "success": True,
             "inWindow": True,
             "slot": slot,
-            "switchAt": now_ms,
-            "waitMs": 0,
+            "switchAt": switch_at,
+            "waitMs": max(0, switch_at - now_ms),
             "cityId": nxt["id"],
             "gapMs": 0,
             "citiesCount": len(cities),
+            "hot": False,
         }
 
     # ── Range window: rotate with applicant gap (default 13–18s) ─────────────
@@ -380,6 +590,8 @@ def build_rotate_plan(
     earliest = now_ms
     if last_switch_at_ms:
         earliest = max(earliest, int(last_switch_at_ms) + gap)
+    # Spread accounts that share prefs by a few seconds.
+    earliest = earliest + stagger
 
     switch_at = earliest if earliest > now_ms else now_ms
     wait_ms = max(0, switch_at - now_ms)
@@ -397,9 +609,10 @@ def build_rotate_plan(
             "cityId": None,
             "gapMs": None,
             "citiesCount": len(cities),
+            "hot": False,
         }
 
-    nxt = pick_next_city(cities, current_city_id)
+    nxt = pick_next_city(cities, current_city_id, applicant_pk=applicant_pk)
     if not nxt:
         return {
             "success": False,
@@ -410,6 +623,7 @@ def build_rotate_plan(
             "cityId": None,
             "gapMs": gap,
             "citiesCount": len(cities),
+            "hot": False,
         }
 
     # Gap still running → re-poll within 1s (hot city can interrupt).
@@ -423,6 +637,7 @@ def build_rotate_plan(
             "cityId": None,
             "gapMs": gap,
             "citiesCount": len(cities),
+            "hot": False,
         }
 
     return {
@@ -434,6 +649,7 @@ def build_rotate_plan(
         "cityId": nxt["id"],
         "gapMs": gap,
         "citiesCount": len(cities),
+        "hot": False,
     }
 
 
@@ -449,6 +665,7 @@ def encode_plan_wire(plan: dict) -> dict:
       x = gap ms
       y = enabled (0|1)
       z = cities count
+      h = hot city jump (0|1) — extension may interrupt Loading
     """
     if not isinstance(plan, dict):
         return {"k": 0}
@@ -462,6 +679,7 @@ def encode_plan_wire(plan: dict) -> dict:
         "x": int(plan["gapMs"]) if plan.get("gapMs") is not None else 0,
         "y": 1 if plan.get("enabled") else 0,
         "z": int(plan.get("citiesCount") or 0),
+        "h": 1 if plan.get("hot") else 0,
     }
 
 
@@ -512,6 +730,10 @@ def decode_plan_request(body: dict) -> dict:
         "cities": cities_raw if isinstance(cities_raw, list) else None,
         "enabled": body.get("y") if "y" in body else body.get("enabled"),
         "token": body.get("token"),
+        # n=1 → booking / no time slots failed; jump to another preferred hot city
+        "failNextHot": bool(
+            body.get("n") if "n" in body else body.get("failNextHot")
+        ),
     }
 
 

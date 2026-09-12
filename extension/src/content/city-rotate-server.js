@@ -6,6 +6,7 @@ import {
   AUTO_SUBMIT_PREFS_URL,
   CITY_PREFS_URL,
   CITY_ROTATE_PLAN_URL,
+  DATE_CLAIM_URL,
   getProfile,
 } from "../shared/config.js";
 import { signedFetch } from "../shared/api-sign.js";
@@ -14,6 +15,7 @@ import { getUnlockToken, notePaymentFromWire } from "./payment-status.js";
 import { captureUsernameAnytime } from "../shared/profile-capture.js";
 import { getDeviceId } from "../shared/device-id.js";
 import { reportBookingEvent } from "./booking-log.js";
+import { notePseAction } from "./pse-diagnostics.js";
 
 /** Prefetch lead before server epoch `t`. */
 export var CITY_PLAN_PREFETCH_LEAD_MS = 800;
@@ -35,6 +37,8 @@ var _earlyUnlockReason = "";
 /** Auto Submit is booking on this city — do not switch, but keep City Change ON. */
 var _bookingHold = false;
 var _noSlotsDomWatch = null;
+/** Throttle hot-city polls while Loading (busy). */
+var _lastHotPollAt = 0;
 
 export function setCityRotateStatusSink(fn) {
   _updateStatus = typeof fn === "function" ? fn : () => {};
@@ -280,6 +284,7 @@ export function clearCityRotateBusy(opts = {}) {
   const was = _rotateBusy;
   const reason = opts.reason || "loaded";
   const pending = _pendingAckCityId;
+  notePseAction("city_unlock", { reason, pending: pending || "", wasBusy: was });
   _clearBusy();
 
   if (!was || !_rotateActive) return;
@@ -290,6 +295,18 @@ export function clearCityRotateBusy(opts = {}) {
       _pendingAckCityId = "";
     }
     _plan = null;
+    if (reason === "hot_interrupt") {
+      _updateStatus("City Change — hot city; switching now…");
+      reportBookingEvent({
+        kind: "city_change",
+        stage: "hot_interrupt",
+        level: "info",
+        message: "Dates found elsewhere — interrupting Loading to switch",
+        cityId: pending || "",
+      });
+      _schedule(0);
+      return;
+    }
     if (reason === "timeout") {
       _updateStatus("City Change — load timed out (2 min); next city…");
       reportBookingEvent({
@@ -325,6 +342,41 @@ export function clearCityRotateBusy(opts = {}) {
     _schedule(200);
   };
   void finish();
+}
+
+/**
+ * Hot city found while CGI still shows Loading — drop busy and switch now.
+ * Normal rotate must still wait for Loading; only hot bypasses that.
+ */
+async function _applyHotInterrupt(cityId, plan) {
+  const pending = _pendingAckCityId;
+  _clearBusy();
+  if (pending && String(pending) !== String(cityId)) {
+    // Fire-and-forget ACK for the abandoned city (do not block the hot jump).
+    void _fetchPlan({ acknowledgeSwitch: true, switchedCityId: pending });
+  }
+  _pendingAckCityId = "";
+  _plan = plan || null;
+  _updateStatus("City Change — hot city (dates found); switching now…");
+  reportBookingEvent({
+    kind: "city_change",
+    stage: "hot_interrupt",
+    level: "info",
+    message: "Dates found — interrupting Loading to jump to hot city",
+    cityId: String(cityId || ""),
+  });
+  let switched = _switchDom(cityId);
+  if (!switched) {
+    vs.send({ action: "selectPost", postId: cityId });
+    await new Promise((r) => vs.setTimeout(r, 350));
+    const select = document.querySelector("#post_select");
+    if (select && String(select.value) === String(cityId)) {
+      switched = true;
+      _armBusy(cityId);
+    }
+  }
+  _plan = null;
+  _schedule(switched ? 1_000 : CITY_PLAN_RETRY_MS);
 }
 
 /** Wait for CGI schedule-days after a switch before allowing the next city. */
@@ -508,6 +560,7 @@ function _decodePlanWire(raw) {
       gapMs: raw.gapMs != null ? Number(raw.gapMs) : 0,
       enabled: !!raw.enabled,
       citiesCount: Number(raw.citiesCount) || 0,
+      hot: !!raw.hot,
       paid: "w" in raw ? Number(raw.w) === 1 : ("paid" in raw ? !!raw.paid : undefined),
     };
   }
@@ -522,6 +575,7 @@ function _decodePlanWire(raw) {
     gapMs: Number(raw.x) || 0,
     enabled: Number(raw.y) === 1,
     citiesCount: Number(raw.z) || 0,
+    hot: Number(raw.h) === 1,
     paid: "w" in raw ? Number(raw.w) === 1 : undefined,
   };
 }
@@ -612,7 +666,11 @@ export async function fetchAutoSubmitFromServer() {
   }
 }
 
-async function _fetchPlan({ acknowledgeSwitch = false, switchedCityId = "" } = {}) {
+async function _fetchPlan({
+  acknowledgeSwitch = false,
+  switchedCityId = "",
+  failNextHot = false,
+} = {}) {
   if (_planFetchInFlight) return null;
   _planFetchInFlight = true;
   try {
@@ -638,6 +696,7 @@ async function _fetchPlan({ acknowledgeSwitch = false, switchedCityId = "" } = {
       c: currentCityId,
       a: acknowledgeSwitch ? 1 : 0,
       s: switchedCityId || currentCityId,
+      n: failNextHot ? 1 : 0,
     });
     if (!res.ok) {
       _updateStatus("City Change — link retry…");
@@ -673,6 +732,73 @@ async function _fetchPlan({ acknowledgeSwitch = false, switchedCityId = "" } = {
   }
 }
 
+/**
+ * Ask server for a date so accounts on the same city don't all pick the same day.
+ * Always constrained to From/To on the server.
+ */
+export async function claimSpreadDate({
+  cityId = "",
+  dates = [],
+  from = "",
+  to = "",
+  avoid = [],
+} = {}) {
+  try {
+    const p = await _profilePayload();
+    if (!p.i && !p.e) return null;
+    const select = document.querySelector("#post_select");
+    const c = cityId || (select ? String(select.value || "") : "");
+    if (!c || !(dates || []).length) return null;
+    const d = await getDeviceId();
+    const j = getUnlockToken();
+    const res = await signedFetch(DATE_CLAIM_URL, {
+      p,
+      d,
+      j,
+      c,
+      l: (dates || []).map((x) => String(x).slice(0, 10)),
+      f: from ? String(from).slice(0, 10) : "",
+      g: to ? String(to).slice(0, 10) : "",
+      x: (avoid || []).map((x) => String(x).slice(0, 10)),
+    });
+    if (!res.ok) return null;
+    const raw = await res.json().catch(() => null);
+    notePaymentFromWire(raw || {});
+    const v = raw?.v ? String(raw.v).slice(0, 10) : "";
+    return v || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * After booking fail / no time slots on this city — jump to another preferred
+ * hot city immediately (does not move other accounts already booking elsewhere).
+ */
+export async function requestNextHotAfterFail() {
+  _bookingHold = false;
+  _pendingAckCityId = "";
+  _clearBusy();
+  _plan = null;
+  _updateStatus("City Change — next hot city…");
+  reportBookingEvent({
+    kind: "city_change",
+    stage: "fail_next_hot",
+    level: "info",
+    message: "Booking/slots failed — requesting next preferred hot city",
+  });
+  const plan = await _fetchPlan({ failNextHot: true });
+  if (plan?.cityId) {
+    await _applyHotInterrupt(String(plan.cityId), { ...plan, hot: true });
+    return true;
+  }
+  if (!_rotateActive) {
+    _rotateActive = true;
+  }
+  _schedule(0);
+  return false;
+}
+
 function _switchDom(cityId) {
   const select = document.querySelector("#post_select");
   if (!select || !cityId) return false;
@@ -683,6 +809,7 @@ function _switchDom(cityId) {
   // Arm busy BEFORE applying — CGI can return "NoSlots Available" within ~5s
   // (or even sooner). If we arm after apply, early responses are ignored.
   _armBusy(nextId);
+  notePseAction("city_switch", { cityId: nextId, label: localLabel || "" });
   reportBookingEvent({
     kind: "city_change",
     stage: "switch",
@@ -713,6 +840,22 @@ async function _tick() {
     }
 
     if (_rotateBusy) {
+      // Hot city (dates elsewhere) interrupts Loading immediately.
+      // Normal rotate still waits for Loading / NoSlots / 2‑min timeout.
+      if (!_planFetchInFlight && Date.now() - _lastHotPollAt >= 900) {
+        _lastHotPollAt = Date.now();
+        const hotPlan = await _fetchPlan();
+        if (hotPlan?.hot && hotPlan.cityId) {
+          const select = document.querySelector("#post_select");
+          const cur = select ? String(select.value || "") : "";
+          const target = String(hotPlan.cityId);
+          const pending = String(_pendingAckCityId || "");
+          if (target && target !== cur && target !== pending) {
+            await _applyHotInterrupt(target, hotPlan);
+            return;
+          }
+        }
+      }
       const left = Math.max(
         0,
         CITY_BUSY_MAX_MS - (Date.now() - (_busyStartedAt || Date.now()))
@@ -776,7 +919,10 @@ async function _tick() {
       if (fresh) {
         _plan = fresh;
         const w2 = Math.max(0, Number(_plan.switchAt) - Date.now());
-        if (_plan.inWindow && _plan.cityId && w2 <= 50) {
+        if (
+          (_plan.hot && _plan.cityId) ||
+          (_plan.inWindow && _plan.cityId && w2 <= 50)
+        ) {
           // Hot / immediate — fall through to switch below.
         } else {
           _schedule(Math.min(1_000, Math.max(50, w2 || CITY_PLAN_RETRY_MS)));
@@ -790,7 +936,7 @@ async function _tick() {
 
     const waitNow = Math.max(0, Number(_plan.switchAt) - Date.now());
 
-    if (_plan.inWindow && _plan.cityId && waitNow > 0) {
+    if (_plan.inWindow && _plan.cityId && waitNow > 0 && !_plan.hot) {
       const fresh = await _fetchPlan();
       if (fresh) _plan = fresh;
       else {

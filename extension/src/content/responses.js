@@ -6,6 +6,7 @@ import { pollAndPickTimeSlot, domShowsEntryTimes, isTimeSlotPicked, pickTimeSlot
 import { submitContribution } from "./reporting.js";
 import { recordSubmitAjaxResponse } from "./submit-errors.js";
 import { reportBookingEvent } from "./booking-log.js";
+import { recordPseFromScheduleDays, notePseAction } from "./pse-diagnostics.js";
 import {
   getArmedAiConfig,
   getCitiesRotateConfig,
@@ -93,6 +94,21 @@ async function pickDateToSelect(scheduleDays, hasError = false) {
   if (ai) {
     const inRange = normalized.filter((d) => dateInRange(d.Date, ai.from, ai.to));
     if (!inRange.length) return null;
+    const pool = inRange.map((d) => d.Date);
+    // Spread across accounts: server assigns least-claimed date in this user's range.
+    try {
+      const { claimSpreadDate } = await import("./city-rotate-server.js");
+      const select = document.querySelector("#post_select");
+      const cityId = select ? String(select.value || "") : "";
+      const claimed = await claimSpreadDate({
+        cityId,
+        dates: pool,
+        from: ai.from,
+        to: ai.to,
+        avoid: [..._dateTried],
+      });
+      if (claimed && pool.includes(claimed)) return claimed;
+    } catch {}
     const idx = pickPreferredDateIndex(inRange.length);
     return inRange[idx]?.Date || null;
   }
@@ -318,17 +334,21 @@ async function tryNextDateAfterNoSlots(failedDate) {
     const next = _nextFallbackDate();
     if (!next) {
       setTikTikStatus(
-        `No time slots after ${Math.min(_dateTried.size, maxDates)} dates — stopped (same city).`
+        `No time slots after ${Math.min(_dateTried.size, maxDates)} dates — next city…`
       );
       reportBookingEvent({
         kind: "date_pick",
         stage: "exhausted",
         level: "warn",
-        message: `No time slots after ${Math.min(_dateTried.size, maxDates)} dates`,
+        message: `No time slots after ${Math.min(_dateTried.size, maxDates)} dates — next hot city`,
         date: failed || "",
       });
-      // Let City Change continue to the next city.
+      // This account only: jump to another preferred hot city if any.
       resumeCityRotateAfterBooking();
+      try {
+        const { requestNextHotAfterFail } = await import("./city-rotate-server.js");
+        await requestNextHotAfterFail();
+      } catch {}
       return false;
     }
 
@@ -336,27 +356,45 @@ async function tryNextDateAfterNoSlots(failedDate) {
     _dateTried.add(next);
     _cachedScheduleEntries = null;
     _cachedEntriesDate = null;
+    // Prefer a server-spread date among remaining pool (still in user's range).
+    try {
+      const { claimSpreadDate } = await import("./city-rotate-server.js");
+      const select = document.querySelector("#post_select");
+      const remaining = _dateTryPool.filter((d) => d === next || !_dateTried.has(d));
+      const claimed = await claimSpreadDate({
+        cityId: select ? String(select.value || "") : "",
+        dates: remaining.length ? remaining : [next],
+        from: ai.from,
+        to: ai.to,
+        avoid: [..._dateTried].filter((d) => d !== next),
+      });
+      if (claimed && (remaining.includes(claimed) || claimed === next)) {
+        _dateTrying = claimed;
+        _dateTried.add(claimed);
+      }
+    } catch {}
+    const useDate = _dateTrying;
     setTikTikStatus(
-      `No slots on ${failed || "date"} — trying ${next} (${_dateTried.size}/${maxDates})…`
+      `No slots on ${failed || "date"} — trying ${useDate} (${_dateTried.size}/${maxDates})…`
     );
     reportBookingEvent({
       kind: "date_pick",
       stage: "fallback",
       level: "info",
-      message: `No slots on ${failed || "date"} — trying ${next}`,
-      date: next,
+      message: `No slots on ${failed || "date"} — trying ${useDate}`,
+      date: useDate,
       detail: { failed: failed || "", try: _dateTried.size, max: maxDates },
     });
 
     await vs.waitFor(DATE_PICKER_SELECTOR, { attempts: 80, interval: AI_BOOK_POLL_MS });
     vs.send({
       action: "selectFirstDate",
-      date: next,
+      date: useDate,
       maxMs: AI_DATE_SELECT_MS,
       pollMs: AI_BOOK_POLL_MS,
     });
-    scheduleDatePickWatchdog(next);
-    scheduleTimePickWatchdog(next);
+    scheduleDatePickWatchdog(useDate);
+    scheduleTimePickWatchdog(useDate);
     return true;
   } finally {
     _fallbackInFlight = false;
@@ -696,6 +734,21 @@ export async function handleEvent(event) {
     ).body.innerText || "";
     const noSlotsMsg = /no\s*slots?/i.test(errText);
     const noDays = !days.length || hasError || noSlotsMsg;
+
+    notePseAction("schedule_days", {
+      hasError,
+      days: days.length,
+      noSlots: noSlotsMsg,
+      postId: parsed.params?.postId || "",
+      err: String(errText || "").slice(0, 120),
+    });
+    recordPseFromScheduleDays({
+      hasError,
+      errorText: errText,
+      daysLen: days.length,
+      postId: parsed.params?.postId || "",
+      postName: "",
+    });
 
     // Unlock City Change IMMEDIATELY (before any await) — never sit on 2‑min
     // timeout after CGI already answered with dates or "NoSlots Available".

@@ -1175,7 +1175,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const u = t.url || "";
           return !/\/(schedule|ofc-schedule|c-schedule)/i.test(u);
         }) || tabs.find((t) => t.id !== ofcTabId);
-        if (!home) return;
+        if (!home) {
+          const ring = (await chrome.storage.local.get("pseActionRing")).pseActionRing || [];
+          ring.push({
+            a: "recovery:no_home",
+            t: Date.now(),
+            p: "sw",
+            x: { ofcUrl: ofcUrl || "" },
+          });
+          while (ring.length > 40) ring.shift();
+          await chrome.storage.local.set({ pseActionRing: ring });
+          return;
+        }
         await chrome.tabs.update(home.id, { active: true });
         chrome.tabs.reload(home.id);
       } catch (e) {}

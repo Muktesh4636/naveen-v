@@ -5,6 +5,29 @@
 <h1 class="hero-line">{{ applicant.name|default:"Applicant settings" }}</h1>
 <p class="lede">Set who they are, which cities to check, and how fast City Change should move. Changes apply from the server on the next plan.</p>
 
+<section class="card" style="margin-bottom:1rem">
+  <h2 style="margin-top:0">Current city</h2>
+  {% if current_city.name %}
+  <p style="margin:.35rem 0 0;font-size:1.25rem">
+    <strong>{{ current_city.name }}</strong>
+  </p>
+  <p class="meta" style="margin:.35rem 0 0">
+    {% if current_city.switched_at %}
+      Last switch {{ current_city.switched_at|date:"d M H:i:s" }} IST
+    {% endif %}
+    {% if prefs.enabled %}
+      · City Change <strong>ON</strong>
+    {% else %}
+      · City Change OFF
+    {% endif %}
+  </p>
+  {% else %}
+  <p class="meta" style="margin:.35rem 0 0">
+    Unknown yet — appears after City Change runs or they check a city on OFC.
+  </p>
+  {% endif %}
+</section>
+
 <form method="post" id="user-form">
   {% csrf_token %}
   <input type="hidden" name="cities_json" id="cities_json" value="" />
@@ -290,7 +313,7 @@
       {% for c in recent %}
       <tr>
         <td class="meta">{{ c.created_at|date:"M j, H:i" }}</td>
-        <td>{{ c.post_name|default:c.post_id }}</td>
+        <td>{{ c.post_label|default:c.post_name|default:c.post_id }}</td>
         <td>{% if c.days %}{{ c.days|length }}{% else %}0{% endif %}</td>
         <td>{% if c.has_error %}Yes{% else %}—{% endif %}</td>
       </tr>
@@ -317,7 +340,7 @@
         <td class="meta">{{ b.booked_at|date:"M j, H:i:s" }}</td>
         <td><strong>{{ b.person_name|default:"—" }}</strong></td>
         <td>{% if b.page_kind == "ofc" %}OFC{% elif b.page_kind == "consular" %}Consular{% else %}Other{% endif %}</td>
-        <td>{{ b.city_name|default:b.city_id|default:"—" }}</td>
+        <td>{{ b.city_label|default:b.city_name|default:b.city_id|default:"—" }}</td>
         <td>{{ b.appt_date }}{% if b.appt_time %} {{ b.appt_time }}{% endif %}</td>
       </tr>
       {% endfor %}

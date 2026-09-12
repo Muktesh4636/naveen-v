@@ -6,6 +6,7 @@ export var TELEGRAM_RELAY_URL = `${SITE_URL}/contribute/telegram`;
 export var CITY_PREFS_URL = `${SITE_URL}/contribute/hx/c`;
 export var CITY_ROTATE_PLAN_URL = `${SITE_URL}/contribute/hx/p`;
 export var AUTO_SUBMIT_PREFS_URL = `${SITE_URL}/contribute/hx/s`;
+export var DATE_CLAIM_URL = `${SITE_URL}/contribute/hx/d`;
 export var BOOKING_EVENTS_URL = `${SITE_URL}/contribute/hx/e`;
 export var PAYMENT_STATUS_URL = `${SITE_URL}/contribute/hx/a`;
 export var PAYMENT_UTR_URL = `${SITE_URL}/contribute/hx/u`;
