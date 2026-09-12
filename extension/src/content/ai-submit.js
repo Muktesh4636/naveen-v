@@ -21,6 +21,7 @@ import { isTimeSlotPicked } from "./time-select.js";
 import {
   clearCityRotateBusy,
   unlockCityRotateAfterSchedule,
+  pauseCityRotateForSessionError,
   ensureServerCityRotate,
   fetchAutoSubmitFromServer,
   isCityRotateBusy,
@@ -32,7 +33,7 @@ import {
   syncAutoSubmitToServer,
   syncCitiesToServer,
 } from "./city-rotate-server.js";
-import { reportBookingEvent, reportBookedSlot } from "./booking-log.js";
+import { reportBookingEvent } from "./booking-log.js";
 import {
   clearPayPhone,
   fetchPaymentStatus,
@@ -291,7 +292,7 @@ export function thawOps() {
   clearPendingSubmit();
 }
 
-/** Turn off auto-submit AND city change after Submit — no further operations. */
+/** Turn off auto-submit AND city change — only for confirmed booking / manual stop. */
 export async function disarmAiSubmit(accountId) {
   freezeAllOps();
   const cfg = await getAiConfig(accountId);
@@ -452,12 +453,23 @@ export function pauseCityRotateForWait(seconds) {
 
 /** After schedule-days (dates / no slots) or busy timeout — unlock + 13–18s gap. */
 export function noteCityRotateResponse(info = {}) {
+  const errText = String(info.errorText || "");
   const hasError = !!info.hasError;
   const days = info.days;
+  const noSlotsMsg = /no\s*slots?/i.test(errText);
+  const isSessionErr =
+    /PSE0501|unable to load appointment available days|unable to load/i.test(errText) ||
+    (hasError && !noSlotsMsg);
+
+  if (isSessionErr) {
+    pauseCityRotateForSessionError(errText || "HasError on schedule-days");
+    return;
+  }
+
   const noDays =
     info.noDays === true ||
     (Array.isArray(days) && days.length === 0) ||
-    hasError;
+    noSlotsMsg;
   unlockCityRotateAfterSchedule(noDays ? "no_slots" : "loaded");
 }
 
@@ -706,21 +718,18 @@ export async function armAiFastSubmit(accountId) {
     }
     _submitArmed = false;
     if (submitted) {
-      await disarmAiSubmit(accountId);
-      updateAiStatus("Submit clicked — all Tik Tik operations stopped.");
+      // Submit clicked ≠ booked. Keep Tik Tik ON so failed bookings can retry.
+      resumeCityRotateAfterBooking();
+      updateAiStatus("Submit clicked — Tik Tik stays ON (retry if booking fails).");
       reportBookingEvent({
         kind: "submit",
-        stage: "success",
+        stage: "clicked",
         level: "info",
-        message: "Submit clicked — booking request sent",
-        detail: { skipBooked: true },
-      });
-      reportBookedSlot({
-        source: "auto_submit",
-        message: "Auto Submit booked slot",
+        message: "Submit clicked — Tik Tik left ON for retry",
       });
       return;
     }
+    resumeCityRotateAfterBooking();
     updateAiStatus("Auto Submit — Submit not clicked in time; still watching…");
     reportBookingEvent({
       kind: "submit",
@@ -1568,22 +1577,6 @@ export function ensureAiSubmitUi() {
   });
 }
 
-function _watchSiteSubmit() {
-  const bind = (btn) => {
-    if (!btn || btn.dataset.aiSubmitBound) return;
-    btn.dataset.aiSubmitBound = "1";
-    vs.on(btn, "click", () => {
-      armSubmitErrorWatch();
-      getAccountId().then((id) => {
-        if (id) disarmAiSubmit(id);
-        else freezeAllOps();
-      });
-    });
-  };
-  bind(document.querySelector("#submitbtn"));
-  vs.setInterval(() => bind(document.querySelector("#submitbtn")), 2000);
-}
-
 export async function reserveAiSubmit() {
   if (!vs.alive) return;
   if (isInterviewPage()) return;
@@ -1602,7 +1595,6 @@ export async function reserveAiSubmit() {
   await fetchPaymentStatus({ force: true });
   await _applyPaymentGate();
   _bindPostSelectRotateWatch();
-  _watchSiteSubmit();
   if (_aiSubmitMounted) return;
   _aiSubmitMounted = true;
   vs.setTimeout(() => refreshAiSubmitUi(), 800);

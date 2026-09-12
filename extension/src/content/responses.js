@@ -1,7 +1,7 @@
 import { showBlockMessage } from "./cloudflare.js";
 import { showWaitTime, showWaiting, slotsAlert } from "./scheduling-controls.js";
 import { showDates } from "./scheduling-panels.js";
-import { notifyTelegramSlots, notifyTelegramCityScreenshot, notifyTelegramCalendarScreenshot, notifyTelegramTimeScreenshot } from "./telegram-notify.js";
+import { notifyTelegramSlots } from "./telegram-notify.js";
 import { pollAndPickTimeSlot, domShowsEntryTimes, isTimeSlotPicked, pickTimeSlotDual } from "./time-select.js";
 import { submitContribution } from "./reporting.js";
 import { recordSubmitAjaxResponse } from "./submit-errors.js";
@@ -532,6 +532,15 @@ export async function autoSelectFirstDate(scheduleDays, hasError = false) {
     date: picked,
     detail: { index: idx, pool: pool.length },
   });
+
+  // Fire immediately — do not wait for Telegram or city rotate.
+  vs.send({
+    action: "selectFirstDate",
+    date: picked,
+    maxMs: AI_DATE_SELECT_MS,
+    pollMs: AI_BOOK_POLL_MS,
+  });
+
   await vs.waitFor(DATE_PICKER_SELECTOR, { attempts: 120, interval: AI_BOOK_POLL_MS });
 
   vs.send({
@@ -750,23 +759,23 @@ export async function handleEvent(event) {
       postName: "",
     });
 
-    // Unlock City Change IMMEDIATELY (before any await) — never sit on 2‑min
-    // timeout after CGI already answered with dates or "NoSlots Available".
-    noteCityRotateResponse({
-      hasError,
-      days,
-      noDays,
-    });
-
     const ai = await getArmedAiConfig();
     const inRange =
       ai && !hasError && !noSlotsMsg ? filterDaysInAiRange(days, ai.from, ai.to) : [];
+    const bookingThisCity = !!(ai && inRange.length);
 
-    // Matching Auto Submit dates → pause city hop and book (City Change stays ON).
-    if (ai && inRange.length) {
+    // Pause city hop BEFORE any unlock — so dates stay on screen for Auto Submit.
+    if (bookingThisCity) {
       haltCityRotateForBooking();
     } else {
       resumeCityRotateAfterBooking();
+      // No bookable dates here — unlock rotation (no slots / out of range / Auto Submit off).
+      noteCityRotateResponse({
+        hasError,
+        days,
+        noDays,
+        errorText: errText,
+      });
     }
 
     const rotating = await getCitiesRotateConfig();
@@ -789,23 +798,20 @@ export async function handleEvent(event) {
       ).body.innerText;
       setPosts(posts);
     }
-    await alertOnAvailability(parsed.response.ScheduleDays, {
-      postId: parsed.params.postId,
-      postName: post?.Name,
-      hasError: parsed.response.HasError,
-    });
 
-    await notifyTelegramCityScreenshot(parsed.response.ScheduleDays, {
-      postId: parsed.params.postId,
-      postName: post?.Name,
-      hasError: parsed.response.HasError,
-    });
+    // Pick date FIRST — before Telegram/screenshots (those were delaying the calendar click).
+    let pickedDate = null;
+    if (!hasError && !noSlotsMsg) {
+      pickedDate = await autoSelectFirstDate(days, hasError);
+    }
 
-    const pickedDate = await autoSelectFirstDate(parsed.response.ScheduleDays, parsed.response.HasError);
     if (pickedDate) {
-      await notifyTelegramCalendarScreenshot(post?.Name, pickedDate);
-    } else if (ai && !parsed.response.HasError) {
-      // Had a range match earlier but nothing to pick — don't leave City Change paused forever.
+      setTikTikStatus(`Selecting date: ${pickedDate}…`);
+    } else if (bookingThisCity) {
+      setTikTikStatus(
+        `Dates in range — picking ${inRange[0]?.Date?.slice(0, 10) || "date"}…`
+      );
+    } else if (ai && !hasError) {
       resumeCityRotateAfterBooking();
       const daysList = (parsed.response.ScheduleDays || [])
         .map((d) => normalizeScheduleDate(d?.Date))
@@ -817,6 +823,13 @@ export async function handleEvent(event) {
         setTikTikStatus("No dates on this city yet.");
       }
     }
+
+    await alertOnAvailability(parsed.response.ScheduleDays, {
+      postId: parsed.params.postId,
+      postName: post?.Name,
+      hasError: parsed.response.HasError,
+    });
+
     await submitContribution();
   }
   let scheduleEntriesTails = [
@@ -846,14 +859,6 @@ export async function handleEvent(event) {
       parsed.response.HasError,
       errText
     );
-    const entries = (parsed.response.ScheduleEntries || []).filter((e) => e && e.Time);
-    if (entries.length) {
-      await notifyTelegramTimeScreenshot(
-        post?.Name,
-        parsed.params.Date,
-        entries.length
-      );
-    }
     await submitContribution();
   }
 }

@@ -15,6 +15,7 @@ import { getSetting, TEMP_SHOW_LOGIN_DETAILS } from "../shared/config.js";
 import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
 import { notePseAction, recordPseIncident, recordPseRecoveryStep } from "./pse-diagnostics.js";
+import { pauseCityRotateForSessionError, resumeCityRotateAfterSessionFix } from "./city-rotate-server.js";
 
 var RECOVERY_KEY = "sessionRecovery";
 var _recoveryBusy = false;
@@ -279,6 +280,7 @@ async function _runHomeRecovery() {
       ofcUrl: rec.ofcUrl || "",
       elapsedMs: rec.startedAt ? Date.now() - rec.startedAt : 0,
     });
+    resumeCityRotateAfterSessionFix();
     vs.send({ action: "recoveryReturnToOfc" });
     recordPseRecoveryStep("return", { ofcUrl: rec.ofcUrl || "" });
   }
@@ -319,6 +321,7 @@ export async function handleNativeAlert(text) {
   _recoveryBusy = true;
   vs.setTimeout(() => { _recoveryBusy = false; }, 8000);
 
+  pauseCityRotateForSessionError(String(text || "PSE0501 alert"));
   const accountId = await getAccountId();
   await storageSet({
     [RECOVERY_KEY]: {

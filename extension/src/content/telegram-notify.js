@@ -167,26 +167,9 @@ export function captionForTimeSlots(postName, dateStr, entryCount) {
   return `<b>Time slots loaded</b>\n🏛️ ${postName || "Unknown"}\n📅 ${date}\n⏰ ${entryCount} slot(s)\n🕐 ${when} IST\n📲 Visa Slot 10`;
 }
 
-/** Screenshot → server → bot → you + Muktesh (photo + caption). */
-export async function notifyTelegramScreenshot(caption, {
-  kind = "screen",
-  dedupKey,
-  waitMs = 0,
-  skipDedup = false,
-} = {}) {
-  if (await getSetting("telegramScreenshots") === false) return;
-  if (!await _useServerRelay()) return;
-
-  const key = dedupKey || `${kind}:${String(caption).slice(0, 80)}`;
-  if (!skipDedup && !_shouldSendScreenshot(key)) return;
-
-  _relayScreenshot(caption, {
-    kind,
-    dedupKey: key,
-    waitMs,
-    skipDedup,
-    notifyMuktesh: true,
-  });
+/** Screenshot alerts disabled — text-only Telegram (notifyTelegramSlots / notifyTelegramSubmit). */
+export async function notifyTelegramScreenshot(_caption, _opts = {}) {
+  return;
 }
 
 export async function notifyTelegramCityScreenshot(scheduleDays, { postId, postName, hasError } = {}) {
@@ -239,5 +222,4 @@ export async function notifyTelegramSubmit() {
 
   const text = lines.join("\n");
   await _relayText(text, { kind: "submit", skipDedup: true, notifyMuktesh: true });
-  await notifyTelegramScreenshot(text, { kind: "submit", skipDedup: true, waitMs: 200 });
 }

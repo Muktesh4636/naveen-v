@@ -68,7 +68,15 @@ export function showDates(parsed) {
     details.append(label, `: ${dates.join(", ")}`, document.createElement("br"));
   }
   if (!Object.keys(dateParsed).length) {
-    details.append("No slots available", document.createElement("br"));
+    if (parsed.response.HasError) {
+      const errText = new DOMParser().parseFromString(
+        parsed.response.ErrorString || "",
+        "text/html"
+      ).body.innerText || "Calendar error";
+      details.append(String(errText).slice(0, 200), document.createElement("br"));
+    } else {
+      details.append("No slots available", document.createElement("br"));
+    }
   }
 }
 

@@ -37,8 +37,8 @@ var _earlyUnlockReason = "";
 /** Auto Submit is booking on this city — do not switch, but keep City Change ON. */
 var _bookingHold = false;
 var _noSlotsDomWatch = null;
-/** Throttle hot-city polls while Loading (busy). */
-var _lastHotPollAt = 0;
+/** Block city hops while PSE0501 / soft session is being fixed. */
+var _sessionPause = false;
 
 export function setCityRotateStatusSink(fn) {
   _updateStatus = typeof fn === "function" ? fn : () => {};
@@ -54,6 +54,46 @@ export function isCityRotateBusy() {
 
 export function isCityRotateHeld() {
   return _bookingHold;
+}
+
+export function isCityRotateSessionPaused() {
+  return _sessionPause;
+}
+
+/** Pause hops — do NOT switch city again until session is healthy. */
+export function pauseCityRotateForSessionError(message = "") {
+  if (_sessionPause) return;
+  _sessionPause = true;
+  _cancelTimer();
+  _clearBusy();
+  _plan = null;
+  const msg = String(message || "").slice(0, 200);
+  notePseAction("session_pause", { msg });
+  _updateStatus(
+    /PSE0501|unable to load/i.test(msg)
+      ? "City Change paused — PSE0501; fixing session on Home…"
+      : "City Change paused — calendar error; fix Home tab…"
+  );
+  reportBookingEvent({
+    kind: "city_change",
+    stage: "session_pause",
+    level: "warn",
+    message: `Paused city change: ${msg || "session/calendar error"}`,
+  });
+  try {
+    vs.send({ action: "recoveryStart", ofcUrl: location.href });
+  } catch {}
+}
+
+export function resumeCityRotateAfterSessionFix() {
+  if (!_sessionPause) return;
+  _sessionPause = false;
+  notePseAction("session_resume", {});
+  if (_rotateActive && !_bookingHold) {
+    _updateStatus("City Change — resuming after session fix…");
+    _plan = null;
+    _schedule(5000);
+  }
 }
 
 function _cancelTimer() {
@@ -367,7 +407,7 @@ async function _applyHotInterrupt(cityId, plan) {
   });
   let switched = _switchDom(cityId);
   if (!switched) {
-    vs.send({ action: "selectPost", postId: cityId });
+    // _switchDom already sent one selectPost backup — do not send again.
     await new Promise((r) => vs.setTimeout(r, 350));
     const select = document.querySelector("#post_select");
     if (select && String(select.value) === String(cityId)) {
@@ -406,8 +446,8 @@ function _armBusy(cityId) {
         _rotateBusyClearTimer = null;
         const s2 = _calendarDomStatus();
         if (s2 === "loading") {
-          // Hard stop after another full window — avoid infinite stuck.
-          clearCityRotateBusy({ reason: "timeout" });
+          // Never switch city while CGI still shows Loading — that causes PSE0501.
+          pauseCityRotateForSessionError("Calendar stuck on Loading (4 min)");
           return;
         }
         if (s2 === "no_slots") {
@@ -818,21 +858,24 @@ function _switchDom(cityId) {
     cityId: nextId,
     city: localLabel || "",
   });
-  // Prefer in-page change (reliable). SW inject is backup only.
-  const ok = _applyCityLocal(nextId);
-  if (!ok) {
-    vs.send({ action: "selectPost", postId: nextId });
-    // Give SW a brief chance, then re-check.
-    return false;
-  }
+  // ONE schedule-days request only. Local success → never also call selectPost
+  // (double change was triggering PSE0501).
+  if (_applyCityLocal(nextId)) return true;
+  // Local failed (no jQuery / option missing) — single SW backup; caller may verify.
   vs.send({ action: "selectPost", postId: nextId });
-  return true;
+  return false;
 }
 
 async function _tick() {
   if (_rotateInFlight || !_rotateActive || !vs.alive) return;
   _rotateInFlight = true;
   try {
+    if (_sessionPause) {
+      _updateStatus("City Change paused — session fix in progress…");
+      _schedule(5_000);
+      return;
+    }
+
     if (_bookingHold) {
       _updateStatus("City Change — paused (Auto Submit booking)…");
       _schedule(2_000);
@@ -840,22 +883,7 @@ async function _tick() {
     }
 
     if (_rotateBusy) {
-      // Hot city (dates elsewhere) interrupts Loading immediately.
-      // Normal rotate still waits for Loading / NoSlots / 2‑min timeout.
-      if (!_planFetchInFlight && Date.now() - _lastHotPollAt >= 900) {
-        _lastHotPollAt = Date.now();
-        const hotPlan = await _fetchPlan();
-        if (hotPlan?.hot && hotPlan.cityId) {
-          const select = document.querySelector("#post_select");
-          const cur = select ? String(select.value || "") : "";
-          const target = String(hotPlan.cityId);
-          const pending = String(_pendingAckCityId || "");
-          if (target && target !== cur && target !== pending) {
-            await _applyHotInterrupt(target, hotPlan);
-            return;
-          }
-        }
-      }
+      // Never hot-jump or switch while CGI shows Loading — wait for answer only.
       const left = Math.max(
         0,
         CITY_BUSY_MAX_MS - (Date.now() - (_busyStartedAt || Date.now()))
@@ -881,6 +909,11 @@ async function _tick() {
         return;
       }
       if (status === "dates") {
+        if (_bookingHold) {
+          _updateStatus("City Change — dates visible; Auto Submit picking…");
+          _schedule(500);
+          return;
+        }
         clearCityRotateBusy({ reason: "loaded" });
         _schedule(200);
         return;
@@ -964,8 +997,7 @@ async function _tick() {
     const cityId = _plan.cityId;
     let switched = _switchDom(cityId);
     if (!switched) {
-      // One SW backup attempt, then verify DOM before arming busy.
-      vs.send({ action: "selectPost", postId: cityId });
+      // _switchDom already sent one selectPost backup — wait and verify only.
       await new Promise((r) => vs.setTimeout(r, 350));
       const select = document.querySelector("#post_select");
       if (select && String(select.value) === String(cityId)) {
