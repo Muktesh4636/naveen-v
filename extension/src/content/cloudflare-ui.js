@@ -6,9 +6,9 @@ var _hideTimer = null;
 var _lastState = "";
 
 const MESSAGES = {
-  scanning: "Scanning for Cloudflare challenge…",
-  dom: "Trying page-level verify click…",
-  debugger: "Advanced click — targeting Turnstile iframe…",
+  scanning: "Verify you are human page — preparing click…",
+  dom: "Clicking Verify you are human…",
+  debugger: "Clicking Verify you are human checkbox…",
   retry: "Waiting before next attempt…",
   success: "Verification passed — continuing…",
   manual: "Stuck? Click the checkbox once, then we’ll continue.",

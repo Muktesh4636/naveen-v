@@ -29,13 +29,22 @@ export var CITY_PLAN_RETRY_MS = 1_000;
 
 var CITY_ROTATE_MIN_GAP_MS = 13_000;
 var CITY_ROTATE_MAX_GAP_MS = 18_000;
-var ROTATE_BUSY_MS = 12_000;
+/** Max wait while CGI shows Loading before allowing next city. */
+var CITY_BUSY_MAX_MS = 120_000;
+var _NO_SLOTS_GRACE_MS = 8_000;
+const _NO_SLOTS_RE = /no\s*slots?\s*available|noslots\s*available/i;
 
 var _rotateTimer = null;
 var _rotateInFlight = false;
 var _rotateActive = false;
 var _rotateBusy = false;
 var _rotateBusyClearTimer = null;
+var _noSlotsDomWatch = null;
+var _busyStartedAt = 0;
+var _busySawLoading = false;
+var _scheduleDaysAcked = false;
+var _earlyUnlockReason = "";
+var _busyIgnoreNoSlotsUntil = 0;
 var _updateStatus = () => {};
 var _nextRotateAt = 0;
 var _lastSwitchAt = 0;
@@ -116,25 +125,235 @@ function _cancelTimer() {
   }
 }
 
+function _stopNoSlotsDomWatch() {
+  if (_noSlotsDomWatch) {
+    vs.clear(_noSlotsDomWatch);
+    _noSlotsDomWatch = null;
+  }
+}
+
+function _textLooksNoSlots(raw) {
+  const t = String(raw || "").replace(/\s+/g, " ").trim();
+  return t.length > 0 && t.length < 500 && _NO_SLOTS_RE.test(t);
+}
+
+function _domShowsLoading(bodyText) {
+  const dateRoot =
+    document.querySelector("#datepicker") ||
+    document.querySelector(".ui-datepicker") ||
+    document.querySelector("[id*='date']");
+  const dateText = ((dateRoot && dateRoot.textContent) || "").replace(/\s+/g, " ").trim();
+  if (/\bloading\.{0,3}\b/i.test(dateText)) return true;
+  const hay = bodyText || "";
+  if (/\bDate\s*\(MM\/DD\/YYYY\)\s*Loading\b/i.test(hay.slice(0, 6000))) return true;
+  if (/\bloading\.{0,3}\b/i.test(hay.slice(0, 6000)) && /date\s*\(mm\/dd\/yyyy\)/i.test(hay.slice(0, 6000))) {
+    return true;
+  }
+  return false;
+}
+
+function _domShowsNoSlots(root, bodyText) {
+  for (const el of root.querySelectorAll(
+    ".atlas_validationalert, .alert, .alert-danger, .alert-warning, .validation-summary-errors, #error_row, [class*='alert' i], [class*='validation' i], [role='alert']"
+  )) {
+    if (_textLooksNoSlots(el.textContent)) return true;
+  }
+  return _NO_SLOTS_RE.test((bodyText || "").slice(0, 6000));
+}
+
+/** loading → wait; no_slots / dates → unlock when Loading is gone. */
+function _calendarDomStatus() {
+  const root = document.body;
+  if (!root) return "unknown";
+
+  const bodyText = (root.innerText || root.textContent || "").replace(/\s+/g, " ");
+
+  if (_domShowsLoading(bodyText)) return "loading";
+
+  if (_domShowsNoSlots(root, bodyText)) return "no_slots";
+
+  if (
+    document.querySelector(
+      "#datepicker td[data-handler='selectDay'] a, .ui-datepicker-calendar td a.ui-state-default"
+    )
+  ) {
+    return "dates";
+  }
+
+  return "unknown";
+}
+
 function _clearBusy() {
   _rotateBusy = false;
+  _busyStartedAt = 0;
+  _busySawLoading = false;
+  _scheduleDaysAcked = false;
+  _earlyUnlockReason = "";
+  _busyIgnoreNoSlotsUntil = 0;
+  _stopNoSlotsDomWatch();
   if (_rotateBusyClearTimer) {
     vs.clear(_rotateBusyClearTimer);
     _rotateBusyClearTimer = null;
   }
 }
 
-function _armBusy() {
+function _armNoSlotsDomWatch() {
+  _stopNoSlotsDomWatch();
+  let rounds = 0;
+  let mo = null;
+
+  const check = () => {
+    if (!_rotateBusy || !_rotateActive || !vs.alive) {
+      try {
+        mo?.disconnect();
+      } catch {}
+      _noSlotsDomWatch = null;
+      return true;
+    }
+    const status = _calendarDomStatus();
+    const left = Math.max(
+      0,
+      CITY_BUSY_MAX_MS - (Date.now() - (_busyStartedAt || Date.now()))
+    );
+
+    if (status === "loading") {
+      _busySawLoading = true;
+      _updateStatus(
+        `City Change — Loading… wait (max ${Math.ceil(left / 1000)}s)`
+      );
+      return false;
+    }
+
+    if (status === "no_slots") {
+      const inGrace = Date.now() < _busyIgnoreNoSlotsUntil;
+      if (inGrace && !_busySawLoading) {
+        _updateStatus(
+          `City Change — waiting for dates… (${Math.ceil(left / 1000)}s left)`
+        );
+        return false;
+      }
+      if (_scheduleDaysAcked || _busySawLoading) {
+        try {
+          mo?.disconnect();
+        } catch {}
+        clearCityRotateBusy({ reason: "no_slots" });
+        return true;
+      }
+      _updateStatus(
+        `City Change — waiting for CGI reply… (${Math.ceil(left / 1000)}s left)`
+      );
+      return false;
+    }
+
+    if (status === "dates") {
+      try {
+        mo?.disconnect();
+      } catch {}
+      clearCityRotateBusy({ reason: "loaded" });
+      return true;
+    }
+
+    _updateStatus(
+      `City Change — waiting for dates… (${Math.ceil(left / 1000)}s left)`
+    );
+    return false;
+  };
+
+  const tick = () => {
+    if (check()) return;
+    if (++rounds > 600) {
+      try {
+        mo?.disconnect();
+      } catch {}
+      _noSlotsDomWatch = null;
+      return;
+    }
+    _noSlotsDomWatch = vs.setTimeout(tick, 200);
+  };
+
+  try {
+    mo = new MutationObserver(() => {
+      if (check()) {
+        try {
+          mo.disconnect();
+        } catch {}
+      }
+    });
+    mo.observe(document.documentElement || document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+  } catch {
+    mo = null;
+  }
+
+  _noSlotsDomWatch = vs.setTimeout(tick, 100);
+}
+
+function _armBusy(_cityId) {
   _rotateBusy = true;
+  _busyStartedAt = Date.now();
+  _busySawLoading = false;
+  _scheduleDaysAcked = false;
+  _earlyUnlockReason = "";
+  _busyIgnoreNoSlotsUntil = Date.now() + _NO_SLOTS_GRACE_MS;
   if (_rotateBusyClearTimer) vs.clear(_rotateBusyClearTimer);
+
+  _updateStatus("City Change — Loading… (max 2 min)");
+  _armNoSlotsDomWatch();
+
+  if (_earlyUnlockReason && _calendarDomStatus() !== "loading") {
+    clearCityRotateBusy({ reason: _earlyUnlockReason });
+    return;
+  }
+
   _rotateBusyClearTimer = vs.setTimeout(() => {
     _rotateBusyClearTimer = null;
-    clearCityRotateBusy({ reason: "loaded" });
-  }, ROTATE_BUSY_MS);
+    const status = _calendarDomStatus();
+    if (status === "loading") {
+      clearCityRotateBusy({ reason: "timeout" });
+      _updateStatus("City Change — Loading 2 min; next city in 13–18s…");
+      reportBookingEvent({
+        kind: "city_change",
+        stage: "timeout",
+        level: "warn",
+        message: "Dates still loading after 2 minutes — allow next city",
+      });
+      return;
+    }
+    if (status === "no_slots") {
+      clearCityRotateBusy({ reason: "no_slots" });
+      return;
+    }
+    if (status === "dates") {
+      clearCityRotateBusy({ reason: "loaded" });
+      return;
+    }
+    clearCityRotateBusy({ reason: "timeout" });
+    _updateStatus("City Change — no reply after 2 min; next city in 13–18s…");
+  }, CITY_BUSY_MAX_MS);
 }
 
 export function unlockCityRotateAfterSchedule(_reason) {
-  clearCityRotateBusy({ reason: _reason === "loaded" ? "loaded" : "no_slots" });
+  const r = _reason === "loaded" ? "loaded" : "no_slots";
+  _scheduleDaysAcked = true;
+  if (!_rotateBusy) {
+    _earlyUnlockReason = r;
+    return;
+  }
+  _earlyUnlockReason = "";
+
+  const tryUnlock = (attempt) => {
+    if (!_rotateBusy || !_rotateActive || !vs.alive) return;
+    if (_calendarDomStatus() === "loading" && attempt < 40) {
+      _busySawLoading = true;
+      vs.setTimeout(() => tryUnlock(attempt + 1), 250);
+      return;
+    }
+    clearCityRotateBusy({ reason: r });
+  };
+  tryUnlock(0);
 }
 
 export function clearCityRotateBusy(opts = {}) {
@@ -145,6 +364,8 @@ export function clearCityRotateBusy(opts = {}) {
   if (!was || !_rotateActive) return;
   if (reason === "no_slots") {
     _updateStatus("City Change — no slots; next city in 13–18s…");
+  } else if (reason === "timeout") {
+    _updateStatus("City Change — load timed out (2 min); next city in 13–18s…");
   } else {
     _updateStatus("City Change — dates loaded; next city in 13–18s…");
   }
@@ -300,6 +521,7 @@ function _bindPostSelectWatch() {
   if (!select) return;
   _postSelectBound = true;
   vs.on(select, "change", () => {
+    if (_calendarDomStatus() === "loading") return;
     clearCityRotateBusy({ reason: "loaded" });
   });
 }
@@ -319,13 +541,14 @@ function _contentScriptSelectPost(postId) {
 
 function _switchDom(cityId) {
   if (!isInSlotWindow()) return false;
+  if (_calendarDomStatus() === "loading") return false;
   const select = document.querySelector("#post_select");
   if (!select || !cityId) return false;
   const nextId = String(cityId);
   if (String(select.value) === nextId) return false;
 
   const localLabel = _labelForPostId(nextId);
-  _armBusy();
+  _armBusy(nextId);
   _updateStatus(localLabel ? `Switching city → ${localLabel}…` : "City Change — applying…");
   vs.send({ action: "selectPost", postId: nextId, source: "city_rotate" });
   notePseAction("city_switch", { cityId: nextId, label: localLabel || "" });
@@ -387,15 +610,27 @@ async function _rotateTick() {
     }
 
     const waitMs = _msUntilNextRotate(now);
-    if (_rotateBusy || waitMs > 0) {
-      const showSec = Math.ceil(
-        (waitMs > 0 ? waitMs : Math.max(0, _nextRotateAt - now)) / 1000
+    if (_rotateBusy) {
+      const left = Math.max(
+        0,
+        CITY_BUSY_MAX_MS - (Date.now() - (_busyStartedAt || Date.now()))
       );
-      _updateStatus(
-        _rotateBusy
-          ? `City Change — loading calendar… next switch in ${Math.max(1, showSec)}s`
-          : `City Change — slot ${slot} active, next switch in ${Math.max(1, showSec)}s`
-      );
+      const status = _calendarDomStatus();
+      if (status === "loading") {
+        _updateStatus(
+          `City Change — Loading… wait (max ${Math.ceil(left / 1000)}s)`
+        );
+      } else {
+        _updateStatus(
+          `City Change — waiting for dates… (${Math.ceil(left / 1000)}s left)`
+        );
+      }
+      _schedule(500);
+      return;
+    }
+    if (waitMs > 0) {
+      const showSec = Math.ceil(waitMs / 1000);
+      _updateStatus(`City Change — slot ${slot} active, next switch in ${Math.max(1, showSec)}s`);
       _scheduleCityRotate();
       return;
     }

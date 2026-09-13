@@ -767,35 +767,47 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function debuggerClickPoint(tabId, x, y, attached) {
+async function debuggerMouseMove(tabId, x, y) {
+  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x,
+    y,
+    button: "none",
+    buttons: 0,
+    pointerType: "mouse",
+  });
+}
+
+async function debuggerClickPoint(tabId, x, y, attached, timing) {
   const target = { tabId };
   let ownAttach = false;
+  const hoverMs = Math.max(80, Math.min(500, Number(timing?.hoverMs) || 180));
+  const pressMs = Math.max(50, Math.min(160, Number(timing?.pressMs) || 80));
   try {
     if (!attached) {
       await chrome.debugger.attach(target, DEBUGGER_PROTO);
       ownAttach = true;
     }
-    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      x,
-      y,
-      button: "none",
-    });
-    await sleep(40);
+    await debuggerMouseMove(tabId, x, y);
+    await sleep(hoverMs);
     await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
       type: "mousePressed",
       x,
       y,
       button: "left",
+      buttons: 1,
       clickCount: 1,
+      pointerType: "mouse",
     });
-    await sleep(50);
+    await sleep(pressMs);
     await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
       type: "mouseReleased",
       x,
       y,
       button: "left",
+      buttons: 0,
       clickCount: 1,
+      pointerType: "mouse",
     });
     return true;
   } catch {
@@ -807,6 +819,139 @@ async function debuggerClickPoint(tabId, x, y, attached) {
       } catch (e) {}
     }
   }
+}
+
+function _jitter(n, pct) {
+  const a = Number(n) || 0;
+  const p = pct == null ? 0.12 : pct;
+  return a * (1 + (Math.random() * 2 - 1) * p);
+}
+
+var _bundledHumanProfile = null;
+var _bundledHumanProfilePromise = null;
+
+async function fetchBundledHumanProfile() {
+  if (_bundledHumanProfile) return _bundledHumanProfile;
+  if (_bundledHumanProfilePromise) return _bundledHumanProfilePromise;
+  _bundledHumanProfilePromise = (async () => {
+    try {
+      const url = chrome.runtime.getURL("human-train/bundled-profile.json");
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!data?.samples?.length) return null;
+      _bundledHumanProfile = data;
+      return data;
+    } catch {
+      return null;
+    } finally {
+      _bundledHumanProfilePromise = null;
+    }
+  })();
+  return _bundledHumanProfilePromise;
+}
+
+/** Prefer live training in storage; fall back to bundled 100-sample profile. */
+async function resolveHumanClickProfile() {
+  try {
+    const { humanClickProfile } = await chrome.storage.local.get("humanClickProfile");
+    const storedN = humanClickProfile?.samples?.length || 0;
+    if (storedN >= 100) return humanClickProfile;
+    const bundled = await fetchBundledHumanProfile();
+    const bundledN = bundled?.samples?.length || 0;
+    if (bundledN && bundledN >= storedN) return bundled;
+    if (storedN > 0) return humanClickProfile;
+    return bundled;
+  } catch {
+    return fetchBundledHumanProfile();
+  }
+}
+
+/** Seed chrome.storage from bundled profile on install / SW wake. */
+async function seedHumanClickProfileFromBundle() {
+  try {
+    const bundled = await fetchBundledHumanProfile();
+    if (!bundled?.samples?.length) return;
+    const { humanClickProfile } = await chrome.storage.local.get("humanClickProfile");
+    const storedN = humanClickProfile?.samples?.length || 0;
+    if (storedN >= bundled.samples.length) return;
+    await chrome.storage.local.set({
+      humanClickProfile: {
+        ...bundled,
+        seededFromBundle: true,
+        updatedAt: Date.now(),
+      },
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Pick a trained sample (or averages) from storage or bundled profile. */
+async function loadHumanClickTiming() {
+  try {
+    const humanClickProfile = await resolveHumanClickProfile();
+    if (!humanClickProfile) {
+      return { hoverMs: 420, pressMs: 90, path: null };
+    }
+    const samples = humanClickProfile.samples || [];
+    const sample = samples.length
+      ? samples[Math.floor(Math.random() * samples.length)]
+      : null;
+    // Cap hover so checkbox click doesn't sit idle for multi-second hangs.
+    const hoverRaw = sample?.hoverMs || humanClickProfile.avgHoverMs || 420;
+    const pressRaw = sample?.pressMs || humanClickProfile.avgPressMs || 90;
+    return {
+      hoverMs: Math.round(_jitter(Math.min(900, Math.max(120, hoverRaw)), 0.18)),
+      pressMs: Math.round(_jitter(Math.min(180, Math.max(45, pressRaw)), 0.15)),
+      path: sample?.path?.length ? sample.path : null,
+    };
+  } catch {
+    return { hoverMs: 420, pressMs: 90, path: null };
+  }
+}
+
+function _pathUsableForTurnstile(path) {
+  if (!path?.length) return false;
+  // Training captured whole-page movement — nx/ny >> 1 means replay misses the iframe.
+  const tail = path.slice(-12);
+  return tail.every((p) => {
+    const nx = Math.abs(Number(p.nx) || 0);
+    const ny = Math.abs(Number(p.ny) || 0);
+    return nx <= 3.5 && ny <= 3.5;
+  });
+}
+
+/** Short curved approach ending on the checkbox — never replay full-page training paths. */
+async function debuggerHumanApproach(tabId, tx, ty, path) {
+  let sx = tx + _jitter(-55, 0.35);
+  let sy = ty + _jitter(35, 0.35);
+  if (_pathUsableForTurnstile(path)) {
+    const scale = 28;
+    const tail = path.slice(-10);
+    const first = tail[0];
+    sx = tx + (Number(first.nx) || 0) * scale;
+    sy = ty + (Number(first.ny) || 0) * scale;
+    for (let i = 0; i < tail.length; i++) {
+      const p = tail[i];
+      const x = tx + (Number(p.nx) || 0) * scale;
+      const y = ty + (Number(p.ny) || 0) * scale;
+      await debuggerMouseMove(tabId, x, y);
+      const nextT = tail[i + 1] ? Number(tail[i + 1].t) || 0 : Number(p.t) || 0;
+      const dt = Math.min(45, Math.max(8, nextT - (Number(p.t) || 0)));
+      await sleep(dt);
+    }
+    await debuggerMouseMove(tabId, tx, ty);
+    return;
+  }
+  const steps = 6 + Math.floor(Math.random() * 4);
+  for (let i = 1; i <= steps; i++) {
+    const u = i / steps;
+    const ease = u * u * (3 - 2 * u);
+    await debuggerMouseMove(tabId, sx + (tx - sx) * ease, sy + (ty - sy) * ease);
+    await sleep(14 + Math.random() * 22);
+  }
+  await debuggerMouseMove(tabId, tx, ty);
 }
 
 function viewportClickPoints(points) {
@@ -826,25 +971,44 @@ function viewportClickPoints(points) {
   }
 }
 
-async function debuggerClickTurnstile(tabId, points) {
+async function debuggerClickTurnstile(tabId, points, primaryOnly) {
   if (_cfDbgBusy.get(tabId)) return false;
   const last = _cfDbgLastClick.get(tabId) || 0;
-  if (Date.now() - last < 800) return false;
+  if (Date.now() - last < 700) return false;
   _cfDbgBusy.set(tabId, true);
   _cfDbgLastClick.set(tabId, Date.now());
   const target = { tabId };
   let attached = false;
   try {
     await chrome.tabs.update(tabId, { active: true }).catch(() => {});
-    await sleep(80);
+    await sleep(120);
+    // Detach any stale session first (DevTools / previous attempt).
+    try {
+      await chrome.debugger.detach(target);
+    } catch {}
     await chrome.debugger.attach(target, DEBUGGER_PROTO);
     attached = true;
-    for (const pt of points.slice(0, 10)) {
-      if (!pt || typeof pt.x !== "number" || typeof pt.y !== "number") continue;
-      await debuggerClickPoint(tabId, pt.x, pt.y, true);
-      await sleep(180);
+    // Bring page to front and wait for layout.
+    try {
+      await chrome.debugger.sendCommand(target, "Page.bringToFront");
+    } catch {}
+    await sleep(80);
+    const human = await loadHumanClickTiming();
+    const timing = {
+      hoverMs: Math.min(280, human.hoverMs || 180),
+      pressMs: Math.min(120, human.pressMs || 70),
+    };
+    const list = (points || []).filter(
+      (pt) => pt && typeof pt.x === "number" && typeof pt.y === "number"
+    );
+    const tryList = primaryOnly ? list.slice(0, 1) : list.slice(0, 5);
+    for (const pt of tryList) {
+      // Short approach only — keep mouse near checkbox.
+      await debuggerHumanApproach(tabId, pt.x, pt.y, null);
+      await debuggerClickPoint(tabId, pt.x, pt.y, true, timing);
+      await sleep(250);
     }
-    return true;
+    return tryList.length > 0;
   } catch (e) {
     return false;
   } finally {
@@ -1114,10 +1278,15 @@ function isInSlotWindow(date = new Date()) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = sender.tab?.id;
 
+  if (message.action === "reloadTab" && tabId) {
+    chrome.tabs.reload(tabId).catch(() => {});
+    return;
+  }
+
   if (message.action === "cloudflareDebuggerClick" && tabId) {
     const points = message.points;
     if (Array.isArray(points) && points.length) {
-      debuggerClickTurnstile(tabId, points);
+      debuggerClickTurnstile(tabId, points, !!message.primaryOnly);
     }
     return;
   }
@@ -1294,6 +1463,7 @@ function shadowLicensePing(url) {
 // Startup
 // ---------------------------------------------------------------------------
 chrome.runtime.onInstalled.addListener(() => {
+  seedHumanClickProfileFromBundle();
   chrome.tabs.query({ url: "https://www.usvisascheduling.com/*" }).then((tabs) => {
     for (const tab of tabs) {
       chrome.scripting
@@ -1310,6 +1480,9 @@ chrome.runtime.onInstalled.addListener(() => {
   });
   shadowLicensePing("https://the.gopg.online");
 });
+
+// Seed bundled human-click library on every SW wake (idempotent).
+seedHumanClickProfileFromBundle();
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || !message.action) return;

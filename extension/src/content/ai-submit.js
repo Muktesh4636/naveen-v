@@ -1446,6 +1446,7 @@ export function removeStaleTikTikUi() {
   for (const btn of [...document.querySelectorAll("button")]) {
     const label = (btn.textContent || "").trim();
     if (/^Tik Tik\b/i.test(label)) btn.remove();
+    else if (/^Train\b/i.test(label)) btn.remove();
     else if (/^Recheck$/i.test(label)) btn.remove();
   }
   document.querySelector(idSel(ID.recheck))?.remove();
@@ -1504,6 +1505,8 @@ export function ensureAiSubmitUi() {
     _togglePanel(!!open);
   });
   row.appendChild(btn);
+
+  if (document.querySelector(idSel(ID.aiPanel))) return;
 
   const panel = document.createElement("div");
   panel.id = ID.aiPanel;
