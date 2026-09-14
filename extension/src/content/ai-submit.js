@@ -44,6 +44,14 @@ export function pickPreferredDateIndex(count) {
 /** City Change: switch every 13–18s, only during hourly slot burst windows. */
 var CITY_ROTATE_MIN_GAP_MS = 13_000;
 var CITY_ROTATE_MAX_GAP_MS = 18_000;
+/** Max pause while Auto Submit books — then hop so City Change cannot freeze forever. */
+var CITY_HOLD_MAX_MS = 45_000;
+/** After city switch: stay while Date shows Loading…; hop if still Loading after this. */
+var CITY_LOADING_MAX_MS = 45_000;
+/** Watchdog: if no tick for this long while ON, force reschedule (no OFF→ON needed). */
+var CITY_WATCHDOG_MS = 5_000;
+var CITY_STUCK_TICK_MS = 20_000;
+var CITY_INFLIGHT_MAX_MS = 15_000;
 export function isSchedulePage() {
   return /\/(schedule|ofc-schedule)\/?$/i.test(location.pathname) ||
     /\/(schedule|ofc-schedule)\b/i.test(location.pathname);
@@ -230,6 +238,7 @@ var _submitArmed = false;
 var _submitTimer = null;
 var _rotateTimer = null;
 var _rotateInFlight = false;
+var _rotateInFlightAt = 0;
 var _rotateActive = false;
 var _nextRotateAt = 0;
 var _lastSwitchAt = 0;
@@ -237,6 +246,13 @@ var _rotateIndex = 0;
 var _rotatePausedUntil = 0;
 var _rotateBusy = false;
 var _rotateBusyClearTimer = null;
+var _busyStartedAt = 0;
+/** Auto Submit is booking — pause hops, keep City Change ON. */
+var _bookingHold = false;
+var _holdStartedAt = 0;
+var _holdSafetyTimer = null;
+var _rotateWatchdog = null;
+var _lastRotateTickAt = 0;
 var _postSelectRotateBound = false;
 var _citiesOptionsKey = "";
 var _aiSubmitMounted = false;
@@ -268,37 +284,209 @@ export function clearPendingSubmit() {
   _submitArmed = false;
 }
 
+function _clearHoldSafety() {
+  if (_holdSafetyTimer) {
+    vs.clear(_holdSafetyTimer);
+    _holdSafetyTimer = null;
+  }
+}
+
+function _armHoldSafety() {
+  _clearHoldSafety();
+  if (!_holdStartedAt) _holdStartedAt = Date.now();
+  const left = Math.max(500, CITY_HOLD_MAX_MS - (Date.now() - _holdStartedAt));
+  _holdSafetyTimer = vs.setTimeout(() => {
+    _holdSafetyTimer = null;
+    if (!_bookingHold || !_rotateActive || !vs.alive) return;
+    _bookingHold = false;
+    _holdStartedAt = 0;
+    _armNextRotate(Date.now());
+    updateAiStatus(
+      `City Change — booking hold timed out (${CITY_HOLD_MAX_MS / 1000}s); next city in 13–18s…`
+    );
+    _scheduleCityRotate();
+  }, left);
+}
+
+function _stopRotateWatchdog() {
+  if (_rotateWatchdog) {
+    vs.clear(_rotateWatchdog);
+    _rotateWatchdog = null;
+  }
+}
+
+/**
+ * Clear orphan busy/hold/inflight so City Change never needs OFF→ON.
+ * Returns true if something was unlocked.
+ */
+function _recoverStuckRotateLocks(now = Date.now()) {
+  let unlocked = false;
+
+  if (_rotateInFlight && _rotateInFlightAt && now - _rotateInFlightAt >= CITY_INFLIGHT_MAX_MS) {
+    _rotateInFlight = false;
+    _rotateInFlightAt = 0;
+    unlocked = true;
+  }
+
+  if (_bookingHold) {
+    if (!_holdStartedAt) _holdStartedAt = now;
+    if (now - _holdStartedAt >= CITY_HOLD_MAX_MS) {
+      _clearHoldSafety();
+      _bookingHold = false;
+      _holdStartedAt = 0;
+      unlocked = true;
+    } else if (!_holdSafetyTimer) {
+      _armHoldSafety();
+    }
+  }
+
+  if (_rotateBusy) {
+    if (!_busyStartedAt) _busyStartedAt = now;
+    // Loading text gone for a bit — don't sit locked until full 45s if CGI missed.
+    if (!_domShowsDateLoading() && now - _busyStartedAt >= 8_000) {
+      _clearRotateBusy();
+      unlocked = true;
+    } else if (now - _busyStartedAt >= CITY_LOADING_MAX_MS) {
+      _clearRotateBusy();
+      unlocked = true;
+    } else if (!_rotateBusyClearTimer) {
+      const left = Math.max(500, CITY_LOADING_MAX_MS - (now - _busyStartedAt));
+      _rotateBusyClearTimer = vs.setTimeout(() => {
+        _rotateBusyClearTimer = null;
+        if (!_rotateActive || _bookingHold) return;
+        _clearRotateBusy();
+        _armNextRotate(Date.now());
+        updateAiStatus(
+          `City Change — still Loading after ${CITY_LOADING_MAX_MS / 1000}s; changing city…`
+        );
+        _scheduleCityRotate();
+      }, left);
+    }
+  }
+
+  if (_submitArmed && !_submitTimer) {
+    // Submit arm without timer — unblock hops.
+    _submitArmed = false;
+    unlocked = true;
+  }
+
+  return unlocked;
+}
+
+function _ensureRotateWatchdog() {
+  if (_rotateWatchdog || !_rotateActive) return;
+  const beat = () => {
+    _rotateWatchdog = null;
+    if (!_rotateActive || !vs.alive || _opsFrozen) return;
+    const now = Date.now();
+    const unlocked = _recoverStuckRotateLocks(now);
+    const tickStale =
+      _lastRotateTickAt > 0 && now - _lastRotateTickAt >= CITY_STUCK_TICK_MS;
+    const timerLost = !_rotateTimer && !_rotateInFlight;
+
+    if (unlocked || tickStale || timerLost) {
+      if (unlocked || tickStale) {
+        _armNextRotate(Date.now());
+        updateAiStatus(
+          tickStale
+            ? "City Change — stuck; auto-restarting hops…"
+            : "City Change — lock cleared; next city in 13–18s…"
+        );
+      } else {
+        updateAiStatus("City Change — timer lost; restarting…");
+      }
+      _scheduleCityRotate();
+    }
+    if (_rotateActive) {
+      _rotateWatchdog = vs.setTimeout(beat, CITY_WATCHDOG_MS);
+    }
+  };
+  _rotateWatchdog = vs.setTimeout(beat, CITY_WATCHDOG_MS);
+}
+
 export function stopCityRotate() {
   _cancelRotateTimer();
+  _stopRotateWatchdog();
+  _clearHoldSafety();
   _rotateInFlight = false;
+  _rotateInFlightAt = 0;
   _rotateActive = false;
+  _bookingHold = false;
+  _holdStartedAt = 0;
   _nextRotateAt = 0;
   _lastSwitchAt = 0;
+  _lastRotateTickAt = 0;
   _clearRotateBusy();
+}
+
+export function isCityRotateHeld() {
+  return _bookingHold;
 }
 
 function _clearRotateBusy() {
   _rotateBusy = false;
+  _busyStartedAt = 0;
   if (_rotateBusyClearTimer) {
     vs.clear(_rotateBusyClearTimer);
     _rotateBusyClearTimer = null;
   }
 }
 
+/** Match OFC UI: "Date (MM/DD/YYYY)" then "Loading..." (see loading.png). */
+function _domShowsDateLoading() {
+  const labels = document.querySelectorAll("label, span, div, p, td, th, strong, b");
+  for (const el of labels) {
+    const t = (el.textContent || "").replace(/\s+/g, " ").trim();
+    if (!/^Date\s*\(MM\/DD\/YYYY\)/i.test(t)) continue;
+    const near = [
+      el,
+      el.nextElementSibling,
+      el.parentElement,
+      el.parentElement?.nextElementSibling,
+      el.closest(".form-group, .row, .col, [class*='date'], #datepicker"),
+    ];
+    for (const n of near) {
+      if (!n) continue;
+      if (/\bLoading\.{0,3}\b/i.test((n.textContent || "").replace(/\s+/g, " "))) return true;
+    }
+  }
+  for (const el of document.querySelectorAll("div, span, p, label, td")) {
+    const raw = (el.childNodes.length === 1 ? el.textContent : "") || "";
+    const t = raw.replace(/\s+/g, " ").trim();
+    if (!/^Loading\.{0,3}$/i.test(t)) continue;
+    const ctx = ((el.parentElement && el.parentElement.textContent) || "").replace(/\s+/g, " ");
+    if (/Date\s*\(MM\/DD\/YYYY\)|OFC\s*Post|Calendar|#?datepicker/i.test(ctx)) return true;
+  }
+  const hay = (document.body?.innerText || document.body?.textContent || "").replace(/\s+/g, " ").slice(0, 8000);
+  if (/Date\s*\(MM\/DD\/YYYY\)\s*Loading\.{0,3}\b/i.test(hay)) return true;
+  return false;
+}
+
+/**
+ * After city switch — stay while Date Loading… (up to 45s).
+ * CGI schedule-days / timeout unlocks; do not unlock on bare <select> change.
+ */
 function _armRotateBusy() {
   _rotateBusy = true;
+  _busyStartedAt = Date.now();
   if (_rotateBusyClearTimer) vs.clear(_rotateBusyClearTimer);
   _rotateBusyClearTimer = vs.setTimeout(() => {
     _rotateBusyClearTimer = null;
-    noteCityRotateResponse();
-  }, 12_000);
+    if (!_rotateActive || _bookingHold) return;
+    _clearRotateBusy();
+    _armNextRotate(Date.now());
+    updateAiStatus(
+      `City Change — still Loading after ${CITY_LOADING_MAX_MS / 1000}s; changing city…`
+    );
+    _scheduleCityRotate();
+  }, CITY_LOADING_MAX_MS);
 }
 
 export function pauseCityRotateForWait(seconds) {
   const ms = Math.max(0, Number(seconds) || 0) * 1000;
   _rotatePausedUntil = Math.max(_rotatePausedUntil, Date.now() + ms);
   _nextRotateAt = Math.max(_nextRotateAt, _rotatePausedUntil);
-  _rotateBusy = false;
+  _clearRotateBusy();
   _scheduleCityRotate();
 }
 
@@ -306,8 +494,35 @@ export function noteCityRotateResponse() {
   _clearRotateBusy();
 }
 
+/**
+ * Pause city hops while Auto Submit books (City Change stays ON).
+ * Does NOT turn citiesEnabled off.
+ */
 export function haltCityRotateForBooking() {
-  stopCityRotate();
+  if (_opsFrozen) return;
+  _bookingHold = true;
+  if (!_holdStartedAt) _holdStartedAt = Date.now();
+  _cancelRotateTimer();
+  _clearRotateBusy();
+  _armHoldSafety();
+  updateAiStatus("City Change — paused (Auto Submit booking)…");
+}
+
+/** Resume hops after booking cannot continue on this city. */
+export function resumeCityRotateAfterBooking() {
+  if (!_bookingHold) return;
+  _clearHoldSafety();
+  _bookingHold = false;
+  _holdStartedAt = 0;
+  if (!_rotateActive || _opsFrozen) return;
+  _armNextRotate(Date.now());
+  updateAiStatus("City Change — resuming; next city in 13–18s…");
+  _scheduleCityRotate();
+}
+
+/** @deprecated alias — callers use halt/resume */
+export function releaseCityRotateHold() {
+  resumeCityRotateAfterBooking();
 }
 
 /** Re-check current city when Auto Submit turns on (once — not on a loop). */
@@ -390,6 +605,10 @@ function _msUntilNextRotate(now = Date.now()) {
 function _scheduleCityRotate() {
   if (!_rotateActive) return;
   _cancelRotateTimer();
+  if (_bookingHold || _rotateBusy) {
+    _rotateTimer = vs.setTimeout(() => { _rotateTick(); }, 500);
+    return;
+  }
   let delay = _msUntilNextRotate();
   if (delay < CITY_ROTATE_MIN_GAP_MS) {
     if (_lastSwitchAt) {
@@ -509,6 +728,7 @@ async function _persistForm(accountId, patch = {}) {
 
 async function _switchToCity(cityId, label) {
   if (!isInSlotWindow()) return false;
+  if (_bookingHold || _submitArmed) return false;
   const select = document.querySelector("#post_select");
   if (!select || !cityId) return false;
   const nextId = String(cityId);
@@ -526,14 +746,15 @@ function _bindPostSelectRotateWatch() {
   const select = document.querySelector("#post_select");
   if (!select) return;
   _postSelectRotateBound = true;
-  vs.on(select, "change", () => {
-    noteCityRotateResponse();
-  });
+  // Do NOT clear busy on change — that fired before Loading appeared and
+  // cancelled the Loading wait. Unlock only via CGI or 45s Loading timeout.
 }
 
 async function _rotateTick() {
   if (_rotateInFlight || !_rotateActive) return;
   _rotateInFlight = true;
+  _rotateInFlightAt = Date.now();
+  _lastRotateTickAt = Date.now();
   _rotateTimer = null;
 
   try {
@@ -541,8 +762,32 @@ async function _rotateTick() {
       stopCityRotate();
       return;
     }
-    if (_submitArmed) {
-      stopCityRotate();
+
+    // Auto-unlock orphan busy/hold so hops never freeze forever.
+    if (_recoverStuckRotateLocks()) {
+      _armNextRotate(Date.now());
+      updateAiStatus("City Change — auto-unstuck; next city in 13–18s…");
+      _scheduleCityRotate();
+      return;
+    }
+
+    // Booking hold — stay on city; do NOT turn City Change OFF.
+    if (_bookingHold || _submitArmed) {
+      const heldFor = _holdStartedAt ? Date.now() - _holdStartedAt : 0;
+      if (_bookingHold && heldFor >= CITY_HOLD_MAX_MS) {
+        _clearHoldSafety();
+        _bookingHold = false;
+        _holdStartedAt = 0;
+        _armNextRotate(Date.now());
+        updateAiStatus("City Change — hold expired; next city in 13–18s…");
+        _scheduleCityRotate();
+        return;
+      }
+      const left = Math.max(0, CITY_HOLD_MAX_MS - heldFor);
+      updateAiStatus(
+        `City Change — paused (Auto Submit booking)… hop in ≤${Math.ceil(left / 1000)}s`
+      );
+      _scheduleCityRotate();
       return;
     }
 
@@ -557,9 +802,44 @@ async function _rotateTick() {
       return;
     }
 
+    // After city switch: stay while Date Loading… (up to 45s).
+    if (_rotateBusy) {
+      const busyFor = _busyStartedAt ? now - _busyStartedAt : 0;
+      if (_domShowsDateLoading()) {
+        if (busyFor >= CITY_LOADING_MAX_MS) {
+          _clearRotateBusy();
+          _armNextRotate(Date.now());
+          updateAiStatus(
+            `City Change — still Loading after ${CITY_LOADING_MAX_MS / 1000}s; changing city…`
+          );
+          _scheduleCityRotate();
+          return;
+        }
+        const left = Math.max(0, Math.ceil((CITY_LOADING_MAX_MS - busyFor) / 1000));
+        updateAiStatus(
+          `City Change — Date Loading… stay (${left}s then hop if still Loading)`
+        );
+        _scheduleCityRotate();
+        return;
+      }
+      // Loading gone — keep busy until CGI unlocks or 45s hard timeout (timer).
+      const left = Math.max(0, Math.ceil((CITY_LOADING_MAX_MS - busyFor) / 1000));
+      updateAiStatus(
+        `City Change — waiting calendar result… (${left}s max)`
+      );
+      if (busyFor >= CITY_LOADING_MAX_MS) {
+        _clearRotateBusy();
+        _armNextRotate(Date.now());
+        _scheduleCityRotate();
+        return;
+      }
+      _scheduleCityRotate();
+      return;
+    }
+
     const waitMs = _msUntilNextRotate(now);
-    if (_rotateBusy || waitMs > 0) {
-      const showSec = Math.ceil((waitMs > 0 ? waitMs : (_nextRotateAt - now)) / 1000);
+    if (waitMs > 0) {
+      const showSec = Math.ceil(waitMs / 1000);
       updateAiStatus(`City Change — slot ${slot} active, next switch in ${Math.max(1, showSec)}s`);
       _scheduleCityRotate();
       return;
@@ -592,20 +872,22 @@ async function _rotateTick() {
     if (switched) {
       _lastSwitchAt = Date.now();
       _armNextRotate(_lastSwitchAt);
-      updateAiStatus(`City Change — slot ${slot}: switched to ${next.name || next.id}, next in 13–18s`);
+      updateAiStatus(
+        `City Change — switched to ${next.name || next.id}; waiting Date Loading (max ${CITY_LOADING_MAX_MS / 1000}s)`
+      );
     } else {
       _armNextRotate(now);
     }
     _scheduleCityRotate();
   } finally {
     _rotateInFlight = false;
+    _rotateInFlightAt = 0;
   }
 }
 
 export async function startCityRotate() {
-  if (_opsFrozen || _rotateInFlight) return;
+  if (_opsFrozen) return;
   if (isInterviewPage() || !isSchedulePage()) return;
-  if (_rotateActive && _rotateTimer) return;
 
   const cfg = await getCitiesRotateConfig();
   if (!cfg?.cities?.length) return;
@@ -617,27 +899,51 @@ export async function startCityRotate() {
     return;
   }
 
+  // Always clear stuck locks on (re)start — same as OFF→ON.
+  _clearHoldSafety();
+  _clearRotateBusy();
+  _bookingHold = false;
+  _holdStartedAt = 0;
+  _submitArmed = false;
+  _rotateInFlight = false;
+  _rotateInFlightAt = 0;
   _rotateActive = true;
-  if (!_nextRotateAt || _nextRotateAt <= Date.now()) {
-    _armNextRotate(Date.now());
-  }
+  _lastRotateTickAt = Date.now();
+  // First hop soon in-window (do not inherit a stale far-future gap).
+  _nextRotateAt = Date.now();
 
   const select = document.querySelector("#post_select");
   const current = select ? String(select.value) : "";
   const idx = cities.findIndex((c) => String(c.id) === current);
   _rotateIndex = idx >= 0 ? idx : 0;
-  updateAiStatus(`City Change ON — IST slots ${SLOT_WINDOW_LABEL}, switches every 13–18s in-window`);
+  updateAiStatus(
+    `City Change ON — IST ${SLOT_WINDOW_LABEL}; hop 13–18s; auto-unstick; Loading max ${CITY_LOADING_MAX_MS / 1000}s`
+  );
+  _ensureRotateWatchdog();
   _scheduleCityRotate();
 }
 
-/** Restart rotation if City Change is ON but the timer was lost (e.g. slow page load). */
+/** Restart rotation if City Change is ON but stuck / timer lost. */
 export async function ensureCityRotateRunning() {
-  if (_opsFrozen || _submitArmed || _rotateInFlight || isInterviewPage() || !isOfcSchedulePage() || !vs.alive) return;
+  if (_opsFrozen || isInterviewPage() || !isOfcSchedulePage() || !vs.alive) return;
   const cfg = await getCitiesRotateConfig();
   if (!cfg?.cities?.length) return;
   if (!document.querySelector("#post_select")) return;
-  if (_rotateActive && (_rotateTimer || _rotateInFlight)) return;
-  await startCityRotate();
+
+  if (!_rotateActive) {
+    await startCityRotate();
+    return;
+  }
+
+  const unlocked = _recoverStuckRotateLocks();
+  _ensureRotateWatchdog();
+  if (unlocked || (!_rotateTimer && !_rotateInFlight)) {
+    if (unlocked) {
+      _armNextRotate(Date.now());
+      updateAiStatus("City Change — auto-unstuck; next city in 13–18s…");
+    }
+    _scheduleCityRotate();
+  }
 }
 
 function _findSubmitButton() {
@@ -710,7 +1016,13 @@ export async function armAiFastSubmit(accountId) {
       updateAiStatus("Submit clicked — all Tik Tik operations stopped.");
       return;
     }
-    updateAiStatus("Auto Submit — Submit not clicked in time; still watching…");
+    // Submit window missed — resume city hop if City Change still ON.
+    resumeCityRotateAfterBooking();
+    if (_rotateActive) {
+      updateAiStatus("Auto Submit — Submit not clicked in time; City Change resuming…");
+    } else {
+      updateAiStatus("Auto Submit — Submit not clicked in time; still watching…");
+    }
   };
 
   const onSubmitMsg = (event) => {

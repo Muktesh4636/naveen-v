@@ -9,6 +9,7 @@ import {
   getArmedAiConfig,
   getCitiesRotateConfig,
   haltCityRotateForBooking,
+  resumeCityRotateAfterBooking,
   isInterviewPage,
   isOpsFrozen,
   noteCityRotateResponse,
@@ -174,10 +175,32 @@ function normalizeScheduleTime(raw) {
   return s;
 }
 
-/** Ultra mode: always pick 1st available slot (fastest). */
+/** Availability score for a schedule entry. */
+function _slotAvailability(entry) {
+  const n = Number(entry?.EntriesAvailable);
+  return Number.isFinite(n) ? n : -1;
+}
+
+/**
+ * Pick time slot by availability rank:
+ * - 1 slot → that slot (no choice)
+ * - 2+ slots → 2nd highest availability (not the top)
+ * Ties broken by earlier time (stable sort).
+ */
 function pickScheduleSlot(entries) {
-  if (!entries?.length) return { entry: null, slotIndex: AI_BOOK_SLOT_INDEX };
-  return { entry: entries[0], slotIndex: AI_BOOK_SLOT_INDEX };
+  if (!entries?.length) return { entry: null, slotIndex: 0 };
+  if (entries.length === 1) return { entry: entries[0], slotIndex: 0 };
+
+  const ranked = entries
+    .map((entry, index) => ({ entry, index, avail: _slotAvailability(entry) }))
+    .sort((a, b) => {
+      if (b.avail !== a.avail) return b.avail - a.avail;
+      return a.index - b.index; // same avail → earlier row
+    });
+
+  // 2nd highest (index 1 in ranked list)
+  const pick = ranked[1] || ranked[0];
+  return { entry: pick.entry, slotIndex: pick.index };
 }
 
 const TIME_SLOT_SELECTOR = [
@@ -309,7 +332,9 @@ export async function autoSelectFirstTime(scheduleEntries, hasError = false) {
   const time = normalizeScheduleTime(entry.Time);
   const date = entry.Date ? String(entry.Date).slice(0, 10) : null;
 
-  setTikTikStatus(`Waiting for time slots… (pick #${slotIndex + 1})`);
+  setTikTikStatus(
+    `Waiting for time slots… (2nd-highest avail ${entry.EntriesAvailable ?? "?"} @ ${time}, pick #${slotIndex + 1})`
+  );
 
   // Wait until portal paints slots for this date (poll 50ms, up to 10s).
   const slotDeadline = Date.now() + 10000;
@@ -328,7 +353,9 @@ export async function autoSelectFirstTime(scheduleEntries, hasError = false) {
   });
 
   if (picked || isTimeSlotPicked()) {
-    setTikTikStatus(`Time slot #${slotIndex + 1} selected — Submit in ${AI_BOOK_SUBMIT_WAIT_MS}ms…`);
+    setTikTikStatus(
+      `Time ${time} selected (availability ${entry.EntriesAvailable ?? "?"}) — Submit in ${AI_BOOK_SUBMIT_WAIT_MS}ms…`
+    );
   } else {
     setTikTikStatus("Time table visible but slot click failed — retrying…");
     vs.send({
@@ -444,14 +471,24 @@ export async function handleEvent(event) {
       hasError: parsed.response.HasError,
     });
 
-    // If Auto Submit has a matching date, pause city rotate while booking.
+    // If Auto Submit has a matching date, pause city hop while booking (keep City Change ON).
+    // Otherwise resume hop so we don't leave forever on a dead city.
     if (ai && !parsed.response.HasError) {
       const inRange = filterDaysInAiRange(parsed.response.ScheduleDays, ai.from, ai.to);
-      if (inRange.length) haltCityRotateForBooking();
+      if (inRange.length) {
+        haltCityRotateForBooking();
+      } else {
+        resumeCityRotateAfterBooking();
+      }
+    } else if (ai) {
+      // No slots / error — hop OK
+      resumeCityRotateAfterBooking();
     }
 
     const pickedDate = await autoSelectFirstDate(parsed.response.ScheduleDays, parsed.response.HasError);
     if (pickedDate) {
+      // Stay held through time pick + Submit
+      haltCityRotateForBooking();
       await notifyTelegramCalendarScreenshot(post?.Name, pickedDate);
     } else if (ai && !parsed.response.HasError) {
       const days = (parsed.response.ScheduleDays || [])
@@ -459,9 +496,11 @@ export async function handleEvent(event) {
         .filter(Boolean);
       const inRange = days.filter((d) => dateInRange(d, ai.from, ai.to));
       if (days.length && !inRange.length) {
-        setTikTikStatus(`Dates found but none in ${ai.from} → ${ai.to}. Widen your range in Tik Tik.`);
+        resumeCityRotateAfterBooking();
+        setTikTikStatus(`Dates found but none in ${ai.from} → ${ai.to}. Next city in 13–18s…`);
       } else if (!days.length) {
-        setTikTikStatus("No dates on this city yet.");
+        resumeCityRotateAfterBooking();
+        setTikTikStatus("No dates on this city — next city in 13–18s…");
       }
     }
     await submitContribution();
@@ -487,11 +526,17 @@ export async function handleEvent(event) {
     await autoSelectFirstTime(parsed.response.ScheduleEntries, parsed.response.HasError);
     const entries = (parsed.response.ScheduleEntries || []).filter((e) => e && e.Time);
     if (entries.length) {
+      // Keep hold while time → Submit runs
+      haltCityRotateForBooking();
       await notifyTelegramTimeScreenshot(
         post?.Name,
         parsed.params.Date,
         entries.length
       );
+    } else {
+      // No time slots on this date — resume city hop
+      resumeCityRotateAfterBooking();
+      setTikTikStatus("No time slots on this date — next city in 13–18s…");
     }
     await submitContribution();
   }
