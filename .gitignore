@@ -24,6 +24,10 @@ extension/dist/
 *.zip
 *.crx
 
+# Folder upload site storage
+folder-upload/uploads/
+!folder-upload/uploads/.gitkeep
+
 # Local debug media (PII screenshots / recordings)
 *.jpeg
 *.jpg

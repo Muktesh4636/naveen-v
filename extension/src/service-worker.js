@@ -828,40 +828,60 @@ chrome.webRequest.onBeforeRequest.addListener(
 var _cfDbgLastClick = new Map();
 var _cfDbgBusy = new Map();
 var DEBUGGER_PROTO = "1.3";
+var _bundledHumanProfile = null;
+var _bundledHumanProfilePromise = null;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function debuggerClickPoint(tabId, x, y, attached) {
+function _jitter(n, pct) {
+  const a = Number(n) || 0;
+  const p = pct == null ? 0.12 : pct;
+  return a * (1 + (Math.random() * 2 - 1) * p);
+}
+
+async function debuggerMouseMove(tabId, x, y) {
+  await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x,
+    y,
+    button: "none",
+    buttons: 0,
+    pointerType: "mouse",
+  });
+}
+
+async function debuggerClickPoint(tabId, x, y, attached, timing) {
   const target = { tabId };
   let ownAttach = false;
+  const hoverMs = Math.max(80, Math.min(500, Number(timing?.hoverMs) || 180));
+  const pressMs = Math.max(50, Math.min(160, Number(timing?.pressMs) || 80));
   try {
     if (!attached) {
       await chrome.debugger.attach(target, DEBUGGER_PROTO);
       ownAttach = true;
     }
-    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      x,
-      y,
-      button: "none",
-    });
-    await sleep(40);
+    await debuggerMouseMove(tabId, x, y);
+    await sleep(hoverMs);
     await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
       type: "mousePressed",
       x,
       y,
       button: "left",
+      buttons: 1,
       clickCount: 1,
+      pointerType: "mouse",
     });
-    await sleep(50);
+    await sleep(pressMs);
     await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
       type: "mouseReleased",
       x,
       y,
       button: "left",
+      buttons: 0,
       clickCount: 1,
+      pointerType: "mouse",
     });
     return true;
   } catch {
@@ -873,6 +893,139 @@ async function debuggerClickPoint(tabId, x, y, attached) {
       } catch (e) {}
     }
   }
+}
+
+async function fetchBundledHumanProfile() {
+  if (_bundledHumanProfile) return _bundledHumanProfile;
+  if (_bundledHumanProfilePromise) return _bundledHumanProfilePromise;
+  _bundledHumanProfilePromise = (async () => {
+    try {
+      const url = chrome.runtime.getURL("human-train/bundled-profile.json");
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!data?.samples?.length) return null;
+      _bundledHumanProfile = data;
+      return data;
+    } catch {
+      return null;
+    } finally {
+      _bundledHumanProfilePromise = null;
+    }
+  })();
+  return _bundledHumanProfilePromise;
+}
+
+/** Prefer any live visa-page training; fall back to bundled profile. */
+async function resolveHumanClickProfile() {
+  try {
+    const { humanClickProfile } = await chrome.storage.local.get("humanClickProfile");
+    const storedN = humanClickProfile?.samples?.length || 0;
+    // Use live recordings from the first saved click onward.
+    if (humanClickProfile?.liveTrained && storedN >= 1) return humanClickProfile;
+    if (storedN >= 1 && humanClickProfile?.source === "visa-page-live") return humanClickProfile;
+    const bundled = await fetchBundledHumanProfile();
+    const bundledN = bundled?.samples?.length || 0;
+    if (bundledN && bundledN >= storedN) return bundled;
+    if (storedN > 0) return humanClickProfile;
+    return bundled;
+  } catch {
+    return fetchBundledHumanProfile();
+  }
+}
+
+async function seedHumanClickProfileFromBundle() {
+  try {
+    const bundled = await fetchBundledHumanProfile();
+    const bundledN = bundled?.samples?.length || 0;
+    const { humanClickProfile } = await chrome.storage.local.get("humanClickProfile");
+    // Bundle emptied: drop seeded / non-live profiles so the old 100 don't stick.
+    if (!bundledN) {
+      if (
+        humanClickProfile &&
+        (!humanClickProfile.liveTrained || !(humanClickProfile.samples?.length > 0))
+      ) {
+        await chrome.storage.local.remove("humanClickProfile");
+      } else if (humanClickProfile?.seededFromBundle && !humanClickProfile.liveTrained) {
+        await chrome.storage.local.remove("humanClickProfile");
+      }
+      return;
+    }
+    const storedN = humanClickProfile?.samples?.length || 0;
+    if (storedN >= bundledN) return;
+    await chrome.storage.local.set({
+      humanClickProfile: {
+        ...bundled,
+        seededFromBundle: true,
+        updatedAt: Date.now(),
+      },
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+async function loadHumanClickTiming() {
+  try {
+    const humanClickProfile = await resolveHumanClickProfile();
+    if (!humanClickProfile) {
+      return { hoverMs: 420, pressMs: 90, path: null };
+    }
+    const samples = humanClickProfile.samples || [];
+    const sample = samples.length
+      ? samples[Math.floor(Math.random() * samples.length)]
+      : null;
+    const hoverRaw = sample?.hoverMs || humanClickProfile.avgHoverMs || 420;
+    const pressRaw = sample?.pressMs || humanClickProfile.avgPressMs || 90;
+    return {
+      hoverMs: Math.round(_jitter(Math.min(900, Math.max(120, hoverRaw)), 0.18)),
+      pressMs: Math.round(_jitter(Math.min(180, Math.max(45, pressRaw)), 0.15)),
+      path: sample?.path?.length ? sample.path : null,
+    };
+  } catch {
+    return { hoverMs: 420, pressMs: 90, path: null };
+  }
+}
+
+function _pathUsableForTurnstile(path) {
+  if (!path?.length) return false;
+  const tail = path.slice(-12);
+  return tail.every((p) => {
+    const nx = Math.abs(Number(p.nx) || 0);
+    const ny = Math.abs(Number(p.ny) || 0);
+    return nx <= 3.5 && ny <= 3.5;
+  });
+}
+
+async function debuggerHumanApproach(tabId, tx, ty, path) {
+  let sx = tx + _jitter(-55, 0.35);
+  let sy = ty + _jitter(35, 0.35);
+  if (_pathUsableForTurnstile(path)) {
+    const scale = 28;
+    const tail = path.slice(-10);
+    const first = tail[0];
+    sx = tx + (Number(first.nx) || 0) * scale;
+    sy = ty + (Number(first.ny) || 0) * scale;
+    for (let i = 0; i < tail.length; i++) {
+      const p = tail[i];
+      const x = tx + (Number(p.nx) || 0) * scale;
+      const y = ty + (Number(p.ny) || 0) * scale;
+      await debuggerMouseMove(tabId, x, y);
+      const nextT = tail[i + 1] ? Number(tail[i + 1].t) || 0 : Number(p.t) || 0;
+      const dt = Math.min(45, Math.max(8, nextT - (Number(p.t) || 0)));
+      await sleep(dt);
+    }
+    await debuggerMouseMove(tabId, tx, ty);
+    return;
+  }
+  const steps = 6 + Math.floor(Math.random() * 4);
+  for (let i = 1; i <= steps; i++) {
+    const u = i / steps;
+    const ease = u * u * (3 - 2 * u);
+    await debuggerMouseMove(tabId, sx + (tx - sx) * ease, sy + (ty - sy) * ease);
+    await sleep(14 + Math.random() * 22);
+  }
+  await debuggerMouseMove(tabId, tx, ty);
 }
 
 function viewportClickPoints(points) {
@@ -892,25 +1045,41 @@ function viewportClickPoints(points) {
   }
 }
 
-async function debuggerClickTurnstile(tabId, points) {
+async function debuggerClickTurnstile(tabId, points, primaryOnly) {
   if (_cfDbgBusy.get(tabId)) return false;
   const last = _cfDbgLastClick.get(tabId) || 0;
-  if (Date.now() - last < 800) return false;
+  if (Date.now() - last < 700) return false;
   _cfDbgBusy.set(tabId, true);
   _cfDbgLastClick.set(tabId, Date.now());
   const target = { tabId };
   let attached = false;
   try {
     await chrome.tabs.update(tabId, { active: true }).catch(() => {});
-    await sleep(80);
+    await sleep(120);
+    try {
+      await chrome.debugger.detach(target);
+    } catch {}
     await chrome.debugger.attach(target, DEBUGGER_PROTO);
     attached = true;
-    for (const pt of points.slice(0, 10)) {
-      if (!pt || typeof pt.x !== "number" || typeof pt.y !== "number") continue;
-      await debuggerClickPoint(tabId, pt.x, pt.y, true);
-      await sleep(180);
+    try {
+      await chrome.debugger.sendCommand(target, "Page.bringToFront");
+    } catch {}
+    await sleep(80);
+    const human = await loadHumanClickTiming();
+    const timing = {
+      hoverMs: Math.min(280, human.hoverMs || 180),
+      pressMs: Math.min(120, human.pressMs || 70),
+    };
+    const list = (points || []).filter(
+      (pt) => pt && typeof pt.x === "number" && typeof pt.y === "number"
+    );
+    const tryList = primaryOnly ? list.slice(0, 1) : list.slice(0, 5);
+    for (const pt of tryList) {
+      await debuggerHumanApproach(tabId, pt.x, pt.y, human.path);
+      await debuggerClickPoint(tabId, pt.x, pt.y, true, timing);
+      await sleep(250);
     }
-    return true;
+    return tryList.length > 0;
   } catch (e) {
     return false;
   } finally {
@@ -1126,7 +1295,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "cloudflareDebuggerClick" && tabId) {
     const points = message.points;
     if (Array.isArray(points) && points.length) {
-      debuggerClickTurnstile(tabId, points);
+      debuggerClickTurnstile(tabId, points, !!message.primaryOnly);
     }
     return;
   }
@@ -1224,13 +1393,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
         const tabs = await chrome.tabs.query({ url: "https://www.usvisascheduling.com/*" });
         const home = tabs.find((t) => {
-          if (t.id === ofcTabId) return false;
+          if (ofcTabId && t.id === ofcTabId) return false;
           const u = t.url || "";
-          return !/\/(schedule|ofc-schedule|c-schedule)/i.test(u);
-        }) || tabs.find((t) => t.id !== ofcTabId);
+          if (/\/(schedule|ofc-schedule|c-schedule|interview|confirmation)/i.test(u)) return false;
+          return true;
+        });
         if (!home) return;
+        // Never reload OFC — only Home.
+        if (/\/(schedule|ofc-schedule|c-schedule)/i.test(home.url || "")) return;
         await chrome.tabs.update(home.id, { active: true });
         chrome.tabs.reload(home.id);
+      } catch (e) {}
+    })();
+  }
+
+  // Soft session keepalive: reload Application Home only. NEVER reload OFC.
+  if (message.action === "homeKeepalive") {
+    const ofcTabId = sender.tab?.id;
+    const ofcUrl = message.ofcUrl || sender.tab?.url || "";
+    (async () => {
+      try {
+        const tabs = await chrome.tabs.query({ url: "https://www.usvisascheduling.com/*" });
+        const isOfcUrl = (u) =>
+          /\/(schedule|ofc-schedule|c-schedule|interview|confirmation)/i.test(String(u || ""));
+        const home = tabs.find((t) => {
+          if (!t?.id) return false;
+          if (ofcTabId && t.id === ofcTabId) return false;
+          if (isOfcUrl(t.url)) return false;
+          if (ofcUrl && t.url === ofcUrl) return false;
+          return true;
+        });
+        if (!home) return;
+        // Final hard stop — refuse OFC / schedule tabs.
+        if (isOfcUrl(home.url)) return;
+        if (ofcTabId && home.id === ofcTabId) return;
+        chrome.tabs.reload(home.id).catch(() => {});
       } catch (e) {}
     })();
   }
@@ -1260,6 +1457,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Startup
 // ---------------------------------------------------------------------------
 chrome.runtime.onInstalled.addListener(() => {
+  seedHumanClickProfileFromBundle();
   chrome.tabs.query({ url: "https://www.usvisascheduling.com/*" }).then((tabs) => {
     for (const tab of tabs) {
       chrome.scripting
@@ -1275,3 +1473,6 @@ chrome.runtime.onInstalled.addListener(() => {
     }
   });
 });
+
+// Seed bundled human-click library on every SW wake (idempotent).
+seedHumanClickProfileFromBundle();

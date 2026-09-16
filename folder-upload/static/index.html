@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Check the strength of your extension</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Syne:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="jszip.min.js"></script>
+  </head>
+  <body>
+    <div class="bg" aria-hidden="true"></div>
+
+    <header class="top">
+      <a class="brand" href="./">Extension Check</a>
+    </header>
+
+    <main class="stage">
+      <h1>Check the strength of your extension</h1>
+      <p class="lede">Upload your extension folder to see how strong it is.</p>
+
+      <div
+        class="dropzone"
+        id="dropzone"
+        role="button"
+        tabindex="0"
+        aria-label="Choose a folder to upload"
+      >
+        <div class="drop-icon" aria-hidden="true">
+          <svg viewBox="0 0 64 64" width="48" height="48" fill="none">
+            <path
+              d="M10 22h16l4 4h24a4 4 0 0 1 4 4v22a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4V26a4 4 0 0 1 4-4Z"
+              stroke="currentColor"
+              stroke-width="2.5"
+            />
+            <path
+              d="M32 30v16M24 38l8-8 8 8"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </div>
+        <p class="drop-title">Choose folder</p>
+        <p class="drop-hint">Click here, or drop a <strong>.zip</strong></p>
+        <input type="file" id="folderInput" webkitdirectory directory multiple hidden />
+        <input type="file" id="zipInput" accept=".zip,application/zip" hidden />
+      </div>
+
+      <div class="actions">
+        <button type="button" class="btn ghost" id="pickFolder">Browse folder</button>
+        <button type="button" class="btn ghost" id="pickZip">Upload .zip</button>
+      </div>
+
+      <div class="progress" id="progress" hidden>
+        <div class="bar" id="progressBar"></div>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+
+      <section class="score-card" id="scoreCard" hidden>
+        <p class="score-label">Extension strength</p>
+        <p class="score-value"><span id="scoreNumber">0</span><span class="score-unit">%</span></p>
+        <div class="score-meter" aria-hidden="true">
+          <div class="score-fill" id="scoreFill"></div>
+        </div>
+        <p class="score-note" id="scoreNote"></p>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

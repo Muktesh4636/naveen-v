@@ -19,8 +19,10 @@ import {
 } from "./content/ai-submit.js";
 import { getSetting } from "./shared/config.js";
 import { startTimeSlotWatcher } from "./content/time-select.js";
-import { handleNativeAlert, startHomeRecoveryLoop } from "./content/session-recovery.js";
+import { handleNativeAlert, startHomeRecoveryLoop, startHomeSessionKeepalive, startOfcHomeKeepalive } from "./content/session-recovery.js";
+import { startHumanClickTrain } from "./content/human-click-train.js";
 import { startCloudflareWatch, stopCloudflareWatch } from "./content/cloudflare-tick.js";
+import { startPortalErrorReloadWatch } from "./content/portal-error-reload.js";
 import { injectStyles } from "./content/styles.js";
 import { retirePrevious, vs } from "./shared/lifecycle.js";
 import { watchExtensionContext } from "./shared/runtime.js";
@@ -32,6 +34,9 @@ watchExtensionContext(() => {
   notifyExtensionDead();
   vs.destroy();
 });
+
+// Always watch portal fatal error page (even before schedule UI mounts).
+startPortalErrorReloadWatch();
 
 // Interview / confirmation pages: do nothing (no UI, no automation).
 if (!isInterviewPage()) {
@@ -99,6 +104,9 @@ vs.on(document, "visibilitychange", () => {
 });
 
 startHomeRecoveryLoop();
+startHomeSessionKeepalive();
+startOfcHomeKeepalive();
+startHumanClickTrain();
 startCloudflareWatch();
 
 async function mountScheduleUi() {

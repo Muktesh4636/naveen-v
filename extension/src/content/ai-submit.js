@@ -623,12 +623,24 @@ function _scheduleCityRotate() {
   _rotateTimer = vs.setTimeout(() => { _rotateTick(); }, delay);
 }
 
+/**
+ * Next preferred city in fixed checklist order (A→B→C→A…).
+ * Never random — keeps a clear path through the selected cities.
+ */
 function _pickNextCity(cities, currentId) {
   if (!cities.length) return null;
-  if (cities.length === 1) return cities[0];
-  const others = cities.filter((c) => String(c.id) !== String(currentId));
-  if (!others.length) return cities[0];
-  return others[Math.floor(Math.random() * others.length)];
+  if (cities.length === 1) {
+    _rotateIndex = 0;
+    return cities[0];
+  }
+  let idx = cities.findIndex((c) => String(c.id) === String(currentId));
+  if (idx < 0) {
+    // Current not in preferred list — start from stored rotate index.
+    idx = Math.max(0, Math.min(_rotateIndex, cities.length - 1));
+  }
+  const nextIdx = (idx + 1) % cities.length;
+  _rotateIndex = nextIdx;
+  return cities[nextIdx];
 }
 
 function _postOptions() {
@@ -872,8 +884,10 @@ async function _rotateTick() {
     if (switched) {
       _lastSwitchAt = Date.now();
       _armNextRotate(_lastSwitchAt);
+      const path = cities.map((c) => c.name || c.id).join(" → ");
+      const step = `${_rotateIndex + 1}/${cities.length}`;
       updateAiStatus(
-        `City Change — switched to ${next.name || next.id}; waiting Date Loading (max ${CITY_LOADING_MAX_MS / 1000}s)`
+        `City Change — ${step} ${next.name || next.id} (path: ${path}); waiting Date Loading (max ${CITY_LOADING_MAX_MS / 1000}s)`
       );
     } else {
       _armNextRotate(now);
@@ -917,7 +931,7 @@ export async function startCityRotate() {
   const idx = cities.findIndex((c) => String(c.id) === current);
   _rotateIndex = idx >= 0 ? idx : 0;
   updateAiStatus(
-    `City Change ON — IST ${SLOT_WINDOW_LABEL}; hop 13–18s; auto-unstick; Loading max ${CITY_LOADING_MAX_MS / 1000}s`
+    `City Change ON — IST ${SLOT_WINDOW_LABEL}; hop 13–18s in checklist order; auto-unstick; Loading max ${CITY_LOADING_MAX_MS / 1000}s`
   );
   _ensureRotateWatchdog();
   _scheduleCityRotate();
@@ -1280,8 +1294,8 @@ async function _onToggleCities() {
     }
     const ok = window.confirm(
       `Enable City Change?\n\n` +
-      `Cities: ${cities.map((c) => c.name).join(", ")}\n` +
-      `City checks run each hour during IST windows ${SLOT_WINDOW_LABEL}, switching cities every 13–18 seconds inside those windows.\n\n` +
+      `Cities (in order): ${cities.map((c) => c.name).join(" → ")}\n` +
+      `City checks run each hour during IST windows ${SLOT_WINDOW_LABEL}, switching cities every 13–18 seconds in that same order.\n\n` +
       `Auto Submit is separate — use its own ON/OFF button.`
     );
     if (!ok) return;
@@ -1392,7 +1406,7 @@ export function ensureAiSubmitUi() {
     <div class="${CLS.cardTtl}">Tik Tik (this account only)</div>
     <p class="${CLS.aiHint}">
       Two separate switches: <b>Auto Submit</b> books a matching date once;
-      <b>City Change</b> checks slots in burst windows each hour (IST ${SLOT_WINDOW_LABEL}), switching cities every 13–18s inside those times.
+      <b>City Change</b> checks slots in burst windows each hour (IST ${SLOT_WINDOW_LABEL}), switching preferred cities in checklist order every 13–18s.
     </p>
     <div class="${CLS.aiRow}">
       <label>From <input type="date" id="${ID.aiFrom}" min="${_todayISO()}" /></label>

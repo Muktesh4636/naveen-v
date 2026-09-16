@@ -5,11 +5,29 @@ import {
   updateCloudflareHud,
 } from "./cloudflare-ui.js";
 import { getSetting } from "../shared/config.js";
+import { storageGet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
+import { isPortalFatalErrorPage } from "./portal-error-reload.js";
 
 var _cfWatchTimer = null;
 var _cfAttemptCount = 0;
 var _cfObserver = null;
+var _challengeSeenAt = 0;
+
+/** Longer manual window while we still need live verify-human samples. */
+async function _trainWindowMs() {
+  try {
+    const store = await storageGet("humanClickProfile");
+    const p = store.humanClickProfile;
+    const n = p?.liveTrained ? p.samples?.length || 0 : 0;
+    if (n < 5) return 15_000;
+    if (n < 20) return 10_000;
+    if (n < 50) return 6_000;
+    return 3_500;
+  } catch {
+    return 12_000;
+  }
+}
 
 const CHALLENGE_TEXT = /verify you are human|verify you are a human|verify that you are human|performing security verification|just a moment|checking your browser|confirm you are human|not a robot|security verification|complete the security check|cloudflare/i;
 
@@ -20,6 +38,8 @@ export function isCloudflareSolved() {
 }
 
 export function isCloudflareChallenge() {
+  // CF 524 / portal dead pages are not Turnstile — don't try to click.
+  if (isPortalFatalErrorPage()) return false;
   if (document.querySelector('input[name="cf-turnstile-response"], textarea[name="cf-turnstile-response"]')?.value) {
     return false;
   }
@@ -190,8 +210,8 @@ async function _fireClicks(points) {
   flashClickPoints(points.slice(0, 3));
   vs.send({ action: "viewportClickPoints", points });
   if (await getSetting("cloudflareDebuggerClick")) {
-    await updateCloudflareHud("debugger");
-    vs.send({ action: "cloudflareDebuggerClick", points });
+    await updateCloudflareHud("debugger", "Trained click on Verify you are human…");
+    vs.send({ action: "cloudflareDebuggerClick", points, primaryOnly: true });
   } else {
     await updateCloudflareHud("dom");
   }
@@ -201,11 +221,23 @@ async function _fireClicks(points) {
 export async function tryCloudflareTick() {
   if (!await getSetting("autoCloudflareTick")) return false;
   if (isCloudflareSolved()) {
+    _challengeSeenAt = 0;
     await updateCloudflareHud("success");
     return true;
   }
 
-  await updateCloudflareHud("scanning");
+  if (!_challengeSeenAt) _challengeSeenAt = Date.now();
+  // Wait for a manual click so we can record your mouse; longer until we have enough samples.
+  const trainMs = await _trainWindowMs();
+  if (Date.now() - _challengeSeenAt < trainMs) {
+    await updateCloudflareHud(
+      "scanning",
+      "Train window — click Verify you are human yourself (recording your mouse)…"
+    );
+    return false;
+  }
+
+  await updateCloudflareHud("scanning", "Verify you are human page — preparing click…");
   let widgets = _findChallengeWidgets();
   _scrollWidgetsIntoView(widgets);
   await _sleep(350);
@@ -216,6 +248,7 @@ export async function tryCloudflareTick() {
     await _fireClicks(points);
     await _sleep(1200);
     if (isCloudflareSolved() || !isCloudflareChallenge()) {
+      _challengeSeenAt = 0;
       await updateCloudflareHud("success");
       return true;
     }
@@ -226,6 +259,7 @@ export async function tryCloudflareTick() {
   await _sleep(600);
 
   if (isCloudflareSolved() || !isCloudflareChallenge()) {
+    _challengeSeenAt = 0;
     await updateCloudflareHud("success");
     return true;
   }
@@ -234,6 +268,7 @@ export async function tryCloudflareTick() {
     await _fireClicks(points);
     await _sleep(1000);
     if (isCloudflareSolved() || !isCloudflareChallenge()) {
+      _challengeSeenAt = 0;
       await updateCloudflareHud("success");
       return true;
     }
@@ -269,6 +304,7 @@ export function stopCloudflareWatch() {
     _cfWatchTimer = null;
   }
   _cfAttemptCount = 0;
+  _challengeSeenAt = 0;
   hideCloudflareHud();
 }
 

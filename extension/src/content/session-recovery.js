@@ -16,8 +16,14 @@ import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
 
 var RECOVERY_KEY = "sessionRecovery";
+var KEEPALIVE_AT_KEY = "homeKeepaliveAt";
+var HOME_KEEPALIVE_MIN_MS = 120_000; // 2 min
+var HOME_KEEPALIVE_MAX_MS = 180_000; // 3 min
+var HOME_KEEPALIVE_DEBOUNCE_MS = 90_000;
 var _recoveryBusy = false;
 var _homeLoop = null;
+var _homeKeepaliveTimer = null;
+var _ofcKeepaliveTimer = null;
 
 function _norm(s) {
   return String(s || "")
@@ -233,8 +239,14 @@ function _isOfcOrSchedule() {
   return isSchedulePage() || /\/(ofc-schedule|schedule|c-schedule)/i.test(location.pathname);
 }
 
+/** True for OFC / consular schedule URLs — must NEVER be reloaded by keepalive. */
+export function isOfcOrScheduleUrl(url = "") {
+  return /\/(ofc-schedule|schedule|c-schedule|interview|confirmation)/i.test(String(url || ""));
+}
+
 export function isHomeLikePage() {
   if (_isOfcOrSchedule()) return false;
+  if (document.querySelector("#post_select")) return false;
   const path = location.pathname || "";
   if (/atlasauth|b2clogin/i.test(location.host)) return true;
   if (isCloudflareChallenge()) return true;
@@ -284,6 +296,94 @@ export function startHomeRecoveryLoop() {
   };
   tick();
   _homeLoop = vs.setInterval(tick, 1200);
+}
+
+/** Random delay between 2–3 minutes. */
+function _keepaliveDelayMs() {
+  return HOME_KEEPALIVE_MIN_MS + Math.random() * (HOME_KEEPALIVE_MAX_MS - HOME_KEEPALIVE_MIN_MS);
+}
+
+async function _claimKeepaliveSlot() {
+  try {
+    const store = await storageGet(KEEPALIVE_AT_KEY);
+    const last = Number(store[KEEPALIVE_AT_KEY]) || 0;
+    if (Date.now() - last < HOME_KEEPALIVE_DEBOUNCE_MS) return false;
+    await storageSet({ [KEEPALIVE_AT_KEY]: Date.now() });
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * On Application Home only: reload THIS tab every 2–3 min (random).
+ * Hard rule: never reload OFC / schedule pages.
+ */
+export function startHomeSessionKeepalive() {
+  if (_isOfcOrSchedule()) return;
+  if (!isHomeLikePage()) return;
+  if (document.querySelector("#post_select")) return;
+  if (_homeKeepaliveTimer) return;
+
+  const arm = () => {
+    if (!vs.alive) return;
+    _homeKeepaliveTimer = vs.setTimeout(async () => {
+      _homeKeepaliveTimer = null;
+      // Absolute guards — never touch OFC.
+      if (!vs.alive) return;
+      if (_isOfcOrSchedule() || isOfcOrScheduleUrl(location.href)) return;
+      if (document.querySelector("#post_select")) return;
+      if (!isHomeLikePage()) return;
+      if (_loginTyping || _securityTyping || _recoveryBusy) {
+        arm();
+        return;
+      }
+      const rec = (await storageGet(RECOVERY_KEY))[RECOVERY_KEY];
+      if (rec?.active) {
+        arm();
+        return;
+      }
+      if (!(await _claimKeepaliveSlot())) {
+        arm();
+        return;
+      }
+      try {
+        location.reload();
+      } catch {
+        arm();
+      }
+    }, _keepaliveDelayMs());
+  };
+  arm();
+}
+
+/**
+ * On OFC: ask service worker to reload Application Home in the background.
+ * OFC itself is never reloaded.
+ */
+export function startOfcHomeKeepalive() {
+  if (!_isOfcOrSchedule()) return;
+  if (_ofcKeepaliveTimer) return;
+
+  const ping = () => {
+    if (!vs.alive) return;
+    _ofcKeepaliveTimer = vs.setTimeout(async () => {
+      _ofcKeepaliveTimer = null;
+      if (!vs.alive || !_isOfcOrSchedule()) return;
+      // Only ask SW to refresh Home — never reload this OFC tab.
+      if (await _claimKeepaliveSlot()) {
+        try {
+          vs.send({
+            action: "homeKeepalive",
+            ofcUrl: location.href,
+            ofcTabId: null,
+          });
+        } catch {}
+      }
+      ping();
+    }, _keepaliveDelayMs());
+  };
+  ping();
 }
 
 export async function handleNativeAlert(text) {
