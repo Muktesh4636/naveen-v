@@ -50,7 +50,9 @@ var CITY_ROTATE_MAX_GAP_MS = 18_000;
 /** Max pause while Auto Submit books — then hop so City Change cannot freeze forever. */
 var CITY_HOLD_MAX_MS = 45_000;
 /** After city switch: stay while Date shows Loading…; hop if still Loading after this. */
-var CITY_LOADING_MAX_MS = 180_000;
+var CITY_LOADING_MAX_MS = 180_000; // 3 min — true "Loading..." screen
+/** Calendar/Select Date up but dates CGI not loaded yet — hop after this. */
+var CITY_CALENDAR_NO_DATES_MS = 20_000;
 /** Watchdog: if no tick for this long while ON, force reschedule (no OFF→ON needed). */
 var CITY_WATCHDOG_MS = 5_000;
 var CITY_STUCK_TICK_MS = 20_000;
@@ -345,22 +347,29 @@ function _recoverStuckRotateLocks(now = Date.now()) {
 
   if (_rotateBusy) {
     if (!_busyStartedAt) _busyStartedAt = now;
-    // Loading text gone for a bit — don't sit locked until full 3m if CGI missed.
-    if (!_domShowsDateLoading() && now - _busyStartedAt >= 8_000) {
-      _clearRotateBusy();
-      unlocked = true;
-    } else if (now - _busyStartedAt >= CITY_LOADING_MAX_MS) {
+    const loading = _domShowsDateLoading();
+    const maxMs = loading ? CITY_LOADING_MAX_MS : CITY_CALENDAR_NO_DATES_MS;
+    if (now - _busyStartedAt >= maxMs) {
       _clearRotateBusy();
       unlocked = true;
     } else if (!_rotateBusyClearTimer) {
-      const left = Math.max(500, CITY_LOADING_MAX_MS - (now - _busyStartedAt));
+      const left = Math.max(500, maxMs - (now - _busyStartedAt));
       _rotateBusyClearTimer = vs.setTimeout(() => {
         _rotateBusyClearTimer = null;
         if (!_rotateActive || _bookingHold) return;
+        const stillLoading = _domShowsDateLoading();
+        const cap = stillLoading ? CITY_LOADING_MAX_MS : CITY_CALENDAR_NO_DATES_MS;
+        if (Date.now() - (_busyStartedAt || 0) < cap) {
+          // Still under the right cap (e.g. Loading appeared) — re-arm.
+          _recoverStuckRotateLocks();
+          return;
+        }
         _clearRotateBusy();
         _armNextRotate(Date.now());
         updateAiStatus(
-          `City Change — still Loading after ${CITY_LOADING_MAX_MS / 1000}s; changing city…`
+          stillLoading
+            ? `City Change — still Loading after ${CITY_LOADING_MAX_MS / 1000}s; changing city…`
+            : `City Change — calendar up but no dates after ${CITY_CALENDAR_NO_DATES_MS / 1000}s; changing city…`
         );
         _scheduleCityRotate();
       }, left);
@@ -471,12 +480,14 @@ function _domShowsDateLoading() {
 
 /**
  * After city switch — stay while Date Loading… (up to 3 min).
- * CGI schedule-days / timeout unlocks; do not unlock on bare <select> change.
+ * If calendar/Select Date is up but dates never arrive, hop after 20s.
+ * CGI schedule-days unlocks immediately; do not unlock on bare <select> change.
  */
 function _armRotateBusy() {
   _rotateBusy = true;
   _busyStartedAt = Date.now();
   if (_rotateBusyClearTimer) vs.clear(_rotateBusyClearTimer);
+  // Hard ceiling = Loading max (3 min). Tick/watchdog hop earlier at 20s if not Loading.
   _rotateBusyClearTimer = vs.setTimeout(() => {
     _rotateBusyClearTimer = null;
     if (!_rotateActive || _bookingHold) return;
@@ -766,7 +777,7 @@ function _bindPostSelectRotateWatch() {
   if (!select) return;
   _postSelectRotateBound = true;
   // Do NOT clear busy on change — that fired before Loading appeared and
-  // cancelled the Loading wait. Unlock only via CGI or 3m Loading timeout.
+  // cancelled the Loading wait. Unlock only via CGI or Loading/calendar timeouts.
 }
 
 async function _rotateTick() {
@@ -821,7 +832,9 @@ async function _rotateTick() {
       return;
     }
 
-    // After city switch: stay while Date Loading… (up to 3 min).
+    // After city switch:
+    //  - true "Loading..." screen → wait up to 3 min
+    //  - calendar/Select Date up but dates not loaded → hop after 20s
     if (_rotateBusy) {
       const busyFor = _busyStartedAt ? now - _busyStartedAt : 0;
       if (_domShowsDateLoading()) {
@@ -841,17 +854,20 @@ async function _rotateTick() {
         _scheduleCityRotate();
         return;
       }
-      // Loading gone — keep busy until CGI unlocks or 3m hard timeout (timer).
-      const left = Math.max(0, Math.ceil((CITY_LOADING_MAX_MS - busyFor) / 1000));
-      updateAiStatus(
-        `City Change — waiting calendar result… (${left}s max)`
-      );
-      if (busyFor >= CITY_LOADING_MAX_MS) {
+      // Loading gone / calendar waiting for dates — hop after 20s if CGI never unlocks.
+      if (busyFor >= CITY_CALENDAR_NO_DATES_MS) {
         _clearRotateBusy();
         _armNextRotate(Date.now());
+        updateAiStatus(
+          `City Change — calendar up but no dates after ${CITY_CALENDAR_NO_DATES_MS / 1000}s; changing city…`
+        );
         _scheduleCityRotate();
         return;
       }
+      const left = Math.max(0, Math.ceil((CITY_CALENDAR_NO_DATES_MS - busyFor) / 1000));
+      updateAiStatus(
+        `City Change — waiting calendar dates… (${left}s then hop)`
+      );
       _scheduleCityRotate();
       return;
     }
@@ -894,7 +910,7 @@ async function _rotateTick() {
       const path = cities.map((c) => c.name || c.id).join(" → ");
       const step = `${_rotateIndex + 1}/${cities.length}`;
       updateAiStatus(
-        `City Change — ${step} ${next.name || next.id} (path: ${path}); waiting Date Loading (max ${CITY_LOADING_MAX_MS / 1000}s)`
+        `City Change — ${step} ${next.name || next.id} (path: ${path}); Loading up to ${CITY_LOADING_MAX_MS / 1000}s, no-dates hop ${CITY_CALENDAR_NO_DATES_MS / 1000}s`
       );
     } else {
       _armNextRotate(now);
@@ -938,7 +954,7 @@ export async function startCityRotate() {
   const idx = cities.findIndex((c) => String(c.id) === current);
   _rotateIndex = idx >= 0 ? idx : 0;
   updateAiStatus(
-    `City Change ON — IST ${SLOT_WINDOW_LABEL}; hop 13–18s in checklist order; auto-unstick; Loading max ${CITY_LOADING_MAX_MS / 1000}s`
+    `City Change ON — IST ${SLOT_WINDOW_LABEL}; hop 13–18s in checklist order; Loading max ${CITY_LOADING_MAX_MS / 1000}s; no-dates hop ${CITY_CALENDAR_NO_DATES_MS / 1000}s`
   );
   _ensureRotateWatchdog();
   _scheduleCityRotate();
@@ -1235,6 +1251,9 @@ export async function refreshAiSubmitUi() {
     const el = document.querySelector(idSel(id));
     if (el && qs[i]?.a) el.value = qs[i].a;
   });
+  const loginBody = document.querySelector(idSel(ID.aiLoginBody));
+  const loginOpen = loginBody && !loginBody.classList.contains(CLS.hidden);
+  _paintLoginToggle(!!loginOpen, _loginDetailsSaved(cfg));
 }
 
 function _togglePanel(show) {
@@ -1362,7 +1381,37 @@ async function _onSaveLogin() {
     return;
   }
   await _persistForm(accountId, {});
+  _paintLoginToggle(true, true);
   updateAiStatus("Saved ID, password, and 3 security questions (1 from each set).");
+}
+
+function _loginDetailsSaved(cfg) {
+  const sec = cfg?.security || [];
+  return !!(
+    cfg?.loginId &&
+    cfg?.loginPass &&
+    sec.length >= 3 &&
+    sec.every((s) => s?.q && s?.a)
+  );
+}
+
+function _paintLoginToggle(open, saved) {
+  const btn = document.querySelector(idSel(ID.aiLoginToggle));
+  if (!btn) return;
+  const arrow = open ? "▾" : "▸";
+  btn.textContent = saved
+    ? `Login details (saved) ${arrow}`
+    : `Login details ${arrow}`;
+}
+
+function _onToggleLoginDetails() {
+  const body = document.querySelector(idSel(ID.aiLoginBody));
+  const btn = document.querySelector(idSel(ID.aiLoginToggle));
+  if (!body || !btn) return;
+  const open = body.classList.contains(CLS.hidden);
+  body.classList.toggle(CLS.hidden, !open);
+  const saved = /saved/i.test(btn.textContent || "");
+  _paintLoginToggle(open, saved);
 }
 
 export function removeStaleTikTikUi() {
@@ -1439,41 +1488,46 @@ export function ensureAiSubmitUi() {
       <button type="button" id="${ID.aiCitiesNone}" class="${CLS.aiCityAct}">Clear</button>
     </div>
     <div id="${ID.aiCities}" class="${CLS.aiCities}"></div>
-    <div class="${CLS.aiHint}" style="margin:8px 0 4px;font-weight:600;color:#334155">Login (for PSE0501 recovery on Home tab)</div>
-    <div class="${CLS.aiRow}">
-      <label>ID / email <input type="email" id="${ID.aiLogin}" autocomplete="off" /></label>
-      <label>Password <input type="password" id="${ID.aiPass}" autocomplete="off" /></label>
+    <div class="${CLS.aiRow}" style="margin-top:6px">
+      <button type="button" id="${ID.aiLoginToggle}">Login details ▸</button>
     </div>
-    <div class="${CLS.aiHint}" style="margin:0 0 6px">
-      3 sets × 5 questions. Pick <b>1 question from each set</b>, then type <b>your answer</b> for that question.
-      Login later asks any 2 of these 3.
-    </div>
-    <div class="${CLS.aiRow}" style="flex-direction:column;align-items:stretch">
-      <label>Set 1 — choose 1 question
-        <select id="${ID.aiQ1}">${_securityOptionsHtml(0)}</select>
-      </label>
-      <label>Your answer for set 1
-        <input type="text" id="${ID.aiA1}" autocomplete="off" required placeholder="Type the answer you registered on the visa site" />
-      </label>
-    </div>
-    <div class="${CLS.aiRow}" style="flex-direction:column;align-items:stretch">
-      <label>Set 2 — choose 1 question
-        <select id="${ID.aiQ2}">${_securityOptionsHtml(1)}</select>
-      </label>
-      <label>Your answer for set 2
-        <input type="text" id="${ID.aiA2}" autocomplete="off" required placeholder="Type the answer you registered on the visa site" />
-      </label>
-    </div>
-    <div class="${CLS.aiRow}" style="flex-direction:column;align-items:stretch">
-      <label>Set 3 — choose 1 question
-        <select id="${ID.aiQ3}">${_securityOptionsHtml(2)}</select>
-      </label>
-      <label>Your answer for set 3
-        <input type="text" id="${ID.aiA3}" autocomplete="off" required placeholder="Type the answer you registered on the visa site" />
-      </label>
-    </div>
-    <div class="${CLS.aiRow}">
-      <button type="button" id="${ID.aiSaveLogin}">Save login details</button>
+    <div id="${ID.aiLoginBody}" class="${CLS.hidden}">
+      <div class="${CLS.aiHint}" style="margin:4px 0;font-weight:600;color:#334155">Login (auto-login on Home when logged out)</div>
+      <div class="${CLS.aiRow}">
+        <label>ID / email <input type="email" id="${ID.aiLogin}" autocomplete="off" /></label>
+        <label>Password <input type="password" id="${ID.aiPass}" autocomplete="off" /></label>
+      </div>
+      <div class="${CLS.aiHint}" style="margin:0 0 6px">
+        3 sets × 5 questions. Pick <b>1 question from each set</b>, then type <b>your answer</b> for that question.
+        Login later asks any 2 of these 3.
+      </div>
+      <div class="${CLS.aiRow}" style="flex-direction:column;align-items:stretch">
+        <label>Set 1 — choose 1 question
+          <select id="${ID.aiQ1}">${_securityOptionsHtml(0)}</select>
+        </label>
+        <label>Your answer for set 1
+          <input type="text" id="${ID.aiA1}" autocomplete="off" required placeholder="Type the answer you registered on the visa site" />
+        </label>
+      </div>
+      <div class="${CLS.aiRow}" style="flex-direction:column;align-items:stretch">
+        <label>Set 2 — choose 1 question
+          <select id="${ID.aiQ2}">${_securityOptionsHtml(1)}</select>
+        </label>
+        <label>Your answer for set 2
+          <input type="text" id="${ID.aiA2}" autocomplete="off" required placeholder="Type the answer you registered on the visa site" />
+        </label>
+      </div>
+      <div class="${CLS.aiRow}" style="flex-direction:column;align-items:stretch">
+        <label>Set 3 — choose 1 question
+          <select id="${ID.aiQ3}">${_securityOptionsHtml(2)}</select>
+        </label>
+        <label>Your answer for set 3
+          <input type="text" id="${ID.aiA3}" autocomplete="off" required placeholder="Type the answer you registered on the visa site" />
+        </label>
+      </div>
+      <div class="${CLS.aiRow}">
+        <button type="button" id="${ID.aiSaveLogin}">Save login details</button>
+      </div>
     </div>
     <div class="${CLS.aiRow}">
       <button type="button" id="${ID.aiSubmitBtn}">Auto Submit: OFF</button>
@@ -1488,6 +1542,7 @@ export function ensureAiSubmitUi() {
   vs.on(panel.querySelector(idSel(ID.aiSubmitBtn)), "click", _onToggleSubmit);
   vs.on(panel.querySelector(idSel(ID.aiCitiesBtn)), "click", _onToggleCities);
   vs.on(panel.querySelector(idSel(ID.aiSaveLogin)), "click", _onSaveLogin);
+  vs.on(panel.querySelector(idSel(ID.aiLoginToggle)), "click", _onToggleLoginDetails);
   vs.on(panel.querySelector(idSel(ID.aiClose)), "click", () => _togglePanel(false));
   vs.on(panel.querySelector(idSel(ID.aiCitiesAll)), "click", () => _setAllCitiesChecked(true));
   vs.on(panel.querySelector(idSel(ID.aiCitiesNone)), "click", () => _setAllCitiesChecked(false));

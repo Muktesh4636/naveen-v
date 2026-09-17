@@ -53,6 +53,8 @@ export const ID = {
   cfHud:       T + '33',
   aiCitiesAll: T + '34',
   aiCitiesNone: T + '35',
+  aiLoginToggle: T + '36',
+  aiLoginBody:   T + '37',
 };
 
 // CSS class names

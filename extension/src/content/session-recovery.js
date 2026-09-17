@@ -1,9 +1,10 @@
 /**
- * PSE0501 / session recovery:
+ * PSE0501 / session recovery + always-on Home auto-login:
  *  - OFC tab: auto-dismiss the native alert. Never reload OFC.
  *  - Switch to Home tab, refresh Home only.
- *  - On Home: Cloudflare tick, Privacy checkboxes, login + 2-of-3 security Qs.
- *  - Switch back to OFC when Home is a logged-in dashboard.
+ *  - On Home: Cloudflare tick, Privacy checkboxes, login + security Qs
+ *    whenever logged out and Tik Tik credentials are saved.
+ *  - After PSE0501 recovery: switch back to OFC when Home is logged in.
  */
 
 import { AI_SUBMIT_KEY, getAccountId, isSchedulePage, domShowsDateLoading, setTikTikStatus } from "./ai-submit.js";
@@ -262,9 +263,25 @@ export function isHomeLikePage() {
   return /visa application home/i.test(document.title || "");
 }
 
+function _hasLoginCreds(cfg) {
+  return !!(cfg?.loginId && cfg?.loginPass);
+}
+
+function _looksLoggedOut() {
+  if (_homeLooksLoggedIn()) return false;
+  if (_isLoginPage()) return true;
+  if (document.querySelector("#kba1_response, #kba2_response, #kba3_response")) return true;
+  if (document.querySelector("#signInName, #signInNameReadOnly, input[type='password']")) return true;
+  return false;
+}
+
+/**
+ * Always-on Home auto-login when logged out and Tik Tik credentials exist.
+ * PSE0501 recovery still uses the same path, then returns to OFC when done.
+ */
 async function _runHomeRecovery() {
   const rec = (await storageGet(RECOVERY_KEY))[RECOVERY_KEY];
-  if (!rec?.active) return;
+  const recoveryActive = !!rec?.active;
   const cfg = await _loadCreds();
 
   if (isCloudflareChallenge()) {
@@ -272,16 +289,26 @@ async function _runHomeRecovery() {
     return;
   }
   _tryPrivacyChecks();
-  if (await _fillSecurity(cfg)) return;
-  if (_isLoginPage()) {
-    await _fillLogin(cfg);
+
+  // Logged-in dashboard: finish PSE0501 recovery, otherwise nothing to do.
+  if (_homeLooksLoggedIn()) {
+    if (recoveryActive) {
+      await storageSet({
+        [RECOVERY_KEY]: { ...rec, active: false, doneAt: Date.now() },
+      });
+      vs.send({ action: "recoveryReturnToOfc" });
+    }
     return;
   }
-  if (_homeLooksLoggedIn()) {
-    await storageSet({
-      [RECOVERY_KEY]: { ...rec, active: false, doneAt: Date.now() },
-    });
-    vs.send({ action: "recoveryReturnToOfc" });
+
+  // Logged out / login or security page — auto-login if details were saved.
+  if (!_looksLoggedOut()) return;
+  if (!_hasLoginCreds(cfg)) return;
+  if (!(await getSetting("autofillLogin"))) return;
+
+  if (await _fillSecurity(cfg)) return;
+  if (_isLoginPage() || document.querySelector("#signInName, #signInNameReadOnly, input[type='password']")) {
+    await _fillLogin(cfg);
   }
 }
 
@@ -292,13 +319,12 @@ export function stopHomeRecoveryLoop() {
   }
 }
 
+/** Home / auth pages: keep trying auto-login whenever the session drops. */
 export function startHomeRecoveryLoop() {
   if (!isHomeLikePage()) return;
   if (_homeLoop) return;
   const tick = async () => {
     if (!vs.alive) return;
-    const rec = (await storageGet(RECOVERY_KEY))[RECOVERY_KEY];
-    if (!rec?.active) return;
     await _runHomeRecovery();
   };
   tick();
