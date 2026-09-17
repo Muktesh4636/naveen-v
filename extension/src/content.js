@@ -19,7 +19,7 @@ import {
 } from "./content/ai-submit.js";
 import { getSetting } from "./shared/config.js";
 import { startTimeSlotWatcher } from "./content/time-select.js";
-import { handleNativeAlert, startHomeRecoveryLoop, startHomeSessionKeepalive, startOfcHomeKeepalive } from "./content/session-recovery.js";
+import { handleNativeAlert, startHomeRecoveryLoop, startHomeSessionKeepalive, startOfcHomeKeepalive, startLoadingStuckHomeReload } from "./content/session-recovery.js";
 import { startHumanClickTrain } from "./content/human-click-train.js";
 import { startCloudflareWatch, stopCloudflareWatch } from "./content/cloudflare-tick.js";
 import { startPortalErrorReloadWatch } from "./content/portal-error-reload.js";
@@ -106,6 +106,7 @@ vs.on(document, "visibilitychange", () => {
 startHomeRecoveryLoop();
 startHomeSessionKeepalive();
 startOfcHomeKeepalive();
+startLoadingStuckHomeReload();
 startHumanClickTrain();
 startCloudflareWatch();
 

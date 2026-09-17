@@ -1,10 +1,12 @@
 /**
  * Fresh live training for "Verify you are human".
  * While the challenge is visible, records mouse path, hover, press, viewport,
- * scroll, and click coords into chrome.storage humanClickProfile.
+ * scroll, and click coords into chrome.storage humanClickProfile,
+ * and uploads each sample to the server for model training.
  */
 import { updateCloudflareHud } from "./cloudflare-ui.js";
 import { isCloudflareChallenge, isCloudflareSolved } from "./cloudflare-tick.js";
+import { getProfile, getSetting } from "../shared/config.js";
 import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
 
@@ -129,7 +131,40 @@ async function _saveSample(sample) {
   };
   await storageSet({ [PROFILE_KEY]: next });
   _sampleCountCache = samples.length;
+
+  // Also upload to server for model training (best-effort).
+  _uploadSampleToServer(sample, next).catch(() => {});
+
   return next;
+}
+
+async function _uploadSampleToServer(sample, profile) {
+  try {
+    if (!(await getSetting("serverSync"))) return;
+    const userProfile = (await getProfile()) || {};
+    const clientId = `hc-${sample.at || Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const payload = {
+      client_id: clientId,
+      profile: {
+        id: userProfile.id || "",
+        email: userProfile.email || "",
+        name: userProfile.name || "",
+        visa: userProfile.visa || "",
+      },
+      sample,
+      profile_meta: {
+        sampleCount: profile?.samples?.length || 0,
+        avgHoverMs: profile?.avgHoverMs,
+        avgPressMs: profile?.avgPressMs,
+        avgApproachMs: profile?.avgApproachMs,
+        liveTrained: true,
+        source: "visa-page-live",
+        extensionHost: location.host,
+      },
+    };
+    // Prefer service worker (reliable host permission + no page CSP issues).
+    vs.send({ action: "uploadHumanClickSample", payload });
+  } catch {}
 }
 
 function _resetStroke() {

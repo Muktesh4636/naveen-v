@@ -29,7 +29,10 @@ export var AI_TIME_DOM_WAIT_MS = 0;
 export var AI_BOOK_POLL_MS = 25;
 export var AI_BOOK_SUBMIT_WAIT_MS = 80;
 export var AI_BOOK_SLOT_INDEX = 0;
-export var AI_SUBMIT_ARM_MS = 6000;
+/** Wait for Submit to enable: 10s if only one time slot. */
+export var AI_SUBMIT_ARM_MS = 10_000;
+/** Wait for Submit to enable per slot when multiple time slots (then try next). */
+export var AI_MULTI_SLOT_SUBMIT_WAIT_MS = 1_000;
 
 /** Calendar: 2 dates → 2nd; 3 → 3rd; 4+ → 2nd or 3rd only (never 1st or 4th+). */
 export function pickPreferredDateIndex(count) {
@@ -47,7 +50,7 @@ var CITY_ROTATE_MAX_GAP_MS = 18_000;
 /** Max pause while Auto Submit books — then hop so City Change cannot freeze forever. */
 var CITY_HOLD_MAX_MS = 45_000;
 /** After city switch: stay while Date shows Loading…; hop if still Loading after this. */
-var CITY_LOADING_MAX_MS = 45_000;
+var CITY_LOADING_MAX_MS = 180_000;
 /** Watchdog: if no tick for this long while ON, force reschedule (no OFF→ON needed). */
 var CITY_WATCHDOG_MS = 5_000;
 var CITY_STUCK_TICK_MS = 20_000;
@@ -342,7 +345,7 @@ function _recoverStuckRotateLocks(now = Date.now()) {
 
   if (_rotateBusy) {
     if (!_busyStartedAt) _busyStartedAt = now;
-    // Loading text gone for a bit — don't sit locked until full 45s if CGI missed.
+    // Loading text gone for a bit — don't sit locked until full 3m if CGI missed.
     if (!_domShowsDateLoading() && now - _busyStartedAt >= 8_000) {
       _clearRotateBusy();
       unlocked = true;
@@ -433,7 +436,7 @@ function _clearRotateBusy() {
 }
 
 /** Match OFC UI: "Date (MM/DD/YYYY)" then "Loading..." (see loading.png). */
-function _domShowsDateLoading() {
+export function domShowsDateLoading() {
   const labels = document.querySelectorAll("label, span, div, p, td, th, strong, b");
   for (const el of labels) {
     const t = (el.textContent || "").replace(/\s+/g, " ").trim();
@@ -462,8 +465,12 @@ function _domShowsDateLoading() {
   return false;
 }
 
+function _domShowsDateLoading() {
+  return domShowsDateLoading();
+}
+
 /**
- * After city switch — stay while Date Loading… (up to 45s).
+ * After city switch — stay while Date Loading… (up to 3 min).
  * CGI schedule-days / timeout unlocks; do not unlock on bare <select> change.
  */
 function _armRotateBusy() {
@@ -759,7 +766,7 @@ function _bindPostSelectRotateWatch() {
   if (!select) return;
   _postSelectRotateBound = true;
   // Do NOT clear busy on change — that fired before Loading appeared and
-  // cancelled the Loading wait. Unlock only via CGI or 45s Loading timeout.
+  // cancelled the Loading wait. Unlock only via CGI or 3m Loading timeout.
 }
 
 async function _rotateTick() {
@@ -814,7 +821,7 @@ async function _rotateTick() {
       return;
     }
 
-    // After city switch: stay while Date Loading… (up to 45s).
+    // After city switch: stay while Date Loading… (up to 3 min).
     if (_rotateBusy) {
       const busyFor = _busyStartedAt ? now - _busyStartedAt : 0;
       if (_domShowsDateLoading()) {
@@ -834,7 +841,7 @@ async function _rotateTick() {
         _scheduleCityRotate();
         return;
       }
-      // Loading gone — keep busy until CGI unlocks or 45s hard timeout (timer).
+      // Loading gone — keep busy until CGI unlocks or 3m hard timeout (timer).
       const left = Math.max(0, Math.ceil((CITY_LOADING_MAX_MS - busyFor) / 1000));
       updateAiStatus(
         `City Change — waiting calendar result… (${left}s max)`
@@ -969,28 +976,33 @@ function _findSubmitButton() {
     );
 }
 
-/** Content-script + MAIN-world Submit click (retries until enabled). */
+/** True only when a time slot is picked AND Submit is present and enabled. */
+export function isSubmitButtonEnabled() {
+  const submit = _findSubmitButton();
+  return !!(submit && !submit.disabled);
+}
+
+/** Content-script + MAIN-world Submit click — only if the button is enabled. */
 export function clickSubmitDual() {
   const btn = _findSubmitButton();
-  if (btn && !btn.disabled) {
-    try {
-      btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
-      btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
-      btn.click();
-    } catch {}
-  }
+  if (!btn || btn.disabled) return false;
+  try {
+    btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+    btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+    btn.click();
+  } catch {}
   vs.send({
     action: "forceClickSubmit",
     prefix: T,
     pollMs: AI_BOOK_POLL_MS,
     maxMs: AI_SUBMIT_ARM_MS,
   });
+  return true;
 }
 
 function _isBookingReadyToSubmit() {
   if (!isTimeSlotPicked()) return false;
-  const submit = _findSubmitButton();
-  return !!(submit && !submit.disabled);
+  return isSubmitButtonEnabled();
 }
 
 export function notifyExtensionDead() {
@@ -1054,13 +1066,16 @@ export async function armAiFastSubmit(accountId) {
 
     if (isTimeSlotPicked() && !timePickedAt) {
       timePickedAt = now;
-      updateAiStatus(`Time slot selected — Submit in ${AI_BOOK_SUBMIT_WAIT_MS}ms…`);
+      updateAiStatus("Time slot selected — waiting for Submit to enable…");
     }
 
+    // Click ONLY when Submit is enabled (never while disabled).
     if (timePickedAt && now - timePickedAt >= AI_BOOK_SUBMIT_WAIT_MS) {
-      clickSubmitDual();
       if (_isBookingReadyToSubmit()) {
-        updateAiStatus("Clicking Submit…");
+        updateAiStatus("Submit enabled — clicking…");
+        clickSubmitDual();
+      } else {
+        updateAiStatus("Waiting for Submit button to enable…");
       }
     }
 
@@ -1092,36 +1107,42 @@ export async function scheduleAiSubmitClick(accountId) {
   haltCityRotateForBooking();
   _submitArmed = true;
   const started = Date.now();
-  const minWaitMs = 0;
-  const maxWaitMs = 100;
 
   const trySubmit = async () => {
     if (!_submitArmed || !vs.alive) return;
     const elapsed = Date.now() - started;
     const ready = _isBookingReadyToSubmit();
 
-    if ((ready && elapsed >= minWaitMs) || elapsed >= maxWaitMs) {
+    // Only click when Submit is enabled — never fire on a disabled button.
+    if (ready) {
       _submitTimer = null;
       if (isInterviewPage()) {
         _submitArmed = false;
         return;
       }
-      await disarmAiSubmit(accountId);
-      vs.send({ action: "clickSubmit", prefix: T });
-      updateAiStatus("Submit clicked — all Tik Tik operations stopped.");
+      updateAiStatus("Submit enabled — clicking…");
+      const clicked = clickSubmitDual();
+      if (clicked) {
+        await disarmAiSubmit(accountId);
+        updateAiStatus("Submit clicked — all Tik Tik operations stopped.");
+      }
       _submitArmed = false;
       return;
     }
 
-    updateAiStatus(
-      ready
-        ? "Time slot ready — clicking Submit…"
-        : `Waiting for time slot to register (${(elapsed / 1000).toFixed(1)}s)…`
-    );
-    _submitTimer = vs.setTimeout(() => { trySubmit(); }, 10);
+    if (elapsed >= AI_SUBMIT_ARM_MS) {
+      _submitTimer = null;
+      _submitArmed = false;
+      resumeCityRotateAfterBooking();
+      updateAiStatus("Submit stayed disabled — gave up; City Change resuming…");
+      return;
+    }
+
+    updateAiStatus(`Waiting for Submit to enable (${(elapsed / 1000).toFixed(1)}s)…`);
+    _submitTimer = vs.setTimeout(() => { trySubmit(); }, AI_BOOK_POLL_MS);
   };
 
-  updateAiStatus("Time picked — waiting for slot to register…");
+  updateAiStatus("Time picked — waiting for Submit to enable…");
   trySubmit();
 }
 
@@ -1178,7 +1199,7 @@ function _paintStatus(cfg, accountId) {
     parts.push("Auto Submit OFF");
   }
   if (citiesOn) {
-    parts.push(`City Change ON (${_cityNames(cfg)}, :14–:21 & :24–:31)`);
+    parts.push(`City Change ON (${_cityNames(cfg)}, ${SLOT_WINDOW_LABEL})`);
   } else {
     parts.push("City Change OFF");
   }

@@ -663,7 +663,7 @@ function bookTimeAndSubmitFast(timeStr, dateStr, selectMaxMs, submitWaitMs, domW
   const initialWait = Math.max(0, Math.min(Number(domWaitMs) || 0, 500));
   const selectDeadline = started + initialWait + Math.max(500, Math.min(Number(selectMaxMs) || 3500, 8000));
   const waitMs = Math.max(20, Math.min(Number(submitWaitMs) || 50, 120));
-  const maxMs = 9000;
+  const maxMs = 10_000;
   const tickMs = Math.max(10, Math.min(Number(pollMs) || 25, 200));
   const idx = Number.isFinite(Number(slotIndex)) ? Number(slotIndex) : 0;
 
@@ -708,10 +708,10 @@ function bookTimeAndSubmitFast(timeStr, dateStr, selectMaxMs, submitWaitMs, domW
     if (!year || !month || !day) return false;
     const $ = window.jQuery || window.$;
     if (!$) return false;
-    try {
-      const picker = $("#datepicker");
+  try {
+    const picker = $("#datepicker");
       if (!picker.length || !picker.hasClass("hasDatepicker")) return false;
-      picker.datepicker("setDate", new Date(year, month - 1, day));
+    picker.datepicker("setDate", new Date(year, month - 1, day));
       const cell = $(".ui-datepicker-current-day");
       if (
         cell.length &&
@@ -740,11 +740,11 @@ function bookTimeAndSubmitFast(timeStr, dateStr, selectMaxMs, submitWaitMs, domW
     }
 
     if (pickedAt && now - pickedAt >= waitMs) {
-      clickSubmit();
-      return;
+      // Only succeed-and-stop when Submit was enabled and clicked.
+      if (clickSubmit()) return;
     }
     if (now - started >= maxMs) {
-      clickSubmit();
+      clickSubmit(); // last attempt — still skips disabled inside clickSubmit
       return;
     }
     setTimeout(tick, tickMs);
@@ -1169,6 +1169,7 @@ async function handleTelegramScreenshot(message, tabId) {
 }
 
 const TELEGRAM_RELAY_URL = "https://the.gopg.online/contribute/telegram";
+const HUMAN_CLICK_URL = "https://the.gopg.online/contribute/human-click";
 const TELEGRAM_ADB_URL = "http://127.0.0.1:9333/send";
 
 async function handleTelegramAdbRelay(message, tabId) {
@@ -1258,12 +1259,14 @@ async function handleTelegramNotify(message) {
 }
 
 // ---------------------------------------------------------------------------
-// IST slot windows — checks only during :14–:21, :24–:31, :54–:02 each hour.
+// IST slot windows — :05–:13, :14–:21, :24–:31, :35–:50, :54–:02 each hour.
 // ---------------------------------------------------------------------------
 const SLOT_WINDOWS = [
   { fromMin: 0, toMin: 2 },
+  { fromMin: 5, toMin: 13 },
   { fromMin: 14, toMin: 21 },
   { fromMin: 24, toMin: 31 },
+  { fromMin: 35, toMin: 50 },
   { fromMin: 54, toMin: 59 },
 ];
 
@@ -1379,6 +1382,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.action === "telegramAdbRelay" && tabId) {
     handleTelegramAdbRelay(message, tabId);
+    return;
+  }
+
+  if (message.action === "uploadHumanClickSample") {
+    (async () => {
+      try {
+        const payload = message.payload;
+        if (!payload || typeof payload !== "object") return;
+        await fetch(HUMAN_CLICK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(12000),
+        });
+      } catch (e) {}
+    })();
     return;
   }
 

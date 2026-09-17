@@ -1,16 +1,18 @@
 /** Hourly slot release windows (IST). Checks only run inside these ranges. */
 
 export const SLOT_WINDOWS = [
-  { slot: 3, fromMin: 0, toMin: 2 }, // slot 3 tail (:54–:62 wraps past :59)
-  { slot: 1, fromMin: 14, toMin: 21 },
-  { slot: 2, fromMin: 24, toMin: 31 },
-  { slot: 3, fromMin: 54, toMin: 59 },
+  { slot: 5, fromMin: 0, toMin: 2 }, // wrap tail from :54–:02
+  { slot: 1, fromMin: 5, toMin: 13 },
+  { slot: 2, fromMin: 14, toMin: 21 },
+  { slot: 3, fromMin: 24, toMin: 31 },
+  { slot: 4, fromMin: 35, toMin: 50 },
+  { slot: 5, fromMin: 54, toMin: 59 },
 ];
 
 /** Chronological window starts within each hour (IST). */
-const WINDOW_STARTS_MIN = [0, 14, 24, 54];
+const WINDOW_STARTS_MIN = [0, 5, 14, 24, 35, 54];
 
-export const SLOT_WINDOW_LABEL = ":14–:21, :24–:31, :54–:02";
+export const SLOT_WINDOW_LABEL = ":05–:13, :14–:21, :24–:31, :35–:50, :54–:02";
 
 function getISTMinuteParts(date = new Date()) {
   try {
@@ -28,7 +30,7 @@ function getISTMinuteParts(date = new Date()) {
   }
 }
 
-/** Returns active slot number (1–3) or 0 if outside all windows. */
+/** Returns active slot number (1–4) or 0 if outside all windows. */
 export function isInSlotWindow(date = new Date()) {
   const { minute } = getISTMinuteParts(date);
   for (const w of SLOT_WINDOWS) {
@@ -48,7 +50,8 @@ export function msUntilSlotWindow(date = new Date()) {
     if (elapsedSec < startSec) return (startSec - elapsedSec) * 1000;
   }
 
-  return 0;
+  // After last window this hour → next hour :00
+  return ((60 * 60) - elapsedSec) * 1000;
 }
 
 export function formatSlotWait(ms) {

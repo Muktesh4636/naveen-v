@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.utils import timezone
 from django.utils.html import format_html
-from .models import Applicant, Contribution, DashboardSnapshot
+from .models import Applicant, Contribution, DashboardSnapshot, HumanClickSample
 
 
 def _ist(dt):
@@ -165,3 +165,29 @@ class DashboardSnapshotAdmin(admin.ModelAdmin):
     @admin.display(description="Created (IST)", ordering="created_at")
     def created_ist(self, obj):
         return _ist(obj.created_at)
+
+
+@admin.register(HumanClickSample)
+class HumanClickSampleAdmin(admin.ModelAdmin):
+    list_display = (
+        "created_ist",
+        "applicant",
+        "hover_ms",
+        "press_ms",
+        "approach_ms",
+        "pointer_type",
+        "path_len",
+        "page_url",
+    )
+    list_filter = ("pointer_type", "created_at")
+    search_fields = ("client_id", "page_url", "applicant__email", "applicant__applicant_id")
+    readonly_fields = ("created_at", "created_ist", "sample", "profile_meta")
+
+    @admin.display(description="Created (IST)", ordering="created_at")
+    def created_ist(self, obj):
+        return _ist(obj.created_at)
+
+    @admin.display(description="Path pts")
+    def path_len(self, obj):
+        path = (obj.sample or {}).get("path") if isinstance(obj.sample, dict) else None
+        return len(path) if isinstance(path, list) else 0

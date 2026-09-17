@@ -6,7 +6,7 @@
  *  - Switch back to OFC when Home is a logged-in dashboard.
  */
 
-import { AI_SUBMIT_KEY, getAccountId, isSchedulePage } from "./ai-submit.js";
+import { AI_SUBMIT_KEY, getAccountId, isSchedulePage, domShowsDateLoading, setTikTikStatus } from "./ai-submit.js";
 import {
   isCloudflareChallenge,
   tryCloudflareTick,
@@ -17,13 +17,20 @@ import { vs } from "../shared/lifecycle.js";
 
 var RECOVERY_KEY = "sessionRecovery";
 var KEEPALIVE_AT_KEY = "homeKeepaliveAt";
-var HOME_KEEPALIVE_MIN_MS = 120_000; // 2 min
-var HOME_KEEPALIVE_MAX_MS = 180_000; // 3 min
-var HOME_KEEPALIVE_DEBOUNCE_MS = 90_000;
+var LOADING_STUCK_AT_KEY = "homeLoadingStuckAt";
+var HOME_KEEPALIVE_MIN_MS = 600_000; // 10 min
+var HOME_KEEPALIVE_MAX_MS = 600_000; // 10 min
+var HOME_KEEPALIVE_DEBOUNCE_MS = 480_000;
+/** Continuous Date Loading… on OFC → reload Application Home. */
+var LOADING_STUCK_MS = 120_000; // 2 min
+var LOADING_STUCK_DEBOUNCE_MS = 90_000;
+var LOADING_STUCK_POLL_MS = 2_000;
 var _recoveryBusy = false;
 var _homeLoop = null;
 var _homeKeepaliveTimer = null;
 var _ofcKeepaliveTimer = null;
+var _loadingStuckTimer = null;
+var _loadingSince = 0;
 
 function _norm(s) {
   return String(s || "")
@@ -298,7 +305,7 @@ export function startHomeRecoveryLoop() {
   _homeLoop = vs.setInterval(tick, 1200);
 }
 
-/** Random delay between 2–3 minutes. */
+/** Fixed delay: 10 minutes. */
 function _keepaliveDelayMs() {
   return HOME_KEEPALIVE_MIN_MS + Math.random() * (HOME_KEEPALIVE_MAX_MS - HOME_KEEPALIVE_MIN_MS);
 }
@@ -316,7 +323,7 @@ async function _claimKeepaliveSlot() {
 }
 
 /**
- * On Application Home only: reload THIS tab every 2–3 min (random).
+ * On Application Home only: reload THIS tab every 10 min.
  * Hard rule: never reload OFC / schedule pages.
  */
 export function startHomeSessionKeepalive() {
@@ -384,6 +391,62 @@ export function startOfcHomeKeepalive() {
     }, _keepaliveDelayMs());
   };
   ping();
+}
+
+async function _claimLoadingStuckSlot() {
+  try {
+    const store = await storageGet(LOADING_STUCK_AT_KEY);
+    const last = Number(store[LOADING_STUCK_AT_KEY]) || 0;
+    if (Date.now() - last < LOADING_STUCK_DEBOUNCE_MS) return false;
+    await storageSet({ [LOADING_STUCK_AT_KEY]: Date.now() });
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * On OFC / schedule: if Date shows Loading… continuously for ≥ 2 min,
+ * reload Application Home in the background. Never reload this OFC tab.
+ */
+export function startLoadingStuckHomeReload() {
+  if (!_isOfcOrSchedule()) return;
+  if (_loadingStuckTimer) return;
+
+  const tick = async () => {
+    _loadingStuckTimer = null;
+    if (!vs.alive || !_isOfcOrSchedule()) return;
+    try {
+      if (domShowsDateLoading()) {
+        if (!_loadingSince) _loadingSince = Date.now();
+        const stuckFor = Date.now() - _loadingSince;
+        if (stuckFor >= LOADING_STUCK_MS) {
+          if (await _claimLoadingStuckSlot()) {
+            try {
+              setTikTikStatus(
+                `Date Loading stuck ≥${LOADING_STUCK_MS / 1000}s — reloading Application Home…`
+              );
+            } catch {}
+            try {
+              vs.send({
+                action: "homeKeepalive",
+                ofcUrl: location.href,
+                ofcTabId: null,
+              });
+            } catch {}
+          }
+          // Restart the stuck clock so we can fire again if Loading never clears.
+          _loadingSince = Date.now();
+        }
+      } else {
+        _loadingSince = 0;
+      }
+    } catch {}
+    if (vs.alive && _isOfcOrSchedule()) {
+      _loadingStuckTimer = vs.setTimeout(tick, LOADING_STUCK_POLL_MS);
+    }
+  };
+  _loadingStuckTimer = vs.setTimeout(tick, LOADING_STUCK_POLL_MS);
 }
 
 export async function handleNativeAlert(text) {

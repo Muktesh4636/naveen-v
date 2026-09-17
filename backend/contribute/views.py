@@ -8,7 +8,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .models import Applicant, Contribution, DashboardSnapshot
+from .models import Applicant, Contribution, DashboardSnapshot, HumanClickSample
 from .telegram import notify_available_slots, relay_extension_alert
 
 logger = logging.getLogger(__name__)
@@ -190,3 +190,67 @@ def telegram_relay(request):
         photo_bytes=photo_bytes,
     )
     return JsonResponse({"success": sent > 0, "sent": sent})
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def human_click_sample(request):
+    """
+    Extension → server: one Verify-you-are-human click sample for model training.
+
+    Body: {
+      profile?: { id, email, name, visa },
+      sample: { hoverMs, pressMs, approachMs, path, down, up, target, viewport, ... },
+      client_id?: str,
+      profile_meta?: { avgHoverMs, avgPressMs, sampleCount, ... }
+    }
+    """
+    if request.method == "OPTIONS":
+        return JsonResponse({}, status=204)
+
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({"success": False, "error": "invalid json"}, status=400)
+
+    if not isinstance(body, dict):
+        return JsonResponse({"success": False, "error": "expected object"}, status=400)
+
+    sample = body.get("sample")
+    if not isinstance(sample, dict) or not sample:
+        return JsonResponse({"success": False, "error": "sample required"}, status=400)
+
+    # Cap path length so a single row can't blow up storage.
+    path = sample.get("path")
+    if isinstance(path, list) and len(path) > 200:
+        sample = {**sample, "path": path[-200:]}
+
+    profile = body.get("profile") or {}
+    applicant = _upsert_applicant(profile if isinstance(profile, dict) else {}, None)
+
+    client_id = str(body.get("client_id") or sample.get("at") or "").strip()[:64]
+    if client_id:
+        exists = HumanClickSample.objects.filter(client_id=client_id).exists()
+        if exists:
+            return JsonResponse({"success": True, "deduped": True, "id": None})
+
+    row = HumanClickSample.objects.create(
+        applicant=applicant,
+        client_id=client_id,
+        hover_ms=int(sample.get("hoverMs") or 0),
+        press_ms=int(sample.get("pressMs") or 0),
+        approach_ms=int(sample.get("approachMs") or 0),
+        pointer_type=str(sample.get("pointerType") or "")[:32],
+        page_url=str(sample.get("url") or "")[:512],
+        sample=sample,
+        profile_meta=body.get("profile_meta") if isinstance(body.get("profile_meta"), dict) else {},
+    )
+    logger.info(
+        "Human click sample #%s from %s (hover=%s press=%s path=%s)",
+        row.pk,
+        applicant or "anonymous",
+        row.hover_ms,
+        row.press_ms,
+        len(sample.get("path") or []) if isinstance(sample.get("path"), list) else 0,
+    )
+    return JsonResponse({"success": True, "id": row.pk})

@@ -91,3 +91,40 @@ class DashboardSnapshot(models.Model):
 
     def __str__(self):
         return f"Dashboard for {self.applicant} @ {self.created_at:%Y-%m-%d %H:%M}"
+
+
+class HumanClickSample(models.Model):
+    """
+    One recorded "Verify you are human" click (mouse path + timings)
+    for later model training. Sent by the extension after each live train click.
+    """
+
+    applicant = models.ForeignKey(
+        Applicant,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="human_click_samples",
+    )
+    # Client-generated id for light dedupe (timestamp-based).
+    client_id = models.CharField(max_length=64, blank=True, db_index=True)
+    hover_ms = models.IntegerField(default=0)
+    press_ms = models.IntegerField(default=0)
+    approach_ms = models.IntegerField(default=0)
+    pointer_type = models.CharField(max_length=32, blank=True)
+    page_url = models.CharField(max_length=512, blank=True)
+    # Full sample: path, down/up coords, target rect, viewport, etc.
+    sample = models.JSONField(default=dict)
+    # Optional profile averages at save time.
+    profile_meta = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["created_at"]),
+            models.Index(fields=["applicant", "created_at"]),
+            models.Index(fields=["client_id"]),
+        ]
+
+    def __str__(self):
+        return f"HumanClick #{self.pk} hover={self.hover_ms} press={self.press_ms}"

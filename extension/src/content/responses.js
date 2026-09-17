@@ -18,6 +18,7 @@ import {
   setTikTikStatus,
   triggerAutoSubmitIfArmed,
   clickSubmitDual,
+  isSubmitButtonEnabled,
   thawOps,
   filterDaysInAiRange,
   dateInRange,
@@ -28,6 +29,8 @@ import {
   AI_TIME_DOM_WAIT_MS,
   AI_BOOK_POLL_MS,
   AI_BOOK_SLOT_INDEX,
+  AI_SUBMIT_ARM_MS,
+  AI_MULTI_SLOT_SUBMIT_WAIT_MS,
 } from "./ai-submit.js";
 import { getPosts, getProfile, getSetting, setPosts } from "../shared/config.js";
 import { storageSet, extensionAlive } from "../shared/runtime.js";
@@ -182,25 +185,42 @@ function _slotAvailability(entry) {
 }
 
 /**
- * Pick time slot by availability rank:
- * - 1 slot → that slot (no choice)
- * - 2+ slots → 2nd highest availability (not the top)
- * Ties broken by earlier time (stable sort).
+ * Rank time slots highest availability first (ties → earlier row).
+ * Returns [{ entry, index, avail }, ...]
  */
-function pickScheduleSlot(entries) {
-  if (!entries?.length) return { entry: null, slotIndex: 0 };
-  if (entries.length === 1) return { entry: entries[0], slotIndex: 0 };
-
-  const ranked = entries
+function rankScheduleSlots(entries) {
+  if (!entries?.length) return [];
+  return entries
     .map((entry, index) => ({ entry, index, avail: _slotAvailability(entry) }))
     .sort((a, b) => {
       if (b.avail !== a.avail) return b.avail - a.avail;
-      return a.index - b.index; // same avail → earlier row
+      return a.index - b.index;
     });
+}
 
-  // 2nd highest (index 1 in ranked list)
-  const pick = ranked[1] || ranked[0];
-  return { entry: pick.entry, slotIndex: pick.index };
+/** Highest-availability slot (for watchdog / single pick). */
+function pickScheduleSlot(entries) {
+  const ranked = rankScheduleSlots(entries);
+  if (!ranked.length) return { entry: null, slotIndex: 0 };
+  return { entry: ranked[0].entry, slotIndex: ranked[0].index };
+}
+
+function stopTimePickWatchdog() {
+  if (_timePickWatchdog) {
+    vs.clear(_timePickWatchdog);
+    _timePickWatchdog = null;
+  }
+}
+
+/** Poll until Submit is enabled (and a time is picked), up to maxMs. */
+async function waitForSubmitEnabled(maxMs) {
+  const deadline = Date.now() + Math.max(0, Number(maxMs) || 0);
+  while (vs.alive && Date.now() < deadline) {
+    if (isOpsFrozen() || isInterviewPage()) return false;
+    if (isTimeSlotPicked() && isSubmitButtonEnabled()) return true;
+    await new Promise((r) => vs.setTimeout(r, AI_BOOK_POLL_MS));
+  }
+  return !!(isTimeSlotPicked() && isSubmitButtonEnabled());
 }
 
 const TIME_SLOT_SELECTOR = [
@@ -312,6 +332,9 @@ export async function autoSelectFirstTime(scheduleEntries, hasError = false) {
   const ai = await getArmedAiConfig();
   if (!ai && !await getSetting("autoSelectFirstDate")) return;
 
+  // Ranked try owns slot picking — don't let watchdog fight us.
+  stopTimePickWatchdog();
+
   let entries = (scheduleEntries || []).filter((e) => {
     if (!e || !e.Time) return false;
     if (e.EntriesAvailable != null && Number(e.EntriesAvailable) <= 0) return false;
@@ -326,59 +349,80 @@ export async function autoSelectFirstTime(scheduleEntries, hasError = false) {
     });
   }
 
-  const { entry, slotIndex } = pickScheduleSlot(entries);
-  if (!entry) return;
+  const ranked = rankScheduleSlots(entries);
+  if (!ranked.length) return;
 
-  const time = normalizeScheduleTime(entry.Time);
-  const date = entry.Date ? String(entry.Date).slice(0, 10) : null;
-
-  setTikTikStatus(
-    `Waiting for time slots… (2nd-highest avail ${entry.EntriesAvailable ?? "?"} @ ${time}, pick #${slotIndex + 1})`
-  );
-
-  // Wait until portal paints slots for this date (poll 50ms, up to 10s).
-  const slotDeadline = Date.now() + 10000;
+  // Wait until portal paints slots for this date (poll, up to 10s).
+  const slotDeadline = Date.now() + 10_000;
   while (Date.now() < slotDeadline && vs.alive) {
     if (domShowsEntryTimes(entries) || document.querySelector(TIME_SLOT_SELECTOR)) break;
     await new Promise((r) => vs.setTimeout(r, AI_BOOK_POLL_MS));
   }
 
-  const picked = await pickTimeSlotDual({
-    time,
-    date,
-    slotIndex,
-    pollMs: AI_BOOK_POLL_MS,
-    maxMs: 12000,
-    prefix: T,
-  });
+  // 1 slot → wait up to 10s; multiple → 1s each then try next (2nd, 3rd, …).
+  const waitPerSlot = ranked.length === 1
+    ? AI_SUBMIT_ARM_MS
+    : AI_MULTI_SLOT_SUBMIT_WAIT_MS;
 
-  if (picked || isTimeSlotPicked()) {
+  setTikTikStatus(
+    ranked.length === 1
+      ? `1 time slot — try highest avail, wait ≤${waitPerSlot / 1000}s for Submit…`
+      : `${ranked.length} time slots — try highest→2nd→3rd… (${waitPerSlot / 1000}s each for Submit)`
+  );
+
+  for (let i = 0; i < ranked.length; i++) {
+    if (!vs.alive || isOpsFrozen() || isInterviewPage()) return;
+
+    const { entry, index: slotIndex, avail } = ranked[i];
+    const time = normalizeScheduleTime(entry.Time);
+    const date = entry.Date ? String(entry.Date).slice(0, 10) : null;
+    const rankLabel =
+      i === 0 ? "highest" : i === 1 ? "2nd-highest" : i === 2 ? "3rd-highest" : `${i + 1}th-highest`;
+
     setTikTikStatus(
-      `Time ${time} selected (availability ${entry.EntriesAvailable ?? "?"}) — Submit in ${AI_BOOK_SUBMIT_WAIT_MS}ms…`
+      `Trying ${rankLabel} avail (${avail}) @ ${time} — slot ${i + 1}/${ranked.length}…`
     );
-  } else {
-    setTikTikStatus("Time table visible but slot click failed — retrying…");
-    vs.send({
-      action: "bookTimeAndSubmitFast",
+
+    const picked = await pickTimeSlotDual({
       time,
       date,
       slotIndex,
-      selectMaxMs: AI_BOOK_SELECT_MS,
-      submitWaitMs: AI_BOOK_SUBMIT_WAIT_MS,
       pollMs: AI_BOOK_POLL_MS,
-      domWaitMs: AI_TIME_DOM_WAIT_MS,
+      maxMs: 4_000,
       prefix: T,
     });
+
+    if (!picked && !isTimeSlotPicked()) {
+      setTikTikStatus(`Could not click ${time} — trying next…`);
+      continue;
+    }
+
+    setTikTikStatus(
+      `Selected ${time} (${rankLabel}) — waiting ≤${waitPerSlot / 1000}s for Submit to enable…`
+    );
+
+    const enabled = await waitForSubmitEnabled(waitPerSlot);
+    if (enabled) {
+      setTikTikStatus(`Submit enabled on ${time} — clicking…`);
+      if (ai) {
+        await armAiFastSubmit(ai.accountId);
+      } else {
+        clickSubmitDual();
+      }
+      return;
+    }
+
+    if (i < ranked.length - 1) {
+      setTikTikStatus(
+        `Submit still disabled on ${time} — trying next (${i + 2}/${ranked.length})…`
+      );
+    }
   }
 
-  if (ai) {
-    await armAiFastSubmit(ai.accountId);
-    return;
-  }
-
-  if (isTimeSlotPicked()) {
-    clickSubmitDual();
-  }
+  setTikTikStatus(
+    `Tried all ${ranked.length} time slot(s); Submit never enabled.`
+  );
+  if (ai) resumeCityRotateAfterBooking();
 }
 
 export async function handleEvent(event) {
@@ -512,7 +556,8 @@ export async function handleEvent(event) {
   if (scheduleEntriesTails.includes(parsed.tail)) {
     const targetDate = parsed.params.Date.split("T")[0];
     cacheScheduleEntries(parsed.response.ScheduleEntries, targetDate);
-    scheduleTimePickWatchdog(targetDate, AI_BOOK_SLOT_INDEX);
+    // Ranked try in autoSelectFirstTime owns picks; skip competing watchdog.
+    stopTimePickWatchdog();
 
     const posts = await getPosts();
     const post = posts.filter((post2) => post2.Days && post2.Updated).sort((a, b) => b.Updated - a.Updated).find((post2) => post2.Days.some((day) => day.Date === targetDate));
