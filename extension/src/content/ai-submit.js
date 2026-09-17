@@ -14,6 +14,12 @@ import {
   isInSlotWindow,
   msUntilSlotWindow,
   getSlotWindowLabel,
+  setAccountSlotWindows,
+  clearAccountSlotWindows,
+  normalizeCustomWindows,
+  windowsToEditorRows,
+  MAX_CUSTOM_WINDOWS,
+  MAX_WINDOW_DURATION_MIN,
 } from "../shared/slotSchedule.js";
 import { cfg as rtCfg } from "../shared/remoteConfig.js";
 import { CLS, DAT, ID, MSG, T, idSel } from "../shared/token.js";
@@ -136,9 +142,9 @@ export function isSubmitEnabled(cfg) {
   return !!cfg.enabled;
 }
 
-/** Preferred-city rotation on. */
+/** Preferred-city rotation switch on (cities list may still be empty while user picks). */
 export function isCitiesEnabled(cfg) {
-  return !!(cfg && cfg.citiesEnabled && cfg.cities?.length);
+  return !!(cfg && cfg.citiesEnabled);
 }
 
 export async function getAccountId() {
@@ -222,7 +228,8 @@ export async function getCitiesRotateConfig() {
   const id = await getAccountId();
   if (!id) return null;
   const cfg = await getAiConfig(id);
-  if (!isCitiesEnabled(cfg)) return null;
+  if (!isCitiesEnabled(cfg) || !cfg.cities?.length) return null;
+  _syncAccountWindows(cfg);
   return { ...cfg, accountId: id };
 }
 
@@ -1211,20 +1218,229 @@ export function setTikTikStatus(text) {
   updateAiStatus(text);
 }
 
-function _paintToggleButtons(cfg) {
-  const submitBtn = document.querySelector(idSel(ID.aiSubmitBtn));
-  const citiesBtn = document.querySelector(idSel(ID.aiCitiesBtn));
-  const submitOn = isSubmitEnabled(cfg);
-  const citiesOn = isCitiesEnabled(cfg);
+function _termsAgreed(cfg) {
+  return !!(cfg && cfg.termsAgreed);
+}
 
-  if (submitBtn) {
-    submitBtn.classList.toggle(CLS.aiOnBtn, submitOn);
-    submitBtn.textContent = submitOn ? "Auto Submit: ON" : "Auto Submit: OFF";
+function _termsPassed(cfg) {
+  return !!(cfg && cfg.termsPassed);
+}
+
+function _readTermsAgreed() {
+  return !!document.querySelector(idSel(ID.aiTermsAgree))?.checked;
+}
+
+function _paintGate(cfg) {
+  const gate = document.querySelector(idSel(ID.aiTermsGate));
+  const main = document.querySelector(idSel(ID.aiMain));
+  const cb = document.querySelector(idSel(ID.aiTermsAgree));
+  const cont = document.querySelector(idSel(ID.aiTermsContinue));
+  const passed = _termsPassed(cfg);
+  if (gate) gate.classList.toggle(CLS.hidden, passed);
+  if (main) main.classList.toggle(CLS.hidden, !passed);
+  if (cb) {
+    cb.checked = _termsAgreed(cfg) || _readTermsAgreed();
   }
-  if (citiesBtn) {
-    citiesBtn.classList.toggle(CLS.aiOnBtn, citiesOn);
-    citiesBtn.textContent = citiesOn ? "City Change: ON" : "City Change: OFF";
+  if (cont) cont.disabled = !(_termsAgreed(cfg) || _readTermsAgreed());
+}
+
+function _onTermsAgreeToggle() {
+  const cont = document.querySelector(idSel(ID.aiTermsContinue));
+  const agreed = _readTermsAgreed();
+  if (cont) cont.disabled = !agreed;
+  updateAiStatus(agreed ? "Terms checked — tap Continue." : "Check Agree to continue.");
+}
+
+async function _onTermsContinue() {
+  if (!_readTermsAgreed()) {
+    updateAiStatus("Check Agree first.");
+    return;
   }
+  const accountId = await getAccountId();
+  if (!accountId) {
+    updateAiStatus("Open a logged-in schedule page so we can bind this to your account.");
+    return;
+  }
+  const prev = (await getAiConfig(accountId)) || {};
+  const { from, to } = _readFormDates();
+  const cities = _readSelectedCities();
+  const windows = _readTimingRowsFromDom();
+
+  thawOps();
+  clearPendingSubmit();
+  resetAutoSubmitProbe();
+
+  _submitFieldsOpen = true;
+  _citiesFieldsOpen = true;
+
+  await _persistForm(accountId, {
+    termsAgreed: true,
+    termsPassed: true,
+    termsAgreedAt: prev.termsAgreedAt || Date.now(),
+    submitEnabled: true,
+    citiesEnabled: true,
+    from: from || prev.from || null,
+    to: to || prev.to || null,
+    cities: cities.length ? cities : (prev.cities || []),
+    slotWindows: windows.length ? windows : (prev.slotWindows || null),
+    confirmedAt: Date.now(),
+  });
+
+  await refreshAiSubmitUi();
+  _setSwitch(document.querySelector(idSel(ID.aiSubmitSw)), true);
+  _setSwitch(document.querySelector(idSel(ID.aiCitiesSw)), true);
+  _submitFieldsOpen = true;
+  _citiesFieldsOpen = true;
+  _paintFeatureBodies(await getAiConfig(accountId));
+  _fillCitiesChecklist((prev.cities || []).map((c) => c.id), { force: true });
+  _fillTimingEditor(prev);
+  _paintGate(await getAiConfig(accountId));
+
+  const nextCities = _readSelectedCities().length ? _readSelectedCities() : (prev.cities || []);
+  if (nextCities.length) {
+    _bindPostSelectRotateWatch();
+    await startCityRotate();
+  }
+  if ((from || prev.from) && (to || prev.to)) {
+    await probeAutoSubmitForCurrentCity();
+  }
+  updateAiStatus("Auto Submit and City Change ON — set dates and preferred cities.");
+}
+
+function _syncAccountWindows(cfg) {
+  if (cfg?.slotWindows?.length) {
+    setAccountSlotWindows(cfg.slotWindows);
+  } else {
+    clearAccountSlotWindows();
+  }
+}
+
+function _minuteOptions(selected) {
+  let html = "";
+  for (let m = 0; m <= 59; m++) {
+    const sel = Number(selected) === m ? " selected" : "";
+    html += `<option value="${m}"${sel}>:${String(m).padStart(2, "0")}</option>`;
+  }
+  return html;
+}
+
+function _durationOptions(fromMin, selected) {
+  const maxDur = Math.min(MAX_WINDOW_DURATION_MIN, 59 - Number(fromMin || 0));
+  let html = "";
+  for (let d = 1; d <= Math.max(1, maxDur); d++) {
+    const sel = Number(selected) === d ? " selected" : "";
+    html += `<option value="${d}"${sel}>${d} min</option>`;
+  }
+  return html;
+}
+
+function _runsHelp(fromMin, durationMin) {
+  const f = Number(fromMin) || 0;
+  const d = Number(durationMin) || 1;
+  const to = Math.min(59, f + d);
+  return `Runs from :${String(f).padStart(2, "0")} up to :${String(to).padStart(2, "0")}`;
+}
+
+function _readTimingRowsFromDom() {
+  const list = document.querySelector(idSel(ID.aiWinList));
+  if (!list) return [];
+  const rows = [];
+  for (const row of list.querySelectorAll(`.${CLS.aiWinRow}`)) {
+    const fromMin = Number(row.querySelector('select[data-win="from"]')?.value);
+    const durationMin = Number(row.querySelector('select[data-win="dur"]')?.value);
+    if (!Number.isFinite(fromMin) || !Number.isFinite(durationMin)) continue;
+    rows.push({ fromMin, durationMin });
+  }
+  return normalizeCustomWindows(rows);
+}
+
+function _refreshRowHelp(row) {
+  const fromSel = row.querySelector('select[data-win="from"]');
+  const durSel = row.querySelector('select[data-win="dur"]');
+  const help = row.querySelector(`.${CLS.aiWinHelp}`);
+  if (!fromSel || !durSel || !help) return;
+  help.textContent = _runsHelp(fromSel.value, durSel.value);
+}
+
+function _paintTimingRow(fromMin = 0, durationMin = 6) {
+  const maxDur = Math.min(MAX_WINDOW_DURATION_MIN, 59 - fromMin);
+  const dur = Math.min(Math.max(1, durationMin || 1), Math.max(1, maxDur));
+  const row = document.createElement("div");
+  row.className = CLS.aiWinRow;
+  row.innerHTML = `
+    <div class="${CLS.aiInline}">
+      <label class="${CLS.aiHead}">Start</label>
+      <select data-win="from">${_minuteOptions(fromMin)}</select>
+      <label class="${CLS.aiHead}" style="margin-left:10px;color:#6b7280;font-weight:500">Duration</label>
+      <select data-win="dur">${_durationOptions(fromMin, dur)}</select>
+      <button type="button" class="${CLS.aiTrash}" data-win="del" title="Delete timing" aria-label="Delete">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>
+        </svg>
+      </button>
+    </div>
+    <div class="${CLS.aiWinHelp}">${_runsHelp(fromMin, dur)}</div>
+  `;
+  const fromSel = row.querySelector('select[data-win="from"]');
+  const durSel = row.querySelector('select[data-win="dur"]');
+  vs.on(fromSel, "change", () => {
+    const f = Number(fromSel.value);
+    const prev = Number(durSel.value) || 1;
+    durSel.innerHTML = _durationOptions(f, prev);
+    _refreshRowHelp(row);
+  });
+  vs.on(durSel, "change", () => _refreshRowHelp(row));
+  vs.on(row.querySelector('button[data-win="del"]'), "click", () => {
+    row.remove();
+    _updateTimingNote();
+  });
+  return row;
+}
+
+function _fillTimingEditor(cfg) {
+  const list = document.querySelector(idSel(ID.aiWinList));
+  if (!list) return;
+  list.replaceChildren();
+  const rows = cfg?.slotWindows?.length
+    ? windowsToEditorRows(cfg.slotWindows)
+    : [];
+  for (const r of rows.slice(0, MAX_CUSTOM_WINDOWS)) {
+    list.appendChild(_paintTimingRow(r.fromMin, r.durationMin));
+  }
+  _updateTimingNote(cfg);
+}
+
+function _updateTimingNote(cfg) {
+  const note = document.querySelector(idSel(ID.aiWinNote));
+  if (!note) return;
+  if (cfg?.slotWindows?.length || _readTimingRowsFromDom().length) {
+    note.textContent = `Custom windows active (max ${MAX_CUSTOM_WINDOWS}, each ≤ ${MAX_WINDOW_DURATION_MIN} min).`;
+  } else {
+    note.textContent = `Using defaults: ${getSlotWindowLabel()}. Add up to ${MAX_CUSTOM_WINDOWS} windows below.`;
+  }
+}
+
+function _setSwitch(el, on) {
+  if (!el) return;
+  el.classList.toggle(CLS.aiOnBtn, !!on);
+  el.setAttribute("aria-checked", on ? "true" : "false");
+}
+
+function _paintToggleButtons(cfg) {
+  _setSwitch(document.querySelector(idSel(ID.aiSubmitSw)), isSubmitEnabled(cfg));
+  _setSwitch(document.querySelector(idSel(ID.aiCitiesSw)), isCitiesEnabled(cfg));
+}
+
+var _submitFieldsOpen = false;
+var _citiesFieldsOpen = false;
+
+function _paintFeatureBodies(cfg) {
+  const submitOn = isSubmitEnabled(cfg) || _submitFieldsOpen;
+  const citiesOn = isCitiesEnabled(cfg) || _citiesFieldsOpen;
+  const submitBody = document.querySelector(idSel(ID.aiSubmitBody));
+  const citiesBody = document.querySelector(idSel(ID.aiCitiesBody));
+  if (submitBody) submitBody.classList.toggle(CLS.hidden, !submitOn);
+  if (citiesBody) citiesBody.classList.toggle(CLS.hidden, !citiesOn);
 }
 
 function _paintStatus(cfg, accountId) {
@@ -1233,6 +1449,7 @@ function _paintStatus(cfg, accountId) {
   if (!status || !btn) return;
 
   _paintToggleButtons(cfg);
+  _paintFeatureBodies(cfg);
 
   const submitOn = isSubmitEnabled(cfg);
   const citiesOn = isCitiesEnabled(cfg);
@@ -1251,21 +1468,31 @@ function _paintStatus(cfg, accountId) {
     parts.push(
       `Auto Submit ON (${_pretty(cfg.from)} – ${_pretty(cfg.to)}, clicks Submit as soon as time slot is ready)`
     );
+  } else if (_submitFieldsOpen && !submitOn) {
+    parts.push("Auto Submit — set From / To dates, then Enable again");
   } else {
     parts.push("Auto Submit OFF");
   }
   if (citiesOn) {
     parts.push(`City Change ON (${_cityNames(cfg)}, ${getSlotWindowLabel()})`);
+  } else if (_citiesFieldsOpen && !citiesOn) {
+    parts.push("City Change — pick preferred cities, then Enable again");
   } else {
     parts.push("City Change OFF");
   }
   status.textContent = `Account ${accountId || "—"}: ${parts.join(" · ")}`;
+  status.classList.toggle(CLS.aiOk, anyOn);
 }
 
 export async function refreshAiSubmitUi() {
   const accountId = await getAccountId();
   const cfg = accountId ? await getAiConfig(accountId) : null;
+  // Keep date/city panels visible while the matching switch is ON.
+  if (!isSubmitEnabled(cfg)) _submitFieldsOpen = false;
+  if (!isCitiesEnabled(cfg)) _citiesFieldsOpen = false;
+  _syncAccountWindows(cfg);
   _paintStatus(cfg, accountId);
+  _paintGate(cfg);
   const from = document.querySelector(idSel(ID.aiFrom));
   const to = document.querySelector(idSel(ID.aiTo));
   if (from && cfg?.from) from.value = cfg.from;
@@ -1273,8 +1500,13 @@ export async function refreshAiSubmitUi() {
   const savedIds = (cfg?.cities || []).map((c) => c.id);
   const panel = document.querySelector(idSel(ID.aiPanel));
   const panelOpen = panel && !panel.classList.contains(CLS.hidden);
+  const citiesBody = document.querySelector(idSel(ID.aiCitiesBody));
+  const citiesVisible = citiesBody && !citiesBody.classList.contains(CLS.hidden);
   const current = _readCheckedCityIds();
-  _fillCitiesChecklist(panelOpen && current.length ? current : savedIds);
+  if (citiesVisible || isCitiesEnabled(cfg) || _citiesFieldsOpen) {
+    _fillCitiesChecklist(panelOpen && current.length ? current : savedIds);
+  }
+  _fillTimingEditor(cfg);
   const login = document.querySelector(idSel(ID.aiLogin));
   const pass = document.querySelector(idSel(ID.aiPass));
   if (login && cfg?.loginId) login.value = cfg.loginId;
@@ -1296,6 +1528,11 @@ export async function refreshAiSubmitUi() {
   _paintLoginToggle(!!loginOpen, _loginDetailsSaved(cfg));
 }
 
+function _isPanelOpen() {
+  const panel = document.querySelector(idSel(ID.aiPanel));
+  return !!(panel && !panel.classList.contains(CLS.hidden));
+}
+
 function _togglePanel(show) {
   const panel = document.querySelector(idSel(ID.aiPanel));
   if (!panel) return;
@@ -1303,99 +1540,220 @@ function _togglePanel(show) {
   if (show) {
     getAccountId().then(async (id) => {
       const cfg = id ? await getAiConfig(id) : null;
-      _fillCitiesChecklist((cfg?.cities || []).map((c) => c.id), { force: true });
+      _paintGate(cfg);
+      if (_termsPassed(cfg)) {
+        _fillCitiesChecklist((cfg?.cities || []).map((c) => c.id), { force: true });
+      } else {
+        updateAiStatus("Read the terms, check Agree, then Continue.");
+      }
     });
   }
 }
 
-async function _onToggleSubmit() {
+function _bindOutsideClose() {
+  if (_bindOutsideClose._done) return;
+  _bindOutsideClose._done = true;
+  const closeIfOutside = (e) => {
+    if (!_isPanelOpen()) return;
+    const panel = document.querySelector(idSel(ID.aiPanel));
+    const btn = document.querySelector(idSel(ID.aiBtn));
+    const t = e.target;
+    if (panel && (panel === t || panel.contains(t))) return;
+    if (btn && (btn === t || btn.contains(t))) return;
+    _togglePanel(false);
+  };
+  // capture:true so page handlers that stopPropagation still can't block close
+  vs.on(document, "pointerdown", closeIfOutside, { capture: true });
+  vs.on(document, "click", closeIfOutside, { capture: true });
+}
+
+async function _onSetSubmit(wantOn) {
   const accountId = await getAccountId();
   if (!accountId) {
     updateAiStatus("Open a logged-in schedule page so we can bind this to your account.");
     return;
   }
   const prev = (await getAiConfig(accountId)) || {};
-  const turningOn = !isSubmitEnabled(prev);
-  const { from, to } = _readFormDates();
+  let { from, to } = _readFormDates();
+  from = from || prev.from || null;
+  to = to || prev.to || null;
 
-  if (turningOn) {
-    if (!from || !to) {
-      updateAiStatus("Select both From and To dates before enabling Auto Submit.");
-      return;
-    }
-    if (from > to) {
-      updateAiStatus("From date must be before To date.");
-      return;
-    }
-    const ok = window.confirm(
-      `Enable Auto Submit?\n\n` +
-      `Range: ${_pretty(from)} – ${_pretty(to)}\n` +
-      `If a matching slot appears on the current city, it will select date + time and Submit once.\n\n` +
-      `City Change is separate — use its own ON/OFF button.`
-    );
-    if (!ok) return;
+  if (wantOn) {
+    // Always flip switch ON immediately (dates can be filled after).
+    _submitFieldsOpen = true;
+    _setSwitch(document.querySelector(idSel(ID.aiSubmitSw)), true);
+
     thawOps();
     clearPendingSubmit();
     resetAutoSubmitProbe();
     await _persistForm(accountId, {
       submitEnabled: true,
-      from,
-      to,
+      from: from || null,
+      to: to || null,
       confirmedAt: Date.now(),
     });
-  } else {
-    clearPendingSubmit();
-    await _persistForm(accountId, {
-      submitEnabled: false,
-      from: from || prev.from,
-      to: to || prev.to,
-    });
-  }
-  await refreshAiSubmitUi();
-  if (turningOn) {
+
+    const fromEl = document.querySelector(idSel(ID.aiFrom));
+    const toEl = document.querySelector(idSel(ID.aiTo));
+    if (fromEl && from) fromEl.value = from;
+    if (toEl && to) toEl.value = to;
+
+    await refreshAiSubmitUi();
+    _setSwitch(document.querySelector(idSel(ID.aiSubmitSw)), true);
+    _submitFieldsOpen = true;
+    _paintFeatureBodies(await getAiConfig(accountId));
+
+    if (!from || !to) {
+      updateAiStatus("Auto Submit ON — select From and To dates to start booking.");
+      return;
+    }
+    if (from > to) {
+      updateAiStatus("Auto Submit ON — From date must be before To date.");
+      return;
+    }
+    _submitFieldsOpen = false;
+    updateAiStatus(`Auto Submit ON (${_pretty(from)} – ${_pretty(to)})`);
     await probeAutoSubmitForCurrentCity();
+    return;
   }
+
+  _submitFieldsOpen = false;
+  clearPendingSubmit();
+  _setSwitch(document.querySelector(idSel(ID.aiSubmitSw)), false);
+  await _persistForm(accountId, {
+    submitEnabled: false,
+    from: from || prev.from,
+    to: to || prev.to,
+  });
+  await refreshAiSubmitUi();
+  updateAiStatus("Auto Submit OFF");
 }
 
-async function _onToggleCities() {
+async function _onSetCities(wantOn) {
   const accountId = await getAccountId();
   if (!accountId) {
     updateAiStatus("Open a logged-in schedule page so we can bind this to your account.");
     return;
   }
   const prev = (await getAiConfig(accountId)) || {};
-  const turningOn = !isCitiesEnabled(prev);
-  const cities = _readSelectedCities();
 
-  if (turningOn) {
-    if (!cities.length) {
-      updateAiStatus("Select at least one preferred city before enabling City Change.");
-      return;
-    }
-    const ok = window.confirm(
-      `Enable City Change?\n\n` +
-      `Cities (in order): ${cities.map((c) => c.name).join(" → ")}\n` +
-      `City checks run each hour during IST windows ${getSlotWindowLabel()}, switching cities every 13–18 seconds in that same order.\n\n` +
-      `Auto Submit is separate — use its own ON/OFF button.`
-    );
-    if (!ok) return;
+  if (wantOn) {
+    // Always flip switch ON immediately (cities can be picked after).
+    _citiesFieldsOpen = true;
+    _setSwitch(document.querySelector(idSel(ID.aiCitiesSw)), true);
+
+    _fillCitiesChecklist((prev.cities || []).map((c) => c.id), { force: true });
+    _fillTimingEditor(prev);
+    let cities = _readSelectedCities();
+    if (!cities.length && prev.cities?.length) cities = prev.cities;
+    const windows = _readTimingRowsFromDom();
+
     thawOps();
     await _persistForm(accountId, {
       citiesEnabled: true,
-      cities,
+      cities: cities.length ? cities : (prev.cities || []),
+      slotWindows: windows.length ? windows : (prev.slotWindows || null),
     });
     await refreshAiSubmitUi();
+    _setSwitch(document.querySelector(idSel(ID.aiCitiesSw)), true);
+    _citiesFieldsOpen = true;
+    _paintFeatureBodies(await getAiConfig(accountId));
+    if (!cities.length) {
+      _fillCitiesChecklist([], { force: true });
+    }
+
+    if (!cities.length) {
+      updateAiStatus("City Change ON — select at least one preferred city to start hopping.");
+      return;
+    }
+
+    _citiesFieldsOpen = false;
     _bindPostSelectRotateWatch();
     await startCityRotate();
+    updateAiStatus(`City Change ON (${cities.map((c) => c.name || c.id).join(", ")})`);
     return;
   }
 
+  _citiesFieldsOpen = false;
   stopCityRotate();
+  _setSwitch(document.querySelector(idSel(ID.aiCitiesSw)), false);
+  const cities = _readSelectedCities();
   await _persistForm(accountId, {
     citiesEnabled: false,
     cities: cities.length ? cities : (prev.cities || []),
   });
   await refreshAiSubmitUi();
+  updateAiStatus("City Change OFF");
+}
+
+/** When dates are filled while Auto Submit is ON, save them and start booking. */
+async function _tryEnableSubmitAfterDates() {
+  const accountId = await getAccountId();
+  if (!accountId) return;
+  const prev = (await getAiConfig(accountId)) || {};
+  if (!isSubmitEnabled(prev) && !_submitFieldsOpen) return;
+  const { from, to } = _readFormDates();
+  if (!from || !to || from > to) return;
+  await _persistForm(accountId, {
+    submitEnabled: true,
+    from,
+    to,
+    confirmedAt: Date.now(),
+  });
+  _submitFieldsOpen = false;
+  await refreshAiSubmitUi();
+  _setSwitch(document.querySelector(idSel(ID.aiSubmitSw)), true);
+  thawOps();
+  resetAutoSubmitProbe();
+  updateAiStatus(`Auto Submit ON (${_pretty(from)} – ${_pretty(to)})`);
+  await probeAutoSubmitForCurrentCity();
+}
+
+function _labelFromSaved(windows) {
+  return (windows || [])
+    .map((w) => `:${String(w.fromMin).padStart(2, "0")}–:${String(w.toMin).padStart(2, "0")}`)
+    .join(", ");
+}
+
+async function _onAddTiming() {
+  const list = document.querySelector(idSel(ID.aiWinList));
+  if (!list) return;
+  if (list.querySelectorAll(`.${CLS.aiWinRow}`).length >= MAX_CUSTOM_WINDOWS) {
+    updateAiStatus(`Max ${MAX_CUSTOM_WINDOWS} timing windows.`);
+    return;
+  }
+  list.appendChild(_paintTimingRow(0, Math.min(6, MAX_WINDOW_DURATION_MIN)));
+  _updateTimingNote();
+}
+
+async function _onSaveTimings() {
+  const accountId = await getAccountId();
+  if (!accountId) {
+    updateAiStatus("Open a logged-in schedule page so we can bind this to your account.");
+    return;
+  }
+  const windows = _readTimingRowsFromDom();
+  if (!windows.length) {
+    updateAiStatus("Add at least one timing (or Reset to defaults).");
+    return;
+  }
+  await _persistForm(accountId, { slotWindows: windows });
+  await refreshAiSubmitUi();
+  updateAiStatus(`Saved ${windows.length} custom timing(s): ${_labelFromSaved(windows)}`);
+}
+
+async function _onResetTimings() {
+  const accountId = await getAccountId();
+  if (!accountId) {
+    updateAiStatus("Open a logged-in schedule page so we can bind this to your account.");
+    return;
+  }
+  const ok = window.confirm("Reset to default IST windows? Your custom timings will be removed.");
+  if (!ok) return;
+  await _persistForm(accountId, { slotWindows: null });
+  clearAccountSlotWindows();
+  await refreshAiSubmitUi();
+  updateAiStatus(`Using default windows: ${getSlotWindowLabel()}`);
 }
 
 async function _onSaveLogin() {
@@ -1490,7 +1848,14 @@ export function ensureAiSubmitUi() {
     removeTikTikUi();
     return;
   }
-  if (document.querySelector(idSel(ID.aiBtn))) return;
+  if (document.querySelector(idSel(ID.aiBtn))) {
+    // Rebuild if an older Tik Tik panel is missing the new controls.
+    if (!document.querySelector(idSel(ID.aiSubmitSw)) || !document.querySelector(idSel(ID.aiTermsContinue))) {
+      removeTikTikUi();
+    } else {
+      return;
+    }
+  }
 
   const row = ensureSelectorRow();
   if (!row) return;
@@ -1500,7 +1865,8 @@ export function ensureAiSubmitUi() {
   btn.type = "button";
   btn.textContent = "Tik Tik";
   btn.dataset[DAT.mark] = "";
-  vs.on(btn, "click", () => {
+  vs.on(btn, "click", (e) => {
+    e.stopPropagation();
     const panel = document.querySelector(idSel(ID.aiPanel));
     const open = panel && panel.classList.contains(CLS.hidden);
     _togglePanel(!!open);
@@ -1513,85 +1879,147 @@ export function ensureAiSubmitUi() {
   panel.dataset[DAT.mark] = "";
 
   panel.innerHTML = `
-    <div class="${CLS.cardTtl}">Tik Tik (this account only)</div>
-    <p class="${CLS.aiHint}">
-      Two separate switches: <b>Auto Submit</b> books a matching date once;
-      <b>City Change</b> checks slots in burst windows each hour (IST ${getSlotWindowLabel()}), switching preferred cities in checklist order every 13–18s.
-    </p>
-    <div class="${CLS.aiRow}">
-      <label>From <input type="date" id="${ID.aiFrom}" min="${_todayISO()}" /></label>
-      <label>To <input type="date" id="${ID.aiTo}" min="${_todayISO()}" /></label>
-    </div>
-    <div class="${CLS.aiHint}" style="margin-bottom:4px;font-weight:600;color:#334155">
-      Preferred cities
-      <button type="button" id="${ID.aiCitiesAll}" class="${CLS.aiCityAct}">Select all</button>
-      <button type="button" id="${ID.aiCitiesNone}" class="${CLS.aiCityAct}">Clear</button>
-    </div>
-    <div id="${ID.aiCities}" class="${CLS.aiCities}"></div>
-    <div class="${CLS.aiRow}" style="margin-top:6px">
-      <button type="button" id="${ID.aiLoginToggle}">Login details ▸</button>
-    </div>
-    <div id="${ID.aiLoginBody}" class="${CLS.hidden}">
-      <div class="${CLS.aiHint}" style="margin:4px 0;font-weight:600;color:#334155">Login (auto-login on Home when logged out)</div>
-      <div class="${CLS.aiRow}">
-        <label>ID / email <input type="email" id="${ID.aiLogin}" autocomplete="off" /></label>
-        <label>Password <input type="password" id="${ID.aiPass}" autocomplete="off" /></label>
-      </div>
-      <div class="${CLS.aiHint}" style="margin:0 0 6px">
-        3 sets × 5 questions. Pick <b>1 question from each set</b>, then type <b>your answer</b> for that question.
-        Login later asks any 2 of these 3.
-      </div>
-      <div class="${CLS.aiRow}" style="flex-direction:column;align-items:stretch">
-        <label>Set 1 — choose 1 question
-          <select id="${ID.aiQ1}">${_securityOptionsHtml(0)}</select>
+    <div id="${ID.aiTermsGate}">
+      <div id="${ID.aiTerms}" class="${CLS.aiTerms}">
+        <div class="${CLS.aiHead}">Terms &amp; Conditions</div>
+        <div class="${CLS.aiHint}">Please read carefully before continuing.</div>
+        <ul class="${CLS.aiTermsList}">
+          <li>Options apply to this applicant only. They do not bypass CAPTCHAs, waiting rooms, or portal security.</li>
+          <li>During your windows, City Change hops every 13–18s. Max ${MAX_CUSTOM_WINDOWS} windows, each up to ${MAX_WINDOW_DURATION_MIN} minutes.</li>
+          <li>Checking too fast may trigger <b>1015 Rate Limit</b> errors.</li>
+        </ul>
+        <label class="${CLS.aiTermsCb}">
+          <input type="checkbox" id="${ID.aiTermsAgree}" />
+          <span>I have read and agree to these terms.</span>
         </label>
-        <label>Your answer for set 1
-          <input type="text" id="${ID.aiA1}" autocomplete="off" required placeholder="Type the answer you registered on the visa site" />
-        </label>
-      </div>
-      <div class="${CLS.aiRow}" style="flex-direction:column;align-items:stretch">
-        <label>Set 2 — choose 1 question
-          <select id="${ID.aiQ2}">${_securityOptionsHtml(1)}</select>
-        </label>
-        <label>Your answer for set 2
-          <input type="text" id="${ID.aiA2}" autocomplete="off" required placeholder="Type the answer you registered on the visa site" />
-        </label>
-      </div>
-      <div class="${CLS.aiRow}" style="flex-direction:column;align-items:stretch">
-        <label>Set 3 — choose 1 question
-          <select id="${ID.aiQ3}">${_securityOptionsHtml(2)}</select>
-        </label>
-        <label>Your answer for set 3
-          <input type="text" id="${ID.aiA3}" autocomplete="off" required placeholder="Type the answer you registered on the visa site" />
-        </label>
-      </div>
-      <div class="${CLS.aiRow}">
-        <button type="button" id="${ID.aiSaveLogin}">Save login details</button>
+        <button type="button" id="${ID.aiTermsContinue}" class="${CLS.aiContinue}" disabled>Continue</button>
       </div>
     </div>
-    <div class="${CLS.aiRow}">
-      <button type="button" id="${ID.aiSubmitBtn}">Auto Submit: OFF</button>
-      <button type="button" id="${ID.aiCitiesBtn}">City Change: OFF</button>
-      <button type="button" id="${ID.aiClose}">Close</button>
+    <div id="${ID.aiMain}" class="${CLS.hidden}">
+      <div class="${CLS.aiSec}">
+        <div class="${CLS.aiRow}" style="justify-content:space-between;margin-bottom:4px">
+          <div>
+            <div class="${CLS.aiHead}" style="font-size:17px">Auto Submit</div>
+            <div class="${CLS.aiHint}" style="margin:2px 0 0">Book automatically when a date in your range appears.</div>
+          </div>
+          <button type="button" id="${ID.aiSubmitSw}" class="${CLS.aiSwitch}" role="switch" aria-checked="false" aria-label="Auto Submit">
+            <span class="${CLS.aiKnob}"></span>
+          </button>
+        </div>
+        <div id="${ID.aiSubmitBody}" class="${CLS.hidden}">
+          <div class="${CLS.aiRow}" style="margin-top:10px">
+            <label>From <input type="date" id="${ID.aiFrom}" min="${_todayISO()}" /></label>
+            <label>To <input type="date" id="${ID.aiTo}" min="${_todayISO()}" /></label>
+          </div>
+        </div>
+      </div>
+      <div class="${CLS.aiSec}">
+        <div class="${CLS.aiRow}" style="justify-content:space-between;margin-bottom:4px">
+          <div>
+            <div class="${CLS.aiHead}" style="font-size:17px">City Change</div>
+            <div class="${CLS.aiHint}" style="margin:2px 0 0">Rotate preferred cities during release windows.</div>
+          </div>
+          <button type="button" id="${ID.aiCitiesSw}" class="${CLS.aiSwitch}" role="switch" aria-checked="false" aria-label="City Change">
+            <span class="${CLS.aiKnob}"></span>
+          </button>
+        </div>
+        <div id="${ID.aiCitiesBody}" class="${CLS.hidden}">
+          <div class="${CLS.aiHint}" style="margin:10px 0 4px;font-weight:600;color:#111827">
+            Preferred cities
+            <button type="button" id="${ID.aiCitiesAll}" class="${CLS.aiCityAct}">Select all</button>
+            <button type="button" id="${ID.aiCitiesNone}" class="${CLS.aiCityAct}">Clear</button>
+          </div>
+          <div id="${ID.aiCities}" class="${CLS.aiCities}"></div>
+          <div class="${CLS.aiHead}" style="font-size:16px;margin:14px 0 8px">Release Window Checks</div>
+          <p id="${ID.aiWinNote}" class="${CLS.aiHint}"></p>
+          <div id="${ID.aiWinList}"></div>
+          <div class="${CLS.aiRow}" style="margin-top:8px">
+            <button type="button" id="${ID.aiWinAdd}">+ Add timing</button>
+            <button type="button" id="${ID.aiWinSave}">Save timings</button>
+            <button type="button" id="${ID.aiWinReset}">Reset defaults</button>
+          </div>
+        </div>
+      </div>
+      <div class="${CLS.aiSec}">
+        <div class="${CLS.aiRow}" style="margin:0">
+          <button type="button" id="${ID.aiLoginToggle}">Login details ▸</button>
+          <button type="button" id="${ID.aiClose}">Close</button>
+        </div>
+        <div id="${ID.aiLoginBody}" class="${CLS.hidden}" style="margin-top:8px">
+          <div class="${CLS.aiHint}" style="margin:4px 0;font-weight:600;color:#111827">Login (auto-login on Home when logged out)</div>
+          <div class="${CLS.aiRow}">
+            <label>ID / email <input type="email" id="${ID.aiLogin}" autocomplete="off" /></label>
+            <label>Password <input type="password" id="${ID.aiPass}" autocomplete="off" /></label>
+          </div>
+          <div class="${CLS.aiHint}" style="margin:0 0 6px">
+            3 sets × 5 questions. Pick <b>1 question from each set</b>, then type <b>your answer</b> for that question.
+          </div>
+          <div class="${CLS.aiRow}" style="flex-direction:column;align-items:stretch">
+            <label>Set 1 — choose 1 question
+              <select id="${ID.aiQ1}">${_securityOptionsHtml(0)}</select>
+            </label>
+            <label>Your answer for set 1
+              <input type="text" id="${ID.aiA1}" autocomplete="off" required placeholder="Type the answer you registered on the visa site" />
+            </label>
+          </div>
+          <div class="${CLS.aiRow}" style="flex-direction:column;align-items:stretch">
+            <label>Set 2 — choose 1 question
+              <select id="${ID.aiQ2}">${_securityOptionsHtml(1)}</select>
+            </label>
+            <label>Your answer for set 2
+              <input type="text" id="${ID.aiA2}" autocomplete="off" required placeholder="Type the answer you registered on the visa site" />
+            </label>
+          </div>
+          <div class="${CLS.aiRow}" style="flex-direction:column;align-items:stretch">
+            <label>Set 3 — choose 1 question
+              <select id="${ID.aiQ3}">${_securityOptionsHtml(2)}</select>
+            </label>
+            <label>Your answer for set 3
+              <input type="text" id="${ID.aiA3}" autocomplete="off" required placeholder="Type the answer you registered on the visa site" />
+            </label>
+          </div>
+          <div class="${CLS.aiRow}">
+            <button type="button" id="${ID.aiSaveLogin}">Save login details</button>
+          </div>
+        </div>
+      </div>
     </div>
-    <div id="${ID.aiStatus}" class="${CLS.aiHint}"></div>
+    <div id="${ID.aiStatus}" class="${CLS.aiHint}" style="margin-top:10px"></div>
   `;
 
   row.insertAdjacentElement("afterend", panel);
 
-  vs.on(panel.querySelector(idSel(ID.aiSubmitBtn)), "click", _onToggleSubmit);
-  vs.on(panel.querySelector(idSel(ID.aiCitiesBtn)), "click", _onToggleCities);
+  vs.on(panel.querySelector(idSel(ID.aiSubmitSw)), "click", async () => {
+    const accountId = await getAccountId();
+    const cfg = accountId ? await getAiConfig(accountId) : null;
+    await _onSetSubmit(!isSubmitEnabled(cfg));
+  });
+  vs.on(panel.querySelector(idSel(ID.aiCitiesSw)), "click", async () => {
+    const accountId = await getAccountId();
+    const cfg = accountId ? await getAiConfig(accountId) : null;
+    await _onSetCities(!isCitiesEnabled(cfg));
+  });
+  vs.on(panel.querySelector(idSel(ID.aiWinAdd)), "click", _onAddTiming);
+  vs.on(panel.querySelector(idSel(ID.aiWinSave)), "click", _onSaveTimings);
+  vs.on(panel.querySelector(idSel(ID.aiWinReset)), "click", _onResetTimings);
   vs.on(panel.querySelector(idSel(ID.aiSaveLogin)), "click", _onSaveLogin);
   vs.on(panel.querySelector(idSel(ID.aiLoginToggle)), "click", _onToggleLoginDetails);
   vs.on(panel.querySelector(idSel(ID.aiClose)), "click", () => _togglePanel(false));
   vs.on(panel.querySelector(idSel(ID.aiCitiesAll)), "click", () => _setAllCitiesChecked(true));
   vs.on(panel.querySelector(idSel(ID.aiCitiesNone)), "click", () => _setAllCitiesChecked(false));
+  vs.on(panel.querySelector(idSel(ID.aiTermsAgree)), "change", () => { _onTermsAgreeToggle(); });
+  vs.on(panel.querySelector(idSel(ID.aiTermsContinue)), "click", () => { _onTermsContinue(); });
 
   vs.on(panel.querySelector(idSel(ID.aiFrom)), "change", (e) => {
     const to = panel.querySelector(idSel(ID.aiTo));
     if (to && e.target.value) to.min = e.target.value;
+    _tryEnableSubmitAfterDates();
+  });
+  vs.on(panel.querySelector(idSel(ID.aiTo)), "change", () => {
+    _tryEnableSubmitAfterDates();
   });
 
+  _bindOutsideClose();
   refreshAiSubmitUi();
 }
 
