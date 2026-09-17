@@ -82,9 +82,36 @@ export var CSS = `
 #${ID.waitTime} .${CLS.pillDone} { background-color: #1a4480; color: white; }
 
 #atlas-sidebar .${CLS.sideLink} { background-color: #1a4480; color: white; }
-#${ID.datesPara} { margin: 0.5em 0; }
+#${ID.datesPara} { margin: 0.5em 0; line-height: 1.45; }
 
 #${ID.datesCont} .${CLS.datesLnk} { color: white; }
+#${ID.datesCont} .${CLS.slotsSum} {
+  font-weight: 700;
+  font-size: 1.05em;
+  margin-bottom: 0.4em;
+  color: #0b3d2e;
+}
+#${ID.datesCont} .${CLS.slotsTbl},
+#${ID.slotsTbl} {
+  width: auto;
+  min-width: 220px;
+  border-collapse: collapse;
+  margin: 0.25em 0 0.5em;
+  font-size: 0.95em;
+}
+#${ID.datesCont} .${CLS.slotsTbl} th,
+#${ID.datesCont} .${CLS.slotsTbl} td,
+#${ID.slotsTbl} th,
+#${ID.slotsTbl} td {
+  border: 1px solid #cbd5e0;
+  padding: 0.3em 0.75em;
+  text-align: left;
+}
+#${ID.datesCont} .${CLS.slotsTbl} th,
+#${ID.slotsTbl} th {
+  background: #edf2f7;
+  font-weight: 600;
+}
 #${ID.ofcDate} { font-weight: bold; }
 
 .${CLS.card} {

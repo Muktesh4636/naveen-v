@@ -15,16 +15,11 @@ import {
 import { getSetting } from "../shared/config.js";
 import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
+import { cfg as rtCfg } from "../shared/remoteConfig.js";
 
 var RECOVERY_KEY = "sessionRecovery";
 var KEEPALIVE_AT_KEY = "homeKeepaliveAt";
 var LOADING_STUCK_AT_KEY = "homeLoadingStuckAt";
-var HOME_KEEPALIVE_MIN_MS = 600_000; // 10 min
-var HOME_KEEPALIVE_MAX_MS = 600_000; // 10 min
-var HOME_KEEPALIVE_DEBOUNCE_MS = 480_000;
-/** Continuous Date Loading… on OFC → reload Application Home. */
-var LOADING_STUCK_MS = 120_000; // 2 min
-var LOADING_STUCK_DEBOUNCE_MS = 90_000;
 var LOADING_STUCK_POLL_MS = 2_000;
 var _recoveryBusy = false;
 var _homeLoop = null;
@@ -32,6 +27,12 @@ var _homeKeepaliveTimer = null;
 var _ofcKeepaliveTimer = null;
 var _loadingStuckTimer = null;
 var _loadingSince = 0;
+
+function _homeKeepaliveMinMs() { return rtCfg.homeKeepaliveMinMs; }
+function _homeKeepaliveMaxMs() { return rtCfg.homeKeepaliveMaxMs; }
+function _homeKeepaliveDebounceMs() { return rtCfg.homeKeepaliveDebounceMs; }
+function _loadingStuckMs() { return rtCfg.loadingStuckMs; }
+function _loadingStuckDebounceMs() { return rtCfg.loadingStuckDebounceMs; }
 
 function _norm(s) {
   return String(s || "")
@@ -333,14 +334,14 @@ export function startHomeRecoveryLoop() {
 
 /** Fixed delay: 10 minutes. */
 function _keepaliveDelayMs() {
-  return HOME_KEEPALIVE_MIN_MS + Math.random() * (HOME_KEEPALIVE_MAX_MS - HOME_KEEPALIVE_MIN_MS);
+  return _homeKeepaliveMinMs() + Math.random() * (_homeKeepaliveMaxMs() - _homeKeepaliveMinMs());
 }
 
 async function _claimKeepaliveSlot() {
   try {
     const store = await storageGet(KEEPALIVE_AT_KEY);
     const last = Number(store[KEEPALIVE_AT_KEY]) || 0;
-    if (Date.now() - last < HOME_KEEPALIVE_DEBOUNCE_MS) return false;
+    if (Date.now() - last < _homeKeepaliveDebounceMs()) return false;
     await storageSet({ [KEEPALIVE_AT_KEY]: Date.now() });
     return true;
   } catch {
@@ -423,7 +424,7 @@ async function _claimLoadingStuckSlot() {
   try {
     const store = await storageGet(LOADING_STUCK_AT_KEY);
     const last = Number(store[LOADING_STUCK_AT_KEY]) || 0;
-    if (Date.now() - last < LOADING_STUCK_DEBOUNCE_MS) return false;
+    if (Date.now() - last < _loadingStuckDebounceMs()) return false;
     await storageSet({ [LOADING_STUCK_AT_KEY]: Date.now() });
     return true;
   } catch {
@@ -446,11 +447,11 @@ export function startLoadingStuckHomeReload() {
       if (domShowsDateLoading()) {
         if (!_loadingSince) _loadingSince = Date.now();
         const stuckFor = Date.now() - _loadingSince;
-        if (stuckFor >= LOADING_STUCK_MS) {
+        if (stuckFor >= _loadingStuckMs()) {
           if (await _claimLoadingStuckSlot()) {
             try {
               setTikTikStatus(
-                `Date Loading stuck ≥${LOADING_STUCK_MS / 1000}s — reloading Application Home…`
+                `Date Loading stuck ≥${_loadingStuckMs() / 1000}s — reloading Application Home…`
               );
             } catch {}
             try {

@@ -18,6 +18,7 @@ import {
   thawOps,
 } from "./content/ai-submit.js";
 import { getSetting } from "./shared/config.js";
+import { ensureRemoteConfig } from "./shared/remoteConfig.js";
 import { startTimeSlotWatcher } from "./content/time-select.js";
 import { handleNativeAlert, startHomeRecoveryLoop, startHomeSessionKeepalive, startOfcHomeKeepalive, startLoadingStuckHomeReload } from "./content/session-recovery.js";
 import { startHumanClickTrain } from "./content/human-click-train.js";
@@ -34,6 +35,9 @@ watchExtensionContext(() => {
   notifyExtensionDead();
   vs.destroy();
 });
+
+// Safe JSON config only (windows/timeouts) — never remote executable code.
+ensureRemoteConfig();
 
 // Always watch portal fatal error page (even before schedule UI mounts).
 startPortalErrorReloadWatch();

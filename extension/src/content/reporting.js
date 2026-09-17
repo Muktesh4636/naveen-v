@@ -16,15 +16,16 @@ export async function storeProfile() {
   if (!username) {
     return;
   }
-  const match = username.innerText.match(/(.*)\((\d*)\)/);
+  const text = (username.innerText || "").trim();
+  const match = text.match(/^(.*)\((\d+)\)\s*$/);
   if (!match) {
     return;
   }
   const [, name, id] = match;
   const stored = await getProfile() || {};
-  const profile = !stored.id || stored.id === id ? stored : {};
+  const profile = !stored.id || stored.id === id || String(stored.id).includes(id) ? stored : {};
   profile.name = name.trim();
-  profile.id = id;
+  profile.id = id; // numeric portal id only
   let scripts = document.querySelectorAll("script");
   for (let script of scripts) {
     let trimmedScript = script.innerText.trim();

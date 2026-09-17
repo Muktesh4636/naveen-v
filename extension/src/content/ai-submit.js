@@ -13,8 +13,9 @@ import {
   formatSlotWait,
   isInSlotWindow,
   msUntilSlotWindow,
-  SLOT_WINDOW_LABEL,
+  getSlotWindowLabel,
 } from "../shared/slotSchedule.js";
+import { cfg as rtCfg } from "../shared/remoteConfig.js";
 import { CLS, DAT, ID, MSG, T, idSel } from "../shared/token.js";
 import { ensureSelectorRow } from "./scheduling-controls.js";
 import { armSubmitErrorWatch } from "./submit-errors.js";
@@ -44,15 +45,14 @@ export function pickPreferredDateIndex(count) {
   return 2; // 4+ available → 3rd (not 1st, not 4th)
 }
 
-/** City Change: switch every 13–18s, only during hourly slot burst windows. */
-var CITY_ROTATE_MIN_GAP_MS = 13_000;
-var CITY_ROTATE_MAX_GAP_MS = 18_000;
-/** Max pause while Auto Submit books — then hop so City Change cannot freeze forever. */
-var CITY_HOLD_MAX_MS = 45_000;
-/** After city switch: stay while Date shows Loading…; hop if still Loading after this. */
-var CITY_LOADING_MAX_MS = 180_000; // 3 min — true "Loading..." screen
-/** Calendar/Select Date up but dates CGI not loaded yet — hop after this. */
-var CITY_CALENDAR_NO_DATES_MS = 20_000;
+/** City Change: switch every 13–18s, only during hourly slot burst windows.
+ *  Timeouts/gaps come from rtCfg (bundled defaults, overridable by safe remote JSON).
+ */
+function _cityRotateMinGapMs() { return rtCfg.cityRotateMinGapMs; }
+function _cityRotateMaxGapMs() { return rtCfg.cityRotateMaxGapMs; }
+function _cityHoldMaxMs() { return rtCfg.cityHoldMaxMs; }
+function _cityLoadingMaxMs() { return rtCfg.cityLoadingMaxMs; }
+function _cityCalendarNoDatesMs() { return rtCfg.cityCalendarNoDatesMs; }
 /** Watchdog: if no tick for this long while ON, force reschedule (no OFF→ON needed). */
 var CITY_WATCHDOG_MS = 5_000;
 var CITY_STUCK_TICK_MS = 20_000;
@@ -299,7 +299,7 @@ function _clearHoldSafety() {
 function _armHoldSafety() {
   _clearHoldSafety();
   if (!_holdStartedAt) _holdStartedAt = Date.now();
-  const left = Math.max(500, CITY_HOLD_MAX_MS - (Date.now() - _holdStartedAt));
+  const left = Math.max(500, _cityHoldMaxMs() - (Date.now() - _holdStartedAt));
   _holdSafetyTimer = vs.setTimeout(() => {
     _holdSafetyTimer = null;
     if (!_bookingHold || !_rotateActive || !vs.alive) return;
@@ -307,7 +307,7 @@ function _armHoldSafety() {
     _holdStartedAt = 0;
     _armNextRotate(Date.now());
     updateAiStatus(
-      `City Change — booking hold timed out (${CITY_HOLD_MAX_MS / 1000}s); next city in 13–18s…`
+      `City Change — booking hold timed out (${_cityHoldMaxMs() / 1000}s); next city in 13–18s…`
     );
     _scheduleCityRotate();
   }, left);
@@ -335,7 +335,7 @@ function _recoverStuckRotateLocks(now = Date.now()) {
 
   if (_bookingHold) {
     if (!_holdStartedAt) _holdStartedAt = now;
-    if (now - _holdStartedAt >= CITY_HOLD_MAX_MS) {
+    if (now - _holdStartedAt >= _cityHoldMaxMs()) {
       _clearHoldSafety();
       _bookingHold = false;
       _holdStartedAt = 0;
@@ -348,7 +348,7 @@ function _recoverStuckRotateLocks(now = Date.now()) {
   if (_rotateBusy) {
     if (!_busyStartedAt) _busyStartedAt = now;
     const loading = _domShowsDateLoading();
-    const maxMs = loading ? CITY_LOADING_MAX_MS : CITY_CALENDAR_NO_DATES_MS;
+    const maxMs = loading ? _cityLoadingMaxMs() : _cityCalendarNoDatesMs();
     if (now - _busyStartedAt >= maxMs) {
       _clearRotateBusy();
       unlocked = true;
@@ -358,7 +358,7 @@ function _recoverStuckRotateLocks(now = Date.now()) {
         _rotateBusyClearTimer = null;
         if (!_rotateActive || _bookingHold) return;
         const stillLoading = _domShowsDateLoading();
-        const cap = stillLoading ? CITY_LOADING_MAX_MS : CITY_CALENDAR_NO_DATES_MS;
+        const cap = stillLoading ? _cityLoadingMaxMs() : _cityCalendarNoDatesMs();
         if (Date.now() - (_busyStartedAt || 0) < cap) {
           // Still under the right cap (e.g. Loading appeared) — re-arm.
           _recoverStuckRotateLocks();
@@ -368,8 +368,8 @@ function _recoverStuckRotateLocks(now = Date.now()) {
         _armNextRotate(Date.now());
         updateAiStatus(
           stillLoading
-            ? `City Change — still Loading after ${CITY_LOADING_MAX_MS / 1000}s; changing city…`
-            : `City Change — calendar up but no dates after ${CITY_CALENDAR_NO_DATES_MS / 1000}s; changing city…`
+            ? `City Change — still Loading after ${_cityLoadingMaxMs() / 1000}s; changing city…`
+            : `City Change — calendar up but no dates after ${_cityCalendarNoDatesMs() / 1000}s; changing city…`
         );
         _scheduleCityRotate();
       }, left);
@@ -392,23 +392,55 @@ function _ensureRotateWatchdog() {
     if (!_rotateActive || !vs.alive || _opsFrozen) return;
     const now = Date.now();
     const unlocked = _recoverStuckRotateLocks(now);
+    const inWindow = !!isInSlotWindow(new Date(now));
+    const timerArmed = !!_rotateTimer;
+
+    // Long intentional waits (outside IST window / Loading poll) are NOT stuck.
+    const intentionalWait =
+      (!inWindow && timerArmed) ||
+      ((_rotateBusy || _bookingHold || _submitArmed) && timerArmed);
+
     const tickStale =
-      _lastRotateTickAt > 0 && now - _lastRotateTickAt >= CITY_STUCK_TICK_MS;
-    const timerLost = !_rotateTimer && !_rotateInFlight;
+      !intentionalWait &&
+      _lastRotateTickAt > 0 &&
+      now - _lastRotateTickAt >= CITY_STUCK_TICK_MS;
+
+    const timerLost = !timerArmed && !_rotateInFlight;
 
     if (unlocked || tickStale || timerLost) {
-      if (unlocked || tickStale) {
-        _armNextRotate(Date.now());
+      if (tickStale) {
+        // Hard unstick inside a hop cycle — clear locks and hop ASAP (no extra 13–18s).
+        _rotateInFlight = false;
+        _rotateInFlightAt = 0;
+        _clearRotateBusy();
+        _clearHoldSafety();
+        _bookingHold = false;
+        _holdStartedAt = 0;
+        if (_submitArmed && !_submitTimer) _submitArmed = false;
+        _nextRotateAt = now;
         updateAiStatus(
-          tickStale
-            ? "City Change — stuck; auto-restarting hops…"
-            : "City Change — lock cleared; next city in 13–18s…"
+          inWindow
+            ? "City Change — unstuck; hopping now…"
+            : `City Change — unstuck; waiting for IST window ${getSlotWindowLabel()}…`
+        );
+      } else if (unlocked) {
+        _nextRotateAt = now;
+        updateAiStatus(
+          inWindow
+            ? "City Change — lock cleared; hopping now…"
+            : `City Change — lock cleared; next IST window ${getSlotWindowLabel()}…`
         );
       } else {
         updateAiStatus("City Change — timer lost; restarting…");
       }
       _scheduleCityRotate();
+    } else if (!inWindow && timerArmed) {
+      const wait = msUntilSlotWindow(new Date(now));
+      updateAiStatus(
+        `City Change — waiting for slot window (IST ${getSlotWindowLabel()}, next in ${formatSlotWait(wait)})`
+      );
     }
+
     if (_rotateActive) {
       _rotateWatchdog = vs.setTimeout(beat, CITY_WATCHDOG_MS);
     }
@@ -494,10 +526,10 @@ function _armRotateBusy() {
     _clearRotateBusy();
     _armNextRotate(Date.now());
     updateAiStatus(
-      `City Change — still Loading after ${CITY_LOADING_MAX_MS / 1000}s; changing city…`
+      `City Change — still Loading after ${_cityLoadingMaxMs() / 1000}s; changing city…`
     );
     _scheduleCityRotate();
-  }, CITY_LOADING_MAX_MS);
+  }, _cityLoadingMaxMs());
 }
 
 export function pauseCityRotateForWait(seconds) {
@@ -596,7 +628,7 @@ function _randBetween(min, max) {
 }
 
 function _rotateGapMs() {
-  return _randBetween(CITY_ROTATE_MIN_GAP_MS, CITY_ROTATE_MAX_GAP_MS);
+  return _randBetween(_cityRotateMinGapMs(), _cityRotateMaxGapMs());
 }
 
 function _armNextRotate(from = Date.now()) {
@@ -611,7 +643,7 @@ function _msUntilNextRotate(now = Date.now()) {
     return _rotatePausedUntil - now;
   }
   if (_lastSwitchAt) {
-    const minWait = _lastSwitchAt + CITY_ROTATE_MIN_GAP_MS - now;
+    const minWait = _lastSwitchAt + _cityRotateMinGapMs() - now;
     if (minWait > 0) return minWait;
   }
   if (_nextRotateAt > now) {
@@ -628,9 +660,9 @@ function _scheduleCityRotate() {
     return;
   }
   let delay = _msUntilNextRotate();
-  if (delay < CITY_ROTATE_MIN_GAP_MS) {
+  if (delay < _cityRotateMinGapMs()) {
     if (_lastSwitchAt) {
-      delay = Math.max(0, _lastSwitchAt + CITY_ROTATE_MIN_GAP_MS - Date.now());
+      delay = Math.max(0, _lastSwitchAt + _cityRotateMinGapMs() - Date.now());
     } else if (_nextRotateAt > Date.now()) {
       delay = _nextRotateAt - Date.now();
     } else {
@@ -638,7 +670,11 @@ function _scheduleCityRotate() {
       delay = _nextRotateAt - Date.now();
     }
   }
-  _rotateTimer = vs.setTimeout(() => { _rotateTick(); }, delay);
+  // Keep watchdog from false "stuck" during long waits (e.g. next IST window).
+  if (delay >= CITY_STUCK_TICK_MS) {
+    _lastRotateTickAt = Date.now();
+  }
+  _rotateTimer = vs.setTimeout(() => { _rotateTick(); }, Math.max(0, delay));
 }
 
 /**
@@ -795,8 +831,12 @@ async function _rotateTick() {
 
     // Auto-unlock orphan busy/hold so hops never freeze forever.
     if (_recoverStuckRotateLocks()) {
-      _armNextRotate(Date.now());
-      updateAiStatus("City Change — auto-unstuck; next city in 13–18s…");
+      _nextRotateAt = Date.now();
+      updateAiStatus(
+        isInSlotWindow()
+          ? "City Change — auto-unstuck; hopping now…"
+          : `City Change — auto-unstuck; waiting IST ${getSlotWindowLabel()}…`
+      );
       _scheduleCityRotate();
       return;
     }
@@ -804,7 +844,7 @@ async function _rotateTick() {
     // Booking hold — stay on city; do NOT turn City Change OFF.
     if (_bookingHold || _submitArmed) {
       const heldFor = _holdStartedAt ? Date.now() - _holdStartedAt : 0;
-      if (_bookingHold && heldFor >= CITY_HOLD_MAX_MS) {
+      if (_bookingHold && heldFor >= _cityHoldMaxMs()) {
         _clearHoldSafety();
         _bookingHold = false;
         _holdStartedAt = 0;
@@ -813,7 +853,7 @@ async function _rotateTick() {
         _scheduleCityRotate();
         return;
       }
-      const left = Math.max(0, CITY_HOLD_MAX_MS - heldFor);
+      const left = Math.max(0, _cityHoldMaxMs() - heldFor);
       updateAiStatus(
         `City Change — paused (Auto Submit booking)… hop in ≤${Math.ceil(left / 1000)}s`
       );
@@ -826,7 +866,7 @@ async function _rotateTick() {
     const slotWait = msUntilSlotWindow(new Date(now));
     if (!slot) {
       updateAiStatus(
-        `City Change — waiting for slot window (IST ${SLOT_WINDOW_LABEL}, next in ${formatSlotWait(slotWait)})`
+        `City Change — waiting for slot window (IST ${getSlotWindowLabel()}, next in ${formatSlotWait(slotWait)})`
       );
       _scheduleCityRotate();
       return;
@@ -838,16 +878,16 @@ async function _rotateTick() {
     if (_rotateBusy) {
       const busyFor = _busyStartedAt ? now - _busyStartedAt : 0;
       if (_domShowsDateLoading()) {
-        if (busyFor >= CITY_LOADING_MAX_MS) {
+        if (busyFor >= _cityLoadingMaxMs()) {
           _clearRotateBusy();
           _armNextRotate(Date.now());
           updateAiStatus(
-            `City Change — still Loading after ${CITY_LOADING_MAX_MS / 1000}s; changing city…`
+            `City Change — still Loading after ${_cityLoadingMaxMs() / 1000}s; changing city…`
           );
           _scheduleCityRotate();
           return;
         }
-        const left = Math.max(0, Math.ceil((CITY_LOADING_MAX_MS - busyFor) / 1000));
+        const left = Math.max(0, Math.ceil((_cityLoadingMaxMs() - busyFor) / 1000));
         updateAiStatus(
           `City Change — Date Loading… stay (${left}s then hop if still Loading)`
         );
@@ -855,16 +895,16 @@ async function _rotateTick() {
         return;
       }
       // Loading gone / calendar waiting for dates — hop after 20s if CGI never unlocks.
-      if (busyFor >= CITY_CALENDAR_NO_DATES_MS) {
+      if (busyFor >= _cityCalendarNoDatesMs()) {
         _clearRotateBusy();
         _armNextRotate(Date.now());
         updateAiStatus(
-          `City Change — calendar up but no dates after ${CITY_CALENDAR_NO_DATES_MS / 1000}s; changing city…`
+          `City Change — calendar up but no dates after ${_cityCalendarNoDatesMs() / 1000}s; changing city…`
         );
         _scheduleCityRotate();
         return;
       }
-      const left = Math.max(0, Math.ceil((CITY_CALENDAR_NO_DATES_MS - busyFor) / 1000));
+      const left = Math.max(0, Math.ceil((_cityCalendarNoDatesMs() - busyFor) / 1000));
       updateAiStatus(
         `City Change — waiting calendar dates… (${left}s then hop)`
       );
@@ -910,7 +950,7 @@ async function _rotateTick() {
       const path = cities.map((c) => c.name || c.id).join(" → ");
       const step = `${_rotateIndex + 1}/${cities.length}`;
       updateAiStatus(
-        `City Change — ${step} ${next.name || next.id} (path: ${path}); Loading up to ${CITY_LOADING_MAX_MS / 1000}s, no-dates hop ${CITY_CALENDAR_NO_DATES_MS / 1000}s`
+        `City Change — ${step} ${next.name || next.id} (path: ${path}); Loading up to ${_cityLoadingMaxMs() / 1000}s, no-dates hop ${_cityCalendarNoDatesMs() / 1000}s`
       );
     } else {
       _armNextRotate(now);
@@ -954,7 +994,7 @@ export async function startCityRotate() {
   const idx = cities.findIndex((c) => String(c.id) === current);
   _rotateIndex = idx >= 0 ? idx : 0;
   updateAiStatus(
-    `City Change ON — IST ${SLOT_WINDOW_LABEL}; hop 13–18s in checklist order; Loading max ${CITY_LOADING_MAX_MS / 1000}s; no-dates hop ${CITY_CALENDAR_NO_DATES_MS / 1000}s`
+    `City Change ON — IST ${getSlotWindowLabel()}; hop 13–18s in checklist order; Loading max ${_cityLoadingMaxMs() / 1000}s; no-dates hop ${_cityCalendarNoDatesMs() / 1000}s`
   );
   _ensureRotateWatchdog();
   _scheduleCityRotate();
@@ -1215,7 +1255,7 @@ function _paintStatus(cfg, accountId) {
     parts.push("Auto Submit OFF");
   }
   if (citiesOn) {
-    parts.push(`City Change ON (${_cityNames(cfg)}, ${SLOT_WINDOW_LABEL})`);
+    parts.push(`City Change ON (${_cityNames(cfg)}, ${getSlotWindowLabel()})`);
   } else {
     parts.push("City Change OFF");
   }
@@ -1335,7 +1375,7 @@ async function _onToggleCities() {
     const ok = window.confirm(
       `Enable City Change?\n\n` +
       `Cities (in order): ${cities.map((c) => c.name).join(" → ")}\n` +
-      `City checks run each hour during IST windows ${SLOT_WINDOW_LABEL}, switching cities every 13–18 seconds in that same order.\n\n` +
+      `City checks run each hour during IST windows ${getSlotWindowLabel()}, switching cities every 13–18 seconds in that same order.\n\n` +
       `Auto Submit is separate — use its own ON/OFF button.`
     );
     if (!ok) return;
@@ -1476,7 +1516,7 @@ export function ensureAiSubmitUi() {
     <div class="${CLS.cardTtl}">Tik Tik (this account only)</div>
     <p class="${CLS.aiHint}">
       Two separate switches: <b>Auto Submit</b> books a matching date once;
-      <b>City Change</b> checks slots in burst windows each hour (IST ${SLOT_WINDOW_LABEL}), switching preferred cities in checklist order every 13–18s.
+      <b>City Change</b> checks slots in burst windows each hour (IST ${getSlotWindowLabel()}), switching preferred cities in checklist order every 13–18s.
     </p>
     <div class="${CLS.aiRow}">
       <label>From <input type="date" id="${ID.aiFrom}" min="${_todayISO()}" /></label>

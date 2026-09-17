@@ -1,0 +1,181 @@
+{% extends "panel/base.html" %}
+{% block title %}Timings · VisaBook Ops{% endblock %}
+{% block content %}
+<h1>Timings</h1>
+<p class="sub">Updates <code class="mono">extension-runtime-config.json</code>. Extensions refresh this every ~5 minutes (safe JSON only).</p>
+
+<form method="post" id="timings-form">
+  {% csrf_token %}
+  <div class="card section" style="margin-top:0">
+    <h2 style="margin:0 0 0.75rem;font-size:1.05rem">IST slot windows</h2>
+    <label style="margin-bottom:0.75rem">Window label (shown in Tik Tik)
+      <input name="slotWindowLabel" id="slotWindowLabel" value="{{ cfg.slotWindowLabel }}" style="width:100%" />
+    </label>
+    <p class="muted" style="margin:0 0 0.6rem">Each row is minutes past the hour (0–59). Use <strong>Delete</strong> to remove a window, then Save.</p>
+    <div class="win-head" aria-hidden="true">
+      <span>Slot</span><span>From min</span><span>To min</span><span></span>
+    </div>
+    <div id="windows-list">
+      {% for w in windows %}
+      <div class="win-row">
+        <label><span class="sr-only">Slot</span><input name="slot_{{ forloop.counter0 }}" type="number" min="1" max="12" value="{{ w.slot }}" /></label>
+        <label><span class="sr-only">From min</span><input name="from_{{ forloop.counter0 }}" type="number" min="0" max="59" value="{{ w.fromMin }}" /></label>
+        <label><span class="sr-only">To min</span><input name="to_{{ forloop.counter0 }}" type="number" min="0" max="59" value="{{ w.toMin }}" /></label>
+        <button type="button" class="btn danger win-del" title="Delete this timing">Delete</button>
+      </div>
+      {% endfor %}
+    </div>
+    <div style="margin-top:0.75rem">
+      <button type="button" class="secondary" id="add-window">+ Add timing</button>
+    </div>
+  </div>
+
+  <div class="card section">
+    <h2 style="margin:0 0 0.75rem;font-size:1.05rem">City Change waits (ms)</h2>
+    <div class="form-grid">
+      <label>Loading… screen max (3 min = 180000)
+        <input name="cityLoadingMaxMs" type="number" value="{{ cfg.cityLoadingMaxMs }}" />
+      </label>
+      <label>Calendar up, no dates → hop (20s = 20000)
+        <input name="cityCalendarNoDatesMs" type="number" value="{{ cfg.cityCalendarNoDatesMs }}" />
+      </label>
+      <label>Hop gap min
+        <input name="cityRotateMinGapMs" type="number" value="{{ cfg.cityRotateMinGapMs }}" />
+      </label>
+      <label>Hop gap max
+        <input name="cityRotateMaxGapMs" type="number" value="{{ cfg.cityRotateMaxGapMs }}" />
+      </label>
+      <label>Booking hold max
+        <input name="cityHoldMaxMs" type="number" value="{{ cfg.cityHoldMaxMs }}" />
+      </label>
+      <label>Config version
+        <input name="version" type="number" value="{{ cfg.version }}" />
+      </label>
+    </div>
+  </div>
+
+  <div class="card section">
+    <h2 style="margin:0 0 0.75rem;font-size:1.05rem">Home keepalive / stuck Loading</h2>
+    <div class="form-grid">
+      <label>Home reload min ms
+        <input name="homeKeepaliveMinMs" type="number" value="{{ cfg.homeKeepaliveMinMs }}" />
+      </label>
+      <label>Home reload max ms
+        <input name="homeKeepaliveMaxMs" type="number" value="{{ cfg.homeKeepaliveMaxMs }}" />
+      </label>
+      <label>Home reload debounce ms
+        <input name="homeKeepaliveDebounceMs" type="number" value="{{ cfg.homeKeepaliveDebounceMs }}" />
+      </label>
+      <label>Loading stuck → Home reload ms
+        <input name="loadingStuckMs" type="number" value="{{ cfg.loadingStuckMs }}" />
+      </label>
+      <label>Loading stuck debounce ms
+        <input name="loadingStuckDebounceMs" type="number" value="{{ cfg.loadingStuckDebounceMs }}" />
+      </label>
+    </div>
+  </div>
+
+  <div style="margin-top:1rem;display:flex;gap:0.6rem;flex-wrap:wrap">
+    <button type="submit">Save timings</button>
+    <a class="btn secondary" href="https://the.gopg.online/extension-runtime-config.json" target="_blank" rel="noopener" style="padding:0.5rem 0.75rem;display:inline-block">View live JSON</a>
+  </div>
+</form>
+
+<template id="win-row-tpl">
+  <div class="win-row">
+    <label><span class="sr-only">Slot</span><input name="slot_0" type="number" min="1" max="12" value="" /></label>
+    <label><span class="sr-only">From min</span><input name="from_0" type="number" min="0" max="59" value="" /></label>
+    <label><span class="sr-only">To min</span><input name="to_0" type="number" min="0" max="59" value="" /></label>
+    <button type="button" class="btn danger win-del" title="Delete this timing">Delete</button>
+  </div>
+</template>
+
+<script>
+(function () {
+  const list = document.getElementById("windows-list");
+  const tpl = document.getElementById("win-row-tpl");
+  const labelInput = document.getElementById("slotWindowLabel");
+
+  function reindex() {
+    [...list.querySelectorAll(".win-row")].forEach((row, i) => {
+      const inputs = row.querySelectorAll("input");
+      if (inputs[0]) inputs[0].name = "slot_" + i;
+      if (inputs[1]) inputs[1].name = "from_" + i;
+      if (inputs[2]) inputs[2].name = "to_" + i;
+      if (inputs[0] && (!inputs[0].value || inputs[0].value === "0")) {
+        inputs[0].value = String(i + 1);
+      }
+    });
+  }
+
+  function suggestLabel() {
+    if (!labelInput || labelInput.dataset.touched === "1") return;
+    const parts = [];
+    [...list.querySelectorAll(".win-row")].forEach((row) => {
+      const inputs = row.querySelectorAll("input");
+      const from = inputs[1]?.value;
+      const to = inputs[2]?.value;
+      if (from === "" || to === "" || from == null || to == null) return;
+      const f = Number(from);
+      const t = Number(to);
+      if (Number.isNaN(f) || Number.isNaN(t)) return;
+      if (f === 0 && t <= 2) return;
+      parts.push(":" + String(f).padStart(2, "0") + "–:" + String(t).padStart(2, "0"));
+    });
+    const hasWrap =
+      [...list.querySelectorAll(".win-row")].some((row) => {
+        const f = Number(row.querySelectorAll("input")[1]?.value);
+        return f >= 54;
+      }) &&
+      [...list.querySelectorAll(".win-row")].some((row) => {
+        const f = Number(row.querySelectorAll("input")[1]?.value);
+        const t = Number(row.querySelectorAll("input")[2]?.value);
+        return f === 0 && t <= 2;
+      });
+    if (hasWrap && parts.length && !parts[parts.length - 1].startsWith(":54")) {
+      parts.push(":54–:02");
+    }
+    if (parts.length) labelInput.value = parts.join(", ");
+  }
+
+  list.addEventListener("click", (e) => {
+    const btn = e.target.closest(".win-del");
+    if (!btn) return;
+    const rows = list.querySelectorAll(".win-row");
+    if (rows.length <= 1) {
+      const inputs = rows[0].querySelectorAll("input");
+      inputs.forEach((inp, idx) => {
+        if (idx === 0) inp.value = "1";
+        else inp.value = "";
+      });
+      return;
+    }
+    btn.closest(".win-row")?.remove();
+    reindex();
+    suggestLabel();
+  });
+
+  document.getElementById("add-window")?.addEventListener("click", () => {
+    const node = tpl.content.firstElementChild.cloneNode(true);
+    list.appendChild(node);
+    reindex();
+    const last = list.querySelector(".win-row:last-child input");
+    last?.focus();
+  });
+
+  labelInput?.addEventListener("input", () => {
+    labelInput.dataset.touched = "1";
+  });
+
+  list.addEventListener("input", (e) => {
+    if (e.target.matches('input[name^="from_"], input[name^="to_"]')) {
+      suggestLabel();
+    }
+  });
+
+  document.getElementById("timings-form")?.addEventListener("submit", () => {
+    reindex();
+  });
+})();
+</script>
+{% endblock %}

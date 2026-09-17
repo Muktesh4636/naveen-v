@@ -90,3 +90,12 @@ CSRF_TRUSTED_ORIGINS = [
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+LOGIN_URL = "/panel/login/"
+LOGIN_REDIRECT_URL = "/panel/"
+
+# Writable path for extension-runtime-config.json (ops panel Timings page).
+RUNTIME_CONFIG_PATH = os.environ.get(
+    "RUNTIME_CONFIG_PATH",
+    "/var/www/the.gopg.online/frontend/extension-runtime-config.json",
+)

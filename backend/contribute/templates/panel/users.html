@@ -1,0 +1,35 @@
+{% extends "panel/base.html" %}
+{% block title %}Users · VisaBook Ops{% endblock %}
+{% block content %}
+<h1>Users</h1>
+<p class="sub">Applicants seen by the extension — last city and slot activity (14 days).</p>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Email / ID</th><th>Visa</th><th>Checks</th><th>Slots</th><th>Last city</th><th>Last status</th><th>Last check</th></tr>
+    </thead>
+    <tbody>
+      {% for u in user_rows %}
+      <tr>
+        <td><strong>{{ u.name }}</strong></td>
+        <td>{{ u.email }}<div class="muted mono">{{ u.applicant_id }}</div></td>
+        <td class="mono">{{ u.visa }}</td>
+        <td class="mono">{{ u.checks }}</td>
+        <td class="mono">{% if u.slots %}<span class="badge ok">{{ u.slots }}</span>{% else %}0{% endif %}</td>
+        <td>{{ u.last_city }}</td>
+        <td>
+          {% if u.last_status == "SLOTS" %}<span class="badge ok">SLOTS</span>
+          {% elif u.last_status == "ERROR" %}<span class="badge err">ERROR</span>
+          {% elif u.last_status == "EMPTY" %}<span class="badge empty">EMPTY</span>
+          {% else %}—{% endif %}
+        </td>
+        <td class="mono">{% if u.last_check %}{{ u.last_check|date:"Y-m-d H:i" }}{% else %}—{% endif %}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="8" class="muted">No users yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

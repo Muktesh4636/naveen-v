@@ -16,7 +16,7 @@ export var QUEUE_DETAIL_THRESHOLD_MINS = 240;
 export var QUEUE_HISTORY_MAX = 50;
 export var QUEUE_HISTORY_TTL_MS = 24 * 60 * 60 * 1e3;
 export var SETTING_DEFAULTS = {
-  recheckButton: true,
+  recheckButton: false,
   defaultWaitTime: 60,
   audioAlert: false,
   autoSelectFirstDate: true,

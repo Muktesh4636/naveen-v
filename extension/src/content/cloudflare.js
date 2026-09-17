@@ -155,7 +155,7 @@ export function showBlockMessage(isCgiBlock, seconds) {
   if (isCgiBlock) {
     message = seconds ? `Blocked for 24 hours, about ${formatDuration(seconds)} remaining. Logging in again will not help.` : "Blocked for 24 hours. Logging in again will not help.";
   } else {
-    message = "Temporarily blocked. Log in in a new tab, then press Recheck.";
+    message = "Temporarily blocked. Log in in a new tab, then refresh this page.";
   }
   const alert = document.createElement("div");
   alert.className = "atlas_validationalert alert alert-danger warning";

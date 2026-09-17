@@ -4,7 +4,7 @@ import {
   formatSlotWait,
   isInSlotWindow,
   msUntilSlotWindow,
-  SLOT_WINDOW_LABEL,
+  getSlotWindowLabel,
 } from "../shared/slotSchedule.js";
 import { vs } from "../shared/lifecycle.js";
 import { CLS, DAT, ID, idSel, txt } from "../shared/token.js";
@@ -54,7 +54,7 @@ export function pillMarkup(parts, variant) {
 
 export function pillView(state, now = Date.now()) {
   if (state.kind === "waiting") {
-    return { label: "Waiting For Response", variant: WAITING };
+    return { variant: WAITING };
   }
   if (state.kind === "running") {
     const remaining = Math.ceil((state.endTime - now) / 1e3);
@@ -69,11 +69,11 @@ export function pillView(state, now = Date.now()) {
 
 export function pillParts(view, clockMode, now = new Date()) {
   const ist = formatClock(now);
-  // Always show IST with seconds (like the wait timer). When a countdown
-  // exists, IST is the title and the wait/elapsed duration is the timer.
-  // When only waiting for a response, label stays and IST fills the timer slot.
+  // Always show IST with seconds. When a countdown exists, IST is the
+  // title and the wait/elapsed duration is the timer. While waiting for a
+  // response, show only the red IST clock (no status text).
   if (view.seconds === void 0) {
-    return { title: clockMode ? ist : view.label, timer: clockMode ? void 0 : ist };
+    return { title: ist };
   }
   return { title: ist, timer: formatDuration(view.seconds) };
 }
@@ -598,41 +598,14 @@ export function stopSubmitAlarm() {
 }
 
 export function ensureRecheckButton() {
-  if (document.querySelector(idSel(ID.recheck))) return;
-  const row = ensureSelectorRow();
-  if (!row) return;
-  const dropdown = document.querySelector("#post_select");
-  const btn = document.createElement("button");
-  btn.id = ID.recheck;
-  btn.type = "button";
-  btn.textContent = txt([82,101,99,104,101,99,107]); // "Recheck"
-  const syncRecheckState = () => {
-    const inSlot = isInSlotWindow();
-    const wait = msUntilSlotWindow();
-    btn.disabled = !dropdown.value || !inSlot;
-    btn.title = inSlot
-      ? "Recheck slots for the selected city"
-      : `Slot checks paused — IST windows ${SLOT_WINDOW_LABEL}. Next in ${formatSlotWait(wait)}.`;
-    btn.classList.toggle(CLS.hidden, !dropdown.value);
-  };
-  vs.on(btn, "click", () => {
-    if (!isInSlotWindow()) {
-      const wait = formatSlotWait(msUntilSlotWindow());
-      btn.title = `Outside slot window — next check at IST ${SLOT_WINDOW_LABEL} (in ${wait})`;
-      syncRecheckState();
-      return;
-    }
-    dropdown.dispatchEvent(new Event("change", { bubbles: true }));
-  });
-  row.appendChild(btn);
-  syncRecheckState();
-  vs.on(dropdown, "change", syncRecheckState);
-  vs.setInterval(syncRecheckState, 1000);
+  // Recheck UI removed — strip any leftover button from older builds.
+  document.querySelector(idSel(ID.recheck))?.remove();
+  for (const btn of document.querySelectorAll("button")) {
+    if ((btn.textContent || "").trim() === "Recheck") btn.remove();
+  }
 }
 
 export async function reserveRecheckButton() {
   if (!vs.alive) return;
-  if (!await getSetting("recheckButton")) return;
-  if (!await vs.waitFor("#post_select", { attempts: SCHEDULE_UI_WAIT_ATTEMPTS })) return;
   ensureRecheckButton();
 }

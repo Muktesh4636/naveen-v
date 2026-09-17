@@ -1,8 +1,10 @@
 import base64
 import json
 import logging
+import re
 from datetime import timedelta
 
+from django.db import transaction
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -14,6 +16,26 @@ from .telegram import notify_available_slots, relay_extension_alert
 logger = logging.getLogger(__name__)
 
 
+def _normalize_applicant_id(raw) -> str:
+    """
+    Portal usernames look like \"Name (903305578)\". Prefer the numeric id.
+    Accept already-numeric ids; otherwise keep a short cleaned token.
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    paren = re.search(r"\((\d{5,})\)", s)
+    if paren:
+        return paren.group(1)
+    if re.fullmatch(r"\d{5,}", s):
+        return s
+    # Avoid storing the full \"Name (id)\" blob as the key.
+    digits = re.findall(r"\d{5,}", s)
+    if len(digits) == 1:
+        return digits[0]
+    return s[:64]
+
+
 def _upsert_applicant(profile: dict, token: str | None) -> Applicant | None:
     """
     Find or create an Applicant row from the profile dict sent by the extension.
@@ -23,33 +45,67 @@ def _upsert_applicant(profile: dict, token: str | None) -> Applicant | None:
     if not profile:
         return None
 
-    applicant_id = str(profile.get("id", "")).strip()
+    applicant_id = _normalize_applicant_id(profile.get("id", ""))
     email = str(profile.get("email", "")).strip()
+    email_key = email.lower()
 
-    lookup = {}
-    if applicant_id:
-        lookup["applicant_id"] = applicant_id
-    elif email:
-        lookup["email"] = email
-    else:
+    if not applicant_id and not email_key:
         return None
 
-    applicant, _ = Applicant.objects.get_or_create(**lookup)
+    with transaction.atomic():
+        qs = Applicant.objects.all()
+        matches = []
+        if applicant_id:
+            matches.extend(list(qs.filter(applicant_id=applicant_id).order_by("id")))
+            # Legacy rows that stored \"Name (id)\" as applicant_id
+            matches.extend(
+                list(
+                    qs.filter(applicant_id__endswith=f"({applicant_id})")
+                    .exclude(id__in=[m.id for m in matches])
+                    .order_by("id")
+                )
+            )
+        if email_key:
+            matches.extend(
+                list(
+                    qs.filter(email__iexact=email)
+                    .exclude(id__in=[m.id for m in matches])
+                    .order_by("id")
+                )
+            )
 
-    # Always update mutable fields so we have the freshest data.
-    applicant.name = str(profile.get("name", "")).strip() or applicant.name
-    if email:
-        applicant.email = email
-    if applicant_id:
-        applicant.applicant_id = applicant_id
-    applicant.visa_class = str(profile.get("visa", "")).strip() or applicant.visa_class
+        if matches:
+            applicant = matches[0]
+            # Fold duplicate rows into the keeper.
+            for dup in matches[1:]:
+                Contribution.objects.filter(applicant=dup).update(applicant=applicant)
+                DashboardSnapshot.objects.filter(applicant=dup).update(applicant=applicant)
+                HumanClickSample.objects.filter(applicant=dup).update(applicant=applicant)
+                if not applicant.id_token and dup.id_token:
+                    applicant.id_token = dup.id_token
+                    applicant.token_captured_at = dup.token_captured_at
+                if not applicant.visa_class and dup.visa_class:
+                    applicant.visa_class = dup.visa_class
+                if not applicant.name and dup.name:
+                    applicant.name = dup.name
+                dup.delete()
+        else:
+            applicant = Applicant(applicant_id=applicant_id or "", email=email)
 
-    if token:
-        applicant.id_token = token
-        applicant.token_captured_at = timezone.now()
+        # Always update mutable fields so we have the freshest data.
+        applicant.name = str(profile.get("name", "")).strip() or applicant.name
+        if email:
+            applicant.email = email
+        if applicant_id:
+            applicant.applicant_id = applicant_id
+        applicant.visa_class = str(profile.get("visa", "")).strip() or applicant.visa_class
 
-    applicant.save()
-    return applicant
+        if token:
+            applicant.id_token = token
+            applicant.token_captured_at = timezone.now()
+
+        applicant.save()
+        return applicant
 
 
 def _count_contributions_24h(applicant: Applicant | None) -> int:

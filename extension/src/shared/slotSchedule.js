@@ -1,18 +1,19 @@
-/** Hourly slot release windows (IST). Checks only run inside these ranges. */
+/** Hourly slot release windows (IST). Checks only run inside these ranges.
+ *  Windows can be overridden by safe remote JSON (see remoteConfig.js).
+ */
 
-export const SLOT_WINDOWS = [
-  { slot: 5, fromMin: 0, toMin: 2 }, // wrap tail from :54–:02
-  { slot: 1, fromMin: 5, toMin: 13 },
-  { slot: 2, fromMin: 14, toMin: 21 },
-  { slot: 3, fromMin: 24, toMin: 31 },
-  { slot: 4, fromMin: 35, toMin: 50 },
-  { slot: 5, fromMin: 54, toMin: 59 },
-];
+import { cfg } from "./remoteConfig.js";
 
-/** Chronological window starts within each hour (IST). */
-const WINDOW_STARTS_MIN = [0, 5, 14, 24, 35, 54];
+export function getSlotWindows() {
+  return cfg.slotWindows;
+}
 
-export const SLOT_WINDOW_LABEL = ":05–:13, :14–:21, :24–:31, :35–:50, :54–:02";
+export function getSlotWindowLabel() {
+  return cfg.slotWindowLabel;
+}
+
+/** Live view of windows (same array reference mutated by remote config). */
+export var SLOT_WINDOWS = cfg.slotWindows;
 
 function getISTMinuteParts(date = new Date()) {
   try {
@@ -33,7 +34,7 @@ function getISTMinuteParts(date = new Date()) {
 /** Returns active slot number (1–4) or 0 if outside all windows. */
 export function isInSlotWindow(date = new Date()) {
   const { minute } = getISTMinuteParts(date);
-  for (const w of SLOT_WINDOWS) {
+  for (const w of cfg.slotWindows) {
     if (minute >= w.fromMin && minute <= w.toMin) return w.slot;
   }
   return 0;
@@ -44,8 +45,9 @@ export function msUntilSlotWindow(date = new Date()) {
   if (isInSlotWindow(date)) return 0;
   const { minute, second } = getISTMinuteParts(date);
   const elapsedSec = minute * 60 + second;
+  const starts = cfg.windowStartsMin || [];
 
-  for (const startMin of WINDOW_STARTS_MIN) {
+  for (const startMin of starts) {
     const startSec = startMin * 60;
     if (elapsedSec < startSec) return (startSec - elapsedSec) * 1000;
   }

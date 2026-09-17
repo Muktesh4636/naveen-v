@@ -1,6 +1,6 @@
 import { showBlockMessage } from "./cloudflare.js";
 import { showWaitTime, showWaiting, slotsAlert } from "./scheduling-controls.js";
-import { showDates } from "./scheduling-panels.js";
+import { showDates, showScheduleEntries } from "./scheduling-panels.js";
 import { notifyTelegramSlots, notifyTelegramCityScreenshot, notifyTelegramCalendarScreenshot, notifyTelegramTimeScreenshot } from "./telegram-notify.js";
 import { pollAndPickTimeSlot, domShowsEntryTimes, isTimeSlotPicked, pickTimeSlotDual } from "./time-select.js";
 import { submitContribution } from "./reporting.js";
@@ -480,6 +480,16 @@ export async function handleEvent(event) {
     thawOps();
     // Paint the date list first — storage / auto-select can wait.
     showDates(parsed);
+    {
+      const dayCount = (parsed.response.ScheduleDays || [])
+        .map((d) => normalizeScheduleDate(d?.Date))
+        .filter(Boolean).length;
+      if (dayCount) {
+        setTikTikStatus(
+          `${dayCount} date${dayCount === 1 ? "" : "s"} available — see list below`
+        );
+      }
+    }
     noteCityRotateResponse();
 
     const ai = await getArmedAiConfig();
@@ -568,8 +578,22 @@ export async function handleEvent(event) {
         setPosts(posts);
       }
     }
-    await autoSelectFirstTime(parsed.response.ScheduleEntries, parsed.response.HasError);
     const entries = (parsed.response.ScheduleEntries || []).filter((e) => e && e.Time);
+    showScheduleEntries(entries, targetDate, post?.Name);
+    if (entries.length) {
+      const open = entries.filter(
+        (e) => e.EntriesAvailable == null || Number(e.EntriesAvailable) > 0
+      );
+      const totalAvail = open.reduce((sum, e) => {
+        const n = Number(e.EntriesAvailable);
+        return sum + (Number.isFinite(n) ? n : 0);
+      }, 0);
+      const availLabel = totalAvail > 0 ? ` · ${totalAvail} available` : "";
+      setTikTikStatus(
+        `${open.length || entries.length} time slot${(open.length || entries.length) === 1 ? "" : "s"} on ${targetDate}${availLabel}`
+      );
+    }
+    await autoSelectFirstTime(parsed.response.ScheduleEntries, parsed.response.HasError);
     if (entries.length) {
       // Keep hold while time → Submit runs
       haltCityRotateForBooking();

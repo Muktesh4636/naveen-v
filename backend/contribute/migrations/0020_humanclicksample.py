@@ -1,4 +1,4 @@
-# Generated manually for HumanClickSample
+# HumanClickSample — depends on latest server contribute chain
 
 from django.db import migrations, models
 import django.db.models.deletion
@@ -7,7 +7,7 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("contribute", "0001_initial"),
+        ("contribute", "0019_multi_hot_date_claim"),
     ]
 
     operations = [

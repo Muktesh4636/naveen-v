@@ -1,0 +1,50 @@
+{% extends "panel/base.html" %}
+{% block title %}City history · VisaBook Ops{% endblock %}
+{% block content %}
+<h1>City history</h1>
+<p class="sub">Unique city checks (duplicates within 2 minutes for same user/city/dates are hidden).</p>
+
+<form class="filters" method="get">
+  <label>City
+    <input name="city" value="{{ q_city }}" list="citylist" placeholder="e.g. Delhi" />
+    <datalist id="citylist">{% for c in cities %}<option value="{{ c }}"></option>{% endfor %}</datalist>
+  </label>
+  <label>User
+    <input name="user" value="{{ q_user }}" placeholder="name / email / id" />
+  </label>
+  <label>Hours
+    <input name="hours" type="number" min="1" max="720" value="{{ hours }}" />
+  </label>
+  <label style="align-content:end">
+    <span><input type="checkbox" name="slots" value="1" {% if only_slots %}checked{% endif %} /> Only with slots</span>
+  </label>
+  <button type="submit">Filter</button>
+  <a class="btn secondary" href="{% url 'panel_history' %}" style="padding:0.5rem 0.65rem;display:inline-block">Reset</a>
+</form>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>When (IST)</th><th>City</th><th>User</th><th>Status</th><th>Day count</th><th>Dates / error</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="mono">{{ r.when|date:"Y-m-d H:i:s" }}</td>
+        <td><strong>{{ r.city }}</strong><div class="muted mono">{{ r.post_id }}</div></td>
+        <td>{{ r.user }}{% if r.email %}<div class="muted">{{ r.email }}</div>{% endif %}</td>
+        <td>
+          {% if r.status == "SLOTS" %}<span class="badge ok">SLOTS</span>
+          {% elif r.status == "ERROR" %}<span class="badge err">ERROR</span>
+          {% else %}<span class="badge empty">EMPTY</span>{% endif %}
+        </td>
+        <td class="mono">{{ r.days }}</td>
+        <td class="mono muted">{{ r.days_preview }}{% if r.error %}<div style="color:#f87171">{{ r.error }}</div>{% endif %}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="6" class="muted">No rows for this filter.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

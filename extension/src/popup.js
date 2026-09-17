@@ -92,7 +92,6 @@ async function syncShieldCard() {
 
 var SETTINGS = [
   { id: "#defaultWaitTime", key: "defaultWaitTime", type: "select", onChange: syncAudioMuted },
-  { id: "#recheckButton", key: "recheckButton", type: "checkbox" },
   { id: "#audioAlert", key: "audioAlert", type: "checkbox" },
   { id: "#autoSelectFirstDate", key: "autoSelectFirstDate", type: "checkbox" },
   { id: "#serverSync", key: "serverSync", type: "checkbox" },

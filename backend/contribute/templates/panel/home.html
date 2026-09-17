@@ -1,0 +1,68 @@
+{% extends "panel/base.html" %}
+{% block title %}Overview · VisaBook Ops{% endblock %}
+{% block content %}
+<h1>Overview</h1>
+<p class="sub">Unique city checks only — duplicate spam from the same city/result within 2 minutes is hidden.</p>
+
+<div class="grid">
+  <div class="card"><div class="k">Users</div><div class="v">{{ stats.users }}</div></div>
+  <div class="card"><div class="k">Active 24h</div><div class="v">{{ stats.active_24h }}</div></div>
+  <div class="card"><div class="k">Checks 24h</div><div class="v">{{ stats.checks_24h }}</div></div>
+  <div class="card"><div class="k">Slots found 24h</div><div class="v">{{ stats.slots_24h }}</div></div>
+  <div class="card"><div class="k">Human clicks 24h</div><div class="v">{{ stats.clicks_24h }}</div></div>
+</div>
+
+<div class="section card">
+  <h2 style="margin:0 0 0.75rem;font-size:1.05rem">Cities (last 7 days)</h2>
+  <table>
+    <thead>
+      <tr><th>City</th><th>Checks</th><th>With slots</th><th>Errors</th><th>Last check (IST)</th></tr>
+    </thead>
+    <tbody>
+      {% for r in city_rows %}
+      <tr>
+        <td><strong>{{ r.post_name|default:r.post_id|default:"—" }}</strong><div class="muted mono">{{ r.post_id }}</div></td>
+        <td class="mono">{{ r.checks }}</td>
+        <td class="mono">{% if r.with_slots %}<span class="badge ok">{{ r.with_slots }}</span>{% else %}0{% endif %}</td>
+        <td class="mono">{{ r.errors }}</td>
+        <td class="mono">{% if r.last_at %}{{ r.last_at|date:"Y-m-d H:i:s" }}{% else %}—{% endif %}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="5" class="muted">No contributions yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="section card">
+  <h2 style="margin:0 0 0.75rem;font-size:1.05rem">Latest city changes</h2>
+  <table>
+    <thead>
+      <tr><th>When (IST)</th><th>City</th><th>User</th><th>Status</th><th>Dates</th></tr>
+    </thead>
+    <tbody>
+      {% for r in recent_rows %}
+      <tr>
+        <td class="mono">{{ r.when|date:"m-d H:i:s" }}</td>
+        <td><strong>{{ r.city }}</strong></td>
+        <td>{{ r.user }}</td>
+        <td>
+          {% if r.status == "SLOTS" %}<span class="badge ok">SLOTS</span>
+          {% elif r.status == "ERROR" %}<span class="badge err">ERROR</span>
+          {% else %}<span class="badge empty">EMPTY</span>{% endif %}
+        </td>
+        <td class="mono muted">{{ r.days_preview }}{% if r.error %}<div style="color:#f87171">{{ r.error }}</div>{% endif %}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="5" class="muted">No history yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="section card">
+  <h2 style="margin:0 0 0.4rem;font-size:1.05rem">Current timings (live config)</h2>
+  <p class="muted mono" style="margin:0">{{ cfg.slotWindowLabel }} · Loading {{ cfg.cityLoadingMaxMs }}ms · No-dates {{ cfg.cityCalendarNoDatesMs }}ms · Updated {{ cfg.updatedAt|default:"—" }}</p>
+  <p style="margin:0.6rem 0 0"><a href="{% url 'panel_timings' %}">Edit timings →</a></p>
+</div>
+{% endblock %}

@@ -1259,9 +1259,9 @@ async function handleTelegramNotify(message) {
 }
 
 // ---------------------------------------------------------------------------
-// IST slot windows — :05–:13, :14–:21, :24–:31, :35–:50, :54–:02 each hour.
+// IST slot windows — defaults; overridden by safe remote JSON (no remote code).
 // ---------------------------------------------------------------------------
-const SLOT_WINDOWS = [
+let SLOT_WINDOWS = [
   { fromMin: 0, toMin: 2 },
   { fromMin: 5, toMin: 13 },
   { fromMin: 14, toMin: 21 },
@@ -1269,6 +1269,57 @@ const SLOT_WINDOWS = [
   { fromMin: 35, toMin: 50 },
   { fromMin: 54, toMin: 59 },
 ];
+
+const REMOTE_RUNTIME_CONFIG_URL = "https://the.gopg.online/extension-runtime-config.json";
+let _remoteCfgFetchedAt = 0;
+
+function _clampSw(n, min, max, fallback) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(v)));
+}
+
+function _applyRemoteSlotWindows(raw) {
+  if (!Array.isArray(raw) || !raw.length || raw.length > 24) return false;
+  const next = [];
+  for (const w of raw) {
+    const fromMin = _clampSw(w?.fromMin, 0, 59, NaN);
+    const toMin = _clampSw(w?.toMin, 0, 59, NaN);
+    if (!Number.isFinite(fromMin) || !Number.isFinite(toMin) || fromMin > toMin) return false;
+    next.push({ fromMin, toMin });
+  }
+  SLOT_WINDOWS = next;
+  return true;
+}
+
+async function refreshRemoteRuntimeConfig(force = false) {
+  const now = Date.now();
+  if (!force && now - _remoteCfgFetchedAt < 5 * 60 * 1000) return;
+  try {
+    const res = await fetch(REMOTE_RUNTIME_CONFIG_URL, {
+      method: "GET",
+      cache: "no-store",
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    if (!data || typeof data !== "object" || data.script || data.code || data.eval) {
+      throw new Error("unsafe");
+    }
+    _applyRemoteSlotWindows(data.slotWindows);
+    try {
+      await chrome.storage.local.set({
+        vsRuntimeConfig: { config: data, fetchedAt: Date.now() },
+      });
+    } catch {}
+    _remoteCfgFetchedAt = Date.now();
+  } catch {
+    _remoteCfgFetchedAt = Date.now();
+  }
+}
+
+refreshRemoteRuntimeConfig(true);
+setInterval(() => refreshRemoteRuntimeConfig(false), 5 * 60 * 1000);
 
 function isInSlotWindow(date = new Date()) {
   let minute;
