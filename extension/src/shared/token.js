@@ -78,6 +78,9 @@ export const ID = {
   aiTermsGate:   T + '57',
   aiMain:        T + '58',
   aiTermsContinue: T + '59',
+  aiFromBtn:     T + '60',
+  aiToBtn:       T + '61',
+  aiCal:         T + '62',
 };
 
 // CSS class names
@@ -126,6 +129,14 @@ export const CLS = {
   aiTermsCb: T + 'an',
   aiTermsList: T + 'ao',
   aiContinue: T + 'ap',
+  aiDateBtn: T + 'aq',
+  aiCal: T + 'ar',
+  aiCalHead: T + 'as',
+  aiCalGrid: T + 'at',
+  aiCalDay: T + 'au',
+  aiCalMuted: T + 'av',
+  aiCalOn: T + 'aw',
+  aiCalToday: T + 'ax',
 };
 
 // dataset property names (translate to data-* attributes)

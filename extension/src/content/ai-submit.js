@@ -26,6 +26,11 @@ import { CLS, DAT, ID, MSG, T, idSel } from "../shared/token.js";
 import { ensureSelectorRow } from "./scheduling-controls.js";
 import { armSubmitErrorWatch } from "./submit-errors.js";
 import { isTimeSlotPicked } from "./time-select.js";
+import {
+  mergeServerTikTikPrefs,
+  pullTikTikPrefs,
+  pushTikTikPrefs,
+} from "./tik-tik-sync.js";
 
 export var AI_SUBMIT_KEY = "aiSubmitByAccount";
 
@@ -133,6 +138,214 @@ function _pretty(iso) {
   } catch {
     return iso;
   }
+}
+
+function _isoFromParts(y, m0, d) {
+  return `${y}-${String(m0 + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+function _parseISO(iso) {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
+  return dt;
+}
+
+function _paintDateButtons() {
+  for (const key of ["from", "to"]) {
+    const hidden = document.querySelector(idSel(key === "from" ? ID.aiFrom : ID.aiTo));
+    const btn = document.querySelector(idSel(key === "from" ? ID.aiFromBtn : ID.aiToBtn));
+    if (!btn) continue;
+    const iso = hidden?.value || "";
+    btn.textContent = iso ? _pretty(iso) : "Select date";
+  }
+}
+
+function _setDateValue(which, iso) {
+  const hidden = document.querySelector(idSel(which === "from" ? ID.aiFrom : ID.aiTo));
+  if (hidden) hidden.value = iso || "";
+  if (which === "from") {
+    const toHidden = document.querySelector(idSel(ID.aiTo));
+    if (toHidden && iso && toHidden.value && toHidden.value < iso) toHidden.value = "";
+  }
+  _paintDateButtons();
+}
+
+var _calView = { y: 0, m0: 0, which: "from" };
+
+function _closeCal() {
+  document.querySelector(idSel(ID.aiCal))?.classList.add(CLS.hidden);
+}
+
+function _calEventTarget(e) {
+  const t = e.target;
+  if (!t) return null;
+  return t.nodeType === 3 ? t.parentElement : t;
+}
+
+function _renderCal() {
+  const cal = document.querySelector(idSel(ID.aiCal));
+  if (!cal) return;
+  const { y, m0, which } = _calView;
+  const selected = document.querySelector(idSel(which === "from" ? ID.aiFrom : ID.aiTo))?.value || "";
+  const today = _todayISO();
+  const minIso = which === "to"
+    ? (document.querySelector(idSel(ID.aiFrom))?.value || _todayISO())
+    : _todayISO();
+
+  const title = new Date(y, m0, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+  const firstDow = new Date(y, m0, 1).getDay();
+  const daysInMonth = new Date(y, m0 + 1, 0).getDate();
+  const prevDays = new Date(y, m0, 0).getDate();
+
+  let cells = "";
+  for (const w of ["S", "M", "T", "W", "T", "F", "S"]) {
+    cells += `<div class="${CLS.aiHint}">${w}</div>`;
+  }
+  for (let i = 0; i < 42; i++) {
+    let dayNum;
+    let cellY = y;
+    let cellM0 = m0;
+    let muted = false;
+    if (i < firstDow) {
+      dayNum = prevDays - firstDow + i + 1;
+      cellM0 = m0 - 1;
+      if (cellM0 < 0) { cellM0 = 11; cellY = y - 1; }
+      muted = true;
+    } else if (i >= firstDow + daysInMonth) {
+      dayNum = i - firstDow - daysInMonth + 1;
+      cellM0 = m0 + 1;
+      if (cellM0 > 11) { cellM0 = 0; cellY = y + 1; }
+      muted = true;
+    } else {
+      dayNum = i - firstDow + 1;
+    }
+    const iso = _isoFromParts(cellY, cellM0, dayNum);
+    const disabled = iso < minIso;
+    const cls = [
+      CLS.aiCalDay,
+      muted ? CLS.aiCalMuted : "",
+      disabled ? CLS.aiCalMuted : "",
+      iso === today ? CLS.aiCalToday : "",
+      iso === selected ? CLS.aiCalOn : "",
+    ].filter(Boolean).join(" ");
+    cells += `<button type="button" class="${cls}" data-iso="${iso}" ${disabled ? "disabled aria-disabled=\"true\"" : ""}>${dayNum}</button>`;
+  }
+
+  cal.innerHTML = `
+    <div class="${CLS.aiCalHead}">
+      <button type="button" data-cal="prev" aria-label="Previous month">‹</button>
+      <div class="${CLS.aiHead}">${title}</div>
+      <button type="button" data-cal="next" aria-label="Next month">›</button>
+    </div>
+    <div class="${CLS.aiCalGrid}">${cells}</div>
+    <div class="${CLS.aiRow}">
+      <button type="button" data-cal="clear">Clear</button>
+      <button type="button" data-cal="today">Today</button>
+    </div>
+  `;
+}
+
+/** Handle calendar taps on pointerdown so outside-close cannot steal the gesture. */
+function _onCalPointer(e) {
+  const cal = document.querySelector(idSel(ID.aiCal));
+  const el = _calEventTarget(e);
+  const btn = el?.closest?.("button");
+  if (!cal || !btn || !cal.contains(btn)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+
+  const action = btn.getAttribute("data-cal");
+  const which = _calView.which;
+  const minIso = which === "to"
+    ? (document.querySelector(idSel(ID.aiFrom))?.value || _todayISO())
+    : _todayISO();
+
+  if (action === "prev") {
+    _calView.m0 -= 1;
+    if (_calView.m0 < 0) { _calView.m0 = 11; _calView.y -= 1; }
+    _renderCal();
+    return;
+  }
+  if (action === "next") {
+    _calView.m0 += 1;
+    if (_calView.m0 > 11) { _calView.m0 = 0; _calView.y += 1; }
+    _renderCal();
+    return;
+  }
+  if (action === "clear") {
+    _setDateValue(which, "");
+    _closeCal();
+    return;
+  }
+  if (action === "today") {
+    const t = _todayISO();
+    if (t >= minIso) {
+      _setDateValue(which, t);
+      _closeCal();
+      _tryEnableSubmitAfterDates();
+    }
+    return;
+  }
+  if (btn.disabled || btn.getAttribute("aria-disabled") === "true") return;
+  const iso = btn.getAttribute("data-iso");
+  if (!iso || iso < minIso) return;
+  _setDateValue(which, iso);
+  _closeCal();
+  _tryEnableSubmitAfterDates();
+}
+
+function _positionCal(anchorEl) {
+  const cal = document.querySelector(idSel(ID.aiCal));
+  if (!cal || !anchorEl) return;
+  const aRect = anchorEl.getBoundingClientRect();
+  const calW = Math.min(340, window.innerWidth - 16);
+  const calH = cal.offsetHeight || 360;
+  let left = Math.max(8, Math.min(aRect.left, window.innerWidth - calW - 8));
+  // Prefer below the field; flip above if not enough room.
+  let top = aRect.bottom + 6;
+  if (top + calH > window.innerHeight - 8 && aRect.top - 6 - calH >= 8) {
+    top = aRect.top - 6 - calH;
+  } else {
+    top = Math.max(8, Math.min(top, window.innerHeight - calH - 8));
+  }
+  cal.style.position = "fixed";
+  cal.style.top = `${Math.round(top)}px`;
+  cal.style.left = `${Math.round(left)}px`;
+  cal.style.width = `${calW}px`;
+  cal.style.right = "auto";
+  cal.style.bottom = "auto";
+}
+
+function _openCal(which, anchorEl) {
+  let cal = document.querySelector(idSel(ID.aiCal));
+  if (!cal) {
+    cal = document.createElement("div");
+    cal.id = ID.aiCal;
+    cal.className = `${CLS.aiCal} ${CLS.hidden}`;
+    cal.dataset[DAT.mark] = "";
+    // Portal to body so panel overflow / sticky headers cannot clip or steal clicks.
+    document.body.appendChild(cal);
+    vs.on(cal, "pointerdown", _onCalPointer, { capture: true });
+    vs.on(cal, "click", (e) => {
+      // Swallow click so page / outside-close never see a leftover click.
+      if (cal.contains(_calEventTarget(e))) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, { capture: true });
+  }
+
+  const current = document.querySelector(idSel(which === "from" ? ID.aiFrom : ID.aiTo))?.value;
+  const base = _parseISO(current) || new Date();
+  _calView = { y: base.getFullYear(), m0: base.getMonth(), which };
+  _renderCal();
+  cal.classList.remove(CLS.hidden);
+  _positionCal(anchorEl);
+  // Reposition after layout (month grid height known).
+  requestAnimationFrame(() => _positionCal(anchorEl));
 }
 
 /** Auto-submit on (supports legacy `enabled`). */
@@ -666,22 +879,36 @@ function _scheduleCityRotate() {
     _rotateTimer = vs.setTimeout(() => { _rotateTick(); }, 500);
     return;
   }
-  let delay = _msUntilNextRotate();
-  if (delay < _cityRotateMinGapMs()) {
-    if (_lastSwitchAt) {
-      delay = Math.max(0, _lastSwitchAt + _cityRotateMinGapMs() - Date.now());
-    } else if (_nextRotateAt > Date.now()) {
-      delay = _nextRotateAt - Date.now();
-    } else {
-      _armNextRotate(Date.now());
-      delay = _nextRotateAt - Date.now();
-    }
+
+  const now = Date.now();
+  const slotWait = msUntilSlotWindow(new Date(now));
+
+  // Outside IST window: wake at the exact start second.
+  // Never pad this with the 13–18s hop gap (that was making :54 fire at :55/:56).
+  if (slotWait > 0) {
+    if (_nextRotateAt > now) _nextRotateAt = now;
+    if (slotWait >= CITY_STUCK_TICK_MS) _lastRotateTickAt = now;
+    _rotateTimer = vs.setTimeout(() => { _rotateTick(); }, slotWait);
+    return;
   }
+
+  // Inside window: wait only for booking pause / min gap after a real switch / armed next.
+  // Do NOT invent a fresh random 13–18s when delay is 0 ("hop now").
+  let delay = 0;
+  if (_rotatePausedUntil > now) delay = Math.max(delay, _rotatePausedUntil - now);
+  if (_lastSwitchAt) {
+    delay = Math.max(delay, _lastSwitchAt + _cityRotateMinGapMs() - now);
+  }
+  if (_nextRotateAt > now) {
+    delay = Math.max(delay, _nextRotateAt - now);
+  }
+  delay = Math.max(0, delay);
+
   // Keep watchdog from false "stuck" during long waits (e.g. next IST window).
   if (delay >= CITY_STUCK_TICK_MS) {
     _lastRotateTickAt = Date.now();
   }
-  _rotateTimer = vs.setTimeout(() => { _rotateTick(); }, Math.max(0, delay));
+  _rotateTimer = vs.setTimeout(() => { _rotateTick(); }, delay);
 }
 
 /**
@@ -795,8 +1022,39 @@ async function _persistForm(accountId, patch = {}) {
   };
   // Keep legacy `enabled` in sync with submitEnabled
   if (typeof next.submitEnabled === "boolean") next.enabled = next.submitEnabled;
+  next.serverUpdatedAt = Date.now();
   await setAiConfig(accountId, next);
+  _scheduleTikTikServerPush(next);
   return next;
+}
+
+var _tikTikPushTimer = null;
+var _tikTikPullDoneFor = null;
+
+function _scheduleTikTikServerPush(cfg) {
+  if (_tikTikPushTimer) vs.clear(_tikTikPushTimer);
+  _tikTikPushTimer = vs.setTimeout(() => {
+    _tikTikPushTimer = null;
+    pushTikTikPrefs(cfg).catch(() => {});
+  }, 400);
+}
+
+async function _pullTikTikFromServer(accountId) {
+  if (!accountId) return null;
+  if (_tikTikPullDoneFor === accountId) return null;
+  const server = await pullTikTikPrefs();
+  _tikTikPullDoneFor = accountId;
+  if (!server) return null;
+  const local = (await getAiConfig(accountId)) || {};
+  const merged = mergeServerTikTikPrefs(local, server);
+  if (!merged) return null;
+  // Never overwrite local secrets from server (server never has them).
+  merged.loginId = local.loginId || merged.loginId || "";
+  merged.loginPass = local.loginPass || "";
+  merged.security = local.security || merged.security || [];
+  if (typeof merged.submitEnabled === "boolean") merged.enabled = merged.submitEnabled;
+  await setAiConfig(accountId, merged);
+  return merged;
 }
 
 async function _switchToCity(cityId, label) {
@@ -1486,6 +1744,13 @@ function _paintStatus(cfg, accountId) {
 
 export async function refreshAiSubmitUi() {
   const accountId = await getAccountId();
+  if (accountId) {
+    try {
+      await _pullTikTikFromServer(accountId);
+    } catch {
+      /* offline / sync optional */
+    }
+  }
   const cfg = accountId ? await getAiConfig(accountId) : null;
   // Keep date/city panels visible while the matching switch is ON.
   if (!isSubmitEnabled(cfg)) _submitFieldsOpen = false;
@@ -1495,8 +1760,9 @@ export async function refreshAiSubmitUi() {
   _paintGate(cfg);
   const from = document.querySelector(idSel(ID.aiFrom));
   const to = document.querySelector(idSel(ID.aiTo));
-  if (from && cfg?.from) from.value = cfg.from;
-  if (to && cfg?.to) to.value = cfg.to;
+  if (from) from.value = cfg?.from || "";
+  if (to) to.value = cfg?.to || "";
+  _paintDateButtons();
   const savedIds = (cfg?.cities || []).map((c) => c.id);
   const panel = document.querySelector(idSel(ID.aiPanel));
   const panelOpen = panel && !panel.classList.contains(CLS.hidden);
@@ -1536,9 +1802,18 @@ function _isPanelOpen() {
 function _togglePanel(show) {
   const panel = document.querySelector(idSel(ID.aiPanel));
   if (!panel) return;
+  if (!show) _closeCal();
   panel.classList.toggle(CLS.hidden, !show);
   if (show) {
     getAccountId().then(async (id) => {
+      if (id) {
+        try {
+          _tikTikPullDoneFor = null; // allow fresh pull when opening panel
+          await _pullTikTikFromServer(id);
+        } catch {
+          /* ignore */
+        }
+      }
       const cfg = id ? await getAiConfig(id) : null;
       _paintGate(cfg);
       if (_termsPassed(cfg)) {
@@ -1557,14 +1832,25 @@ function _bindOutsideClose() {
     if (!_isPanelOpen()) return;
     const panel = document.querySelector(idSel(ID.aiPanel));
     const btn = document.querySelector(idSel(ID.aiBtn));
-    const t = e.target;
-    if (panel && (panel === t || panel.contains(t))) return;
-    if (btn && (btn === t || btn.contains(t))) return;
+    const cal = document.querySelector(idSel(ID.aiCal));
+    const t = _calEventTarget(e);
+    // Calendar is portaled on body — treat it as inside Tik Tik UI.
+    if (cal && !cal.classList.contains(CLS.hidden) && t && cal.contains(t)) return;
+    if (cal && !cal.classList.contains(CLS.hidden)) {
+      const fromBtn = document.querySelector(idSel(ID.aiFromBtn));
+      const toBtn = document.querySelector(idSel(ID.aiToBtn));
+      if (!(fromBtn && t && (fromBtn === t || fromBtn.contains(t))) &&
+          !(toBtn && t && (toBtn === t || toBtn.contains(t)))) {
+        _closeCal();
+      }
+    }
+    if (panel && t && (panel === t || panel.contains(t))) return;
+    if (btn && t && (btn === t || btn.contains(t))) return;
+    _closeCal();
     _togglePanel(false);
   };
-  // capture:true so page handlers that stopPropagation still can't block close
+  // Only pointerdown — click also fired before and closed the cal mid-tap.
   vs.on(document, "pointerdown", closeIfOutside, { capture: true });
-  vs.on(document, "click", closeIfOutside, { capture: true });
 }
 
 async function _onSetSubmit(wantOn) {
@@ -1597,6 +1883,7 @@ async function _onSetSubmit(wantOn) {
     const toEl = document.querySelector(idSel(ID.aiTo));
     if (fromEl && from) fromEl.value = from;
     if (toEl && to) toEl.value = to;
+    _paintDateButtons();
 
     await refreshAiSubmitUi();
     _setSwitch(document.querySelector(idSel(ID.aiSubmitSw)), true);
@@ -1850,7 +2137,7 @@ export function ensureAiSubmitUi() {
   }
   if (document.querySelector(idSel(ID.aiBtn))) {
     // Rebuild if an older Tik Tik panel is missing the new controls.
-    if (!document.querySelector(idSel(ID.aiSubmitSw)) || !document.querySelector(idSel(ID.aiTermsContinue))) {
+    if (!document.querySelector(idSel(ID.aiSubmitSw)) || !document.querySelector(idSel(ID.aiTermsContinue)) || !document.querySelector(idSel(ID.aiFromBtn))) {
       removeTikTikUi();
     } else {
       return;
@@ -1908,8 +2195,14 @@ export function ensureAiSubmitUi() {
         </div>
         <div id="${ID.aiSubmitBody}" class="${CLS.hidden}">
           <div class="${CLS.aiRow}" style="margin-top:10px">
-            <label>From <input type="date" id="${ID.aiFrom}" min="${_todayISO()}" /></label>
-            <label>To <input type="date" id="${ID.aiTo}" min="${_todayISO()}" /></label>
+            <label>From
+              <button type="button" id="${ID.aiFromBtn}" class="${CLS.aiDateBtn}">Select date</button>
+              <input type="hidden" id="${ID.aiFrom}" />
+            </label>
+            <label>To
+              <button type="button" id="${ID.aiToBtn}" class="${CLS.aiDateBtn}">Select date</button>
+              <input type="hidden" id="${ID.aiTo}" />
+            </label>
           </div>
         </div>
       </div>
@@ -2010,13 +2303,23 @@ export function ensureAiSubmitUi() {
   vs.on(panel.querySelector(idSel(ID.aiTermsAgree)), "change", () => { _onTermsAgreeToggle(); });
   vs.on(panel.querySelector(idSel(ID.aiTermsContinue)), "click", () => { _onTermsContinue(); });
 
-  vs.on(panel.querySelector(idSel(ID.aiFrom)), "change", (e) => {
-    const to = panel.querySelector(idSel(ID.aiTo));
-    if (to && e.target.value) to.min = e.target.value;
-    _tryEnableSubmitAfterDates();
+  vs.on(panel.querySelector(idSel(ID.aiFromBtn)), "click", (e) => {
+    e.stopPropagation();
+    const cal = document.querySelector(idSel(ID.aiCal));
+    if (cal && !cal.classList.contains(CLS.hidden) && _calView.which === "from") {
+      _closeCal();
+      return;
+    }
+    _openCal("from", e.currentTarget);
   });
-  vs.on(panel.querySelector(idSel(ID.aiTo)), "change", () => {
-    _tryEnableSubmitAfterDates();
+  vs.on(panel.querySelector(idSel(ID.aiToBtn)), "click", (e) => {
+    e.stopPropagation();
+    const cal = document.querySelector(idSel(ID.aiCal));
+    if (cal && !cal.classList.contains(CLS.hidden) && _calView.which === "to") {
+      _closeCal();
+      return;
+    }
+    _openCal("to", e.currentTarget);
   });
 
   _bindOutsideClose();

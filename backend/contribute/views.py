@@ -2,7 +2,7 @@ import base64
 import json
 import logging
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.db import transaction
 from django.http import JsonResponse
@@ -10,7 +10,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .models import Applicant, Contribution, DashboardSnapshot, HumanClickSample
+from .models import Applicant, ApplicantTikTikPrefs, Contribution, DashboardSnapshot, HumanClickSample
 from .telegram import notify_available_slots, relay_extension_alert
 
 logger = logging.getLogger(__name__)
@@ -81,6 +81,13 @@ def _upsert_applicant(profile: dict, token: str | None) -> Applicant | None:
                 Contribution.objects.filter(applicant=dup).update(applicant=applicant)
                 DashboardSnapshot.objects.filter(applicant=dup).update(applicant=applicant)
                 HumanClickSample.objects.filter(applicant=dup).update(applicant=applicant)
+                dup_prefs = ApplicantTikTikPrefs.objects.filter(applicant=dup).first()
+                if dup_prefs is not None:
+                    if not ApplicantTikTikPrefs.objects.filter(applicant=applicant).exists():
+                        dup_prefs.applicant = applicant
+                        dup_prefs.save(update_fields=["applicant"])
+                    else:
+                        dup_prefs.delete()
                 if not applicant.id_token and dup.id_token:
                     applicant.id_token = dup.id_token
                     applicant.token_captured_at = dup.token_captured_at
@@ -310,3 +317,149 @@ def human_click_sample(request):
         len(sample.get("path") or []) if isinstance(sample.get("path"), list) else 0,
     )
     return JsonResponse({"success": True, "id": row.pk})
+
+
+def _prefs_to_dict(row: ApplicantTikTikPrefs) -> dict:
+    return {
+        "cities": row.cities if isinstance(row.cities, list) else [],
+        "from": row.date_from or None,
+        "to": row.date_to or None,
+        "submitEnabled": bool(row.submit_enabled),
+        "citiesEnabled": bool(row.cities_enabled),
+        "slotWindows": row.slot_windows if isinstance(row.slot_windows, list) else [],
+        "termsAgreed": bool(row.terms_agreed),
+        "termsPassed": bool(row.terms_passed),
+        "termsAgreedAt": int(row.terms_agreed_at.timestamp() * 1000) if row.terms_agreed_at else None,
+        "updatedAt": int(row.updated_at.timestamp() * 1000) if row.updated_at else None,
+    }
+
+
+def _clean_cities(raw) -> list:
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw[:20]:
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get("id") or "").strip()[:64]
+        if not cid:
+            continue
+        out.append({"id": cid, "name": str(item.get("name") or cid).strip()[:255]})
+    return out
+
+
+def _clean_date(raw) -> str:
+    s = str(raw or "").strip()[:10]
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        return s
+    return ""
+
+
+def _clean_slot_windows(raw) -> list:
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw[:8]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            from_min = int(item.get("fromMin"))
+            to_min = int(item.get("toMin", item.get("fromMin")))
+        except (TypeError, ValueError):
+            continue
+        if from_min < 0 or from_min > 59 or to_min < 0 or to_min > 59:
+            continue
+        row = {"fromMin": from_min, "toMin": to_min}
+        if "durationMin" in item:
+            try:
+                row["durationMin"] = max(1, min(6, int(item.get("durationMin"))))
+            except (TypeError, ValueError):
+                pass
+        if "slot" in item:
+            try:
+                row["slot"] = int(item.get("slot"))
+            except (TypeError, ValueError):
+                pass
+        out.append(row)
+    return out
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST", "OPTIONS"])
+def tik_tik_prefs(request):
+    """
+    Safe Tik Tik prefs sync (cities, dates, toggles, timings, terms).
+    Never accepts login passwords or security answers.
+
+    POST body: { profile, token?, prefs: { cities, from, to, submitEnabled, ... } }
+    GET query: applicant_id=… and/or email=…
+    """
+    if request.method == "OPTIONS":
+        return JsonResponse({}, status=204)
+
+    if request.method == "GET":
+        applicant_id = _normalize_applicant_id(request.GET.get("applicant_id", ""))
+        email = str(request.GET.get("email") or "").strip()
+        applicant = None
+        if applicant_id:
+            applicant = Applicant.objects.filter(applicant_id=applicant_id).order_by("id").first()
+        if not applicant and email:
+            applicant = Applicant.objects.filter(email__iexact=email).order_by("id").first()
+        if not applicant:
+            return JsonResponse({"success": True, "prefs": None})
+        row = ApplicantTikTikPrefs.objects.filter(applicant=applicant).first()
+        return JsonResponse({"success": True, "prefs": _prefs_to_dict(row) if row else None})
+
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({"success": False, "error": "invalid json"}, status=400)
+
+    if not isinstance(body, dict):
+        return JsonResponse({"success": False, "error": "expected object"}, status=400)
+
+    profile = body.get("profile") if isinstance(body.get("profile"), dict) else {}
+    token = body.get("token") if isinstance(body.get("token"), str) else None
+    applicant = _upsert_applicant(profile, token)
+    if not applicant:
+        return JsonResponse({"success": False, "error": "profile required"}, status=400)
+
+    prefs = body.get("prefs")
+    if not isinstance(prefs, dict):
+        row = ApplicantTikTikPrefs.objects.filter(applicant=applicant).first()
+        return JsonResponse({"success": True, "prefs": _prefs_to_dict(row) if row else None})
+
+    row, _created = ApplicantTikTikPrefs.objects.get_or_create(applicant=applicant)
+    if "cities" in prefs:
+        row.cities = _clean_cities(prefs.get("cities"))
+    if "from" in prefs:
+        row.date_from = _clean_date(prefs.get("from"))
+    if "to" in prefs:
+        row.date_to = _clean_date(prefs.get("to"))
+    if "submitEnabled" in prefs or "enabled" in prefs:
+        row.submit_enabled = bool(
+            prefs["submitEnabled"] if "submitEnabled" in prefs else prefs.get("enabled")
+        )
+    if "citiesEnabled" in prefs:
+        row.cities_enabled = bool(prefs.get("citiesEnabled"))
+    if "slotWindows" in prefs:
+        windows = prefs.get("slotWindows")
+        row.slot_windows = _clean_slot_windows(windows) if windows else []
+    if "termsAgreed" in prefs:
+        row.terms_agreed = bool(prefs.get("termsAgreed"))
+    if "termsPassed" in prefs:
+        row.terms_passed = bool(prefs.get("termsPassed"))
+    if "termsAgreedAt" in prefs:
+        raw_ts = prefs.get("termsAgreedAt")
+        if raw_ts is None or raw_ts == "":
+            row.terms_agreed_at = None
+        else:
+            try:
+                ms = int(raw_ts)
+                row.terms_agreed_at = datetime.fromtimestamp(ms / 1000.0, tz=dt_timezone.utc)
+            except (TypeError, ValueError, OSError):
+                pass
+
+    row.save()
+    logger.info("Tik Tik prefs saved for %s", applicant)
+    return JsonResponse({"success": True, "prefs": _prefs_to_dict(row)})

@@ -244,6 +244,7 @@ export var CSS = `
   display: flex;
   flex-direction: column;
   gap: 14px;
+  position: relative;
 }
 #${ID.aiPanel}.${CLS.hidden} {
   display: none !important;
@@ -337,7 +338,6 @@ export var CSS = `
   font-weight: 600;
   color: #374151;
 }
-#${ID.aiPanel} input[type="date"],
 #${ID.aiPanel} input[type="text"],
 #${ID.aiPanel} input[type="password"],
 #${ID.aiPanel} input[type="email"],
@@ -352,13 +352,124 @@ export var CSS = `
   color: #111827;
   min-height: 42px;
 }
-#${ID.aiPanel} input[type="date"] {
+#${ID.aiPanel} .${CLS.aiDateBtn} {
+  width: 100%;
+  min-height: 46px;
+  padding: 10px 12px;
   border: 2px solid #3b82f6;
-  background: #fff;
-  font-weight: 600;
   border-radius: 10px;
+  background: #fff;
+  color: #111827;
+  font-size: 16px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  box-sizing: border-box;
 }
-#${ID.aiPanel} input[type="date"]:focus,
+#${ID.aiPanel} .${CLS.aiDateBtn}:hover {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+#${ID.aiCal} {
+  position: fixed;
+  z-index: 2147483646;
+  width: min(100vw - 16px, 340px);
+  padding: 14px;
+  background: #fff;
+  border: 1.5px solid #111827;
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(0,0,0,0.18);
+  box-sizing: border-box;
+  pointer-events: auto;
+}
+#${ID.aiCal}.${CLS.hidden} { display: none !important; }
+#${ID.aiCal} .${CLS.aiCalHead} {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+#${ID.aiCal} .${CLS.aiCalHead} .${CLS.aiHead} {
+  font-size: 17px;
+  margin: 0;
+  flex: 1;
+  text-align: center;
+}
+#${ID.aiCal} .${CLS.aiCalHead} button {
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0;
+  background: #eef2ff;
+  color: #1e40af;
+  border-radius: 8px;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+}
+#${ID.aiCal} .${CLS.aiCalGrid} {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+}
+#${ID.aiCal} .${CLS.aiCalGrid} .${CLS.aiHint} {
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: #6b7280;
+  padding: 4px 0;
+  pointer-events: none;
+}
+#${ID.aiCal} .${CLS.aiCalDay} {
+  min-height: 42px;
+  padding: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  color: #111827;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+#${ID.aiCal} .${CLS.aiCalDay}:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+#${ID.aiCal} .${CLS.aiCalDay}.${CLS.aiCalMuted} {
+  color: #9ca3af;
+  font-weight: 500;
+  background: #f9fafb;
+}
+#${ID.aiCal} .${CLS.aiCalDay}:disabled,
+#${ID.aiCal} .${CLS.aiCalDay}[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: #f3f4f6;
+  color: #9ca3af;
+  pointer-events: none;
+}
+#${ID.aiCal} .${CLS.aiCalDay}.${CLS.aiCalToday} {
+  border-color: #3b82f6;
+}
+#${ID.aiCal} .${CLS.aiCalDay}.${CLS.aiCalOn} {
+  background: #3b82f6;
+  border-color: #2563eb;
+  color: #fff;
+}
+#${ID.aiCal} .${CLS.aiRow} {
+  margin: 12px 0 0;
+  justify-content: space-between;
+}
+#${ID.aiCal} .${CLS.aiRow} button {
+  background: #eef0f3;
+  color: #111827;
+  min-height: 40px;
+  font-size: 14.5px;
+  cursor: pointer;
+}
 #${ID.aiPanel} input[type="text"]:focus,
 #${ID.aiPanel} input[type="password"]:focus,
 #${ID.aiPanel} input[type="email"]:focus,

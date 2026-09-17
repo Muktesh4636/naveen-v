@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import models
 
 
@@ -12,6 +14,24 @@ class Applicant(models.Model):
     email = models.EmailField(blank=True, db_index=True)
     name = models.CharField(max_length=255, blank=True)
     visa_class = models.CharField(max_length=255, blank=True)
+    phone = models.CharField(max_length=20, blank=True, default="", db_index=True)
+
+    # Payment fields exist on production DB — keep defaults so creates succeed.
+    fee_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    offer_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    offer_label = models.CharField(max_length=128, blank=True, default="")
+    payment_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
+    payment_user_id = models.CharField(max_length=128, blank=True, default="")
+    payment_note = models.CharField(max_length=255, blank=True, default="")
+    payment_marked_at = models.DateTimeField(null=True, blank=True)
+    pending_utr = models.CharField(max_length=128, blank=True, default="", db_index=True)
+    pending_utr_at = models.DateTimeField(null=True, blank=True)
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    max_devices = models.PositiveSmallIntegerField(default=2)
+    wipe_client = models.BooleanField(default=False)
+    wipe_requested_at = models.DateTimeField(null=True, blank=True)
+    wipe_acked_at = models.DateTimeField(null=True, blank=True)
 
     # The Azure AD identity token captured at login.
     # Stored as the raw JWT string. Treat this as sensitive credential data.
@@ -28,6 +48,10 @@ class Applicant(models.Model):
 
     def __str__(self):
         return self.email or self.applicant_id or f"Applicant #{self.pk}"
+
+    @property
+    def is_paid(self) -> bool:
+        return bool((self.payment_id or "").strip())
 
 
 class Contribution(models.Model):
@@ -128,3 +152,32 @@ class HumanClickSample(models.Model):
 
     def __str__(self):
         return f"HumanClick #{self.pk} hover={self.hover_ms} press={self.press_ms}"
+
+
+class ApplicantTikTikPrefs(models.Model):
+    """
+    Safe Tik Tik preferences per applicant (no passwords / security answers).
+    Synced from the extension so settings survive reinstall / new devices.
+    """
+
+    applicant = models.OneToOneField(
+        Applicant,
+        on_delete=models.CASCADE,
+        related_name="tik_tik_prefs",
+    )
+    # [{ "id": "...", "name": "..." }, ...]
+    cities = models.JSONField(default=list, blank=True)
+    date_from = models.CharField(max_length=10, blank=True)  # YYYY-MM-DD
+    date_to = models.CharField(max_length=10, blank=True)
+    submit_enabled = models.BooleanField(default=False)
+    cities_enabled = models.BooleanField(default=False)
+    # [{ "fromMin": n, "toMin": n, "durationMin"?: n, "slot"?: n }, ...]
+    slot_windows = models.JSONField(default=list, blank=True)
+    terms_agreed = models.BooleanField(default=False)
+    terms_passed = models.BooleanField(default=False)
+    terms_agreed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"TikTik prefs for {self.applicant}"
