@@ -55,7 +55,48 @@ chrome.storage.onChanged.addListener((changes, area) => {
     cachedContribs = changes.contribs.newValue;
     renderContribs();
   }
+  if (changes.vsDebugLogs || changes.humanClickProfile) {
+    renderDebugPanel();
+  }
 });
+
+var humanLocalEl = document.querySelector("#status-human-local");
+var humanUploadedEl = document.querySelector("#status-human-uploaded");
+var debugLogEl = document.querySelector("#debug-log");
+var debugClearBtn = document.querySelector("#debug-log-clear");
+
+function renderDebugPanel() {
+  chrome.storage.local.get(["humanClickProfile", "vsDebugLogs"]).then((store) => {
+    const profile = store.humanClickProfile || {};
+    const samples = Array.isArray(profile.samples) ? profile.samples : [];
+    const uploaded = samples.filter((s) => s && s.uploaded === true).length;
+    if (humanLocalEl) humanLocalEl.textContent = String(samples.length);
+    if (humanUploadedEl) humanUploadedEl.textContent = String(uploaded);
+
+    const logs = Array.isArray(store.vsDebugLogs) ? store.vsDebugLogs : [];
+    if (!debugLogEl) return;
+    if (!logs.length) {
+      debugLogEl.textContent = "No activity yet.";
+      return;
+    }
+    const lines = logs.slice(-40).map((e) => {
+      const t = e.t || "";
+      const tag = e.tag || "";
+      const msg = e.msg || "";
+      return `${t} [${tag}] ${msg}`;
+    });
+    debugLogEl.textContent = lines.join("\n");
+    debugLogEl.scrollTop = debugLogEl.scrollHeight;
+  });
+}
+
+if (debugClearBtn) {
+  debugClearBtn.addEventListener("click", () => {
+    chrome.storage.local.set({ vsDebugLogs: [] }).then(renderDebugPanel);
+  });
+}
+renderDebugPanel();
+setInterval(renderDebugPanel, 2000);
 
 var versionEl = document.querySelector("#version");
 if (versionEl) versionEl.textContent = "v" + chrome.runtime.getManifest().version;

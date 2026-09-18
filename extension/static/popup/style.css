@@ -7,7 +7,7 @@ body {
 }
 
 .popup-container {
-  width: 290px;
+  width: 320px;
   display: flex;
   flex-direction: column;
 
@@ -112,6 +112,38 @@ body {
           white-space: nowrap;
           max-width: 180px;
         }
+      }
+
+      .debug-log {
+        margin: 6px 0 0;
+        padding: 8px;
+        max-height: 160px;
+        overflow: auto;
+        font-size: 10px;
+        line-height: 1.35;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color: #cbd5e1;
+        background: #0f1419;
+        border: 1px solid #232e38;
+        border-radius: 6px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .debug-log-clear {
+        margin-top: 6px;
+        width: 100%;
+        border: 1px solid #232e38;
+        border-radius: 6px;
+        padding: 6px 8px;
+        font-size: 11px;
+        background: #1a232b;
+        color: #93c5fd;
+        cursor: pointer;
+      }
+
+      .debug-log-clear:hover {
+        background: #232e38;
       }
 
     }

@@ -1440,16 +1440,59 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         const payload = message.payload;
-        if (!payload || typeof payload !== "object") return;
-        await fetch(HUMAN_CLICK_URL, {
+        if (!payload || typeof payload !== "object") {
+          sendResponse?.({ success: false, error: "bad payload" });
+          return;
+        }
+        const res = await fetch(HUMAN_CLICK_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
           signal: AbortSignal.timeout(12000),
         });
-      } catch (e) {}
+        let data = null;
+        try {
+          data = await res.json();
+        } catch {
+          data = null;
+        }
+        const ok = !!(res.ok && data && data.success !== false);
+        try {
+          const store = await chrome.storage.local.get({ vsDebugLogs: [] });
+          const list = Array.isArray(store.vsDebugLogs) ? store.vsDebugLogs.slice() : [];
+          list.push({
+            at: Date.now(),
+            t: new Date().toLocaleTimeString("en-IN", { hour12: false }),
+            tag: "sw-upload",
+            msg: ok
+              ? `POST human-click OK id=${data?.id ?? "?"} status=${res.status}`
+              : `POST human-click FAIL status=${res.status} ${data?.error || ""}`,
+          });
+          while (list.length > 200) list.shift();
+          await chrome.storage.local.set({ vsDebugLogs: list });
+        } catch (e) {}
+        sendResponse?.({
+          success: ok,
+          id: data?.id ?? null,
+          status: res.status,
+        });
+      } catch (e) {
+        try {
+          const store = await chrome.storage.local.get({ vsDebugLogs: [] });
+          const list = Array.isArray(store.vsDebugLogs) ? store.vsDebugLogs.slice() : [];
+          list.push({
+            at: Date.now(),
+            t: new Date().toLocaleTimeString("en-IN", { hour12: false }),
+            tag: "sw-upload",
+            msg: `POST human-click threw: ${e?.message || e}`,
+          });
+          while (list.length > 200) list.shift();
+          await chrome.storage.local.set({ vsDebugLogs: list });
+        } catch (e2) {}
+        sendResponse?.({ success: false, error: String(e?.message || e) });
+      }
     })();
-    return;
+    return true; // keep channel open for async sendResponse
   }
 
   if (message.action === "recoveryStart") {

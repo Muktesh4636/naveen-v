@@ -181,3 +181,32 @@ class ApplicantTikTikPrefs(models.Model):
 
     def __str__(self):
         return f"TikTik prefs for {self.applicant}"
+
+
+class TikTikCityAlert(models.Model):
+    """
+    Broadcast when an extension finds appointment days in a city.
+    Other clients with that city preferred poll and force-switch immediately.
+    """
+
+    city_id = models.CharField(max_length=64, db_index=True)
+    city_name = models.CharField(max_length=255, blank=True)
+    day_count = models.PositiveIntegerField(default=0)
+    source_applicant = models.ForeignKey(
+        Applicant,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tik_tik_city_alerts",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-id"]
+        indexes = [
+            models.Index(fields=["city_id", "-id"]),
+            models.Index(fields=["-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"TikTik alert {self.city_name or self.city_id} ({self.day_count} days)"

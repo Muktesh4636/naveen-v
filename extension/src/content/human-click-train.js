@@ -9,11 +9,12 @@ import { isCloudflareChallenge, isCloudflareSolved } from "./cloudflare-tick.js"
 import { getProfile, getSetting } from "../shared/config.js";
 import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
+import { vsLog } from "../shared/debugLog.js";
 
 var PROFILE_KEY = "humanClickProfile";
 var MAX_SAMPLES = 150;
 var MAX_PATH_POINTS = 120;
-var SAVE_GAP_MS = 400;
+var SAVE_GAP_MS = 250;
 var _bound = false;
 var _path = [];
 var _pathStart = 0;
@@ -24,6 +25,11 @@ var _lastSaveAt = 0;
 var _challengeActive = false;
 var _downPoint = null;
 var _sampleCountCache = 0;
+/** Last time we saw pointer near / on the CF widget (for iframe clicks we never get mouseup for). */
+var _lastNearWidgetAt = 0;
+var _lastPathSnapshot = [];
+var _pendingIframeClick = false;
+var _wasChallenge = false;
 
 function _challengeWidgets() {
   const widgets = [];
@@ -108,13 +114,18 @@ function _avg(samples, key, fallback) {
   return Math.round(sum / samples.length);
 }
 
-async function _saveSample(sample) {
+async function _saveSample(sample, { force = false } = {}) {
   const now = Date.now();
-  if (now - _lastSaveAt < SAVE_GAP_MS) return null;
+  if (!force && now - _lastSaveAt < SAVE_GAP_MS) return null;
   _lastSaveAt = now;
 
   const profile = await _loadProfile();
   const samples = Array.isArray(profile.samples) ? profile.samples.slice() : [];
+  // Stamp upload id so we can retry server sync.
+  if (!sample.clientId) {
+    sample.clientId = `hc-${sample.at || now}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+  sample.uploaded = false;
   samples.push(sample);
   while (samples.length > MAX_SAMPLES) samples.shift();
 
@@ -131,18 +142,47 @@ async function _saveSample(sample) {
   };
   await storageSet({ [PROFILE_KEY]: next });
   _sampleCountCache = samples.length;
+  vsLog("human", `saved sample locally #${samples.length}`, {
+    capture: sample.capture || "page",
+    pressMs: sample.pressMs,
+    hoverMs: sample.hoverMs,
+    pathPts: Array.isArray(sample.path) ? sample.path.length : 0,
+    clientId: sample.clientId,
+  });
 
-  // Also upload to server for model training (best-effort).
+  // Upload this sample + any older ones that never reached the server.
   _uploadSampleToServer(sample, next).catch(() => {});
+  _flushUnsyncedToServer().catch(() => {});
 
   return next;
 }
 
+async function _markSampleUploaded(clientId) {
+  if (!clientId) return;
+  const profile = await _loadProfile();
+  const samples = Array.isArray(profile.samples) ? profile.samples.slice() : [];
+  let changed = false;
+  for (const s of samples) {
+    if (s?.clientId === clientId && !s.uploaded) {
+      s.uploaded = true;
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  await storageSet({
+    [PROFILE_KEY]: { ...profile, samples, updatedAt: Date.now() },
+  });
+}
+
 async function _uploadSampleToServer(sample, profile) {
   try {
-    if (!(await getSetting("serverSync"))) return;
+    if (!(await getSetting("serverSync"))) {
+      vsLog("upload", "skipped — serverSync is OFF");
+      return false;
+    }
     const userProfile = (await getProfile()) || {};
-    const clientId = `hc-${sample.at || Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const clientId = sample.clientId || `hc-${sample.at || Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    sample.clientId = clientId;
     const payload = {
       client_id: clientId,
       profile: {
@@ -162,12 +202,105 @@ async function _uploadSampleToServer(sample, profile) {
         extensionHost: location.host,
       },
     };
-    // Prefer service worker (reliable host permission + no page CSP issues).
+    vsLog("upload", `sending sample ${clientId}`, {
+      sampleCount: profile?.samples?.length || 0,
+      email: userProfile.email || "",
+    });
+    // Prefer service worker (host permission + no page CSP).
     vs.send({ action: "uploadHumanClickSample", payload });
+    // Also try chrome.runtime directly so we can mark uploaded on ack.
+    try {
+      chrome.runtime.sendMessage(
+        { action: "uploadHumanClickSample", payload },
+        (res) => {
+          if (chrome.runtime.lastError) {
+            vsLog("upload", `SW error: ${chrome.runtime.lastError.message}`);
+            return;
+          }
+          if (res?.success) {
+            vsLog("upload", `server OK id=${res.id ?? "?"} status=${res.status ?? ""}`, {
+              clientId,
+            });
+            _markSampleUploaded(clientId);
+          } else {
+            vsLog("upload", `server FAIL ${res?.error || res?.status || "unknown"}`, {
+              clientId,
+            });
+          }
+        }
+      );
+    } catch (e) {
+      vsLog("upload", `sendMessage threw: ${e?.message || e}`);
+    }
+    return true;
+  } catch (e) {
+    vsLog("upload", `upload threw: ${e?.message || e}`);
+    return false;
+  }
+}
+
+/** Re-upload any local samples that never got a server ack. */
+async function _flushUnsyncedToServer() {
+  try {
+    if (!(await getSetting("serverSync"))) return;
+    const profile = await _loadProfile();
+    const samples = Array.isArray(profile.samples) ? profile.samples : [];
+    const pending = samples.filter((s) => s && s.uploaded !== true).slice(-40);
+    for (const sample of pending) {
+      await _uploadSampleToServer(sample, profile);
+      await new Promise((r) => setTimeout(r, 80));
+    }
   } catch {}
 }
 
+function _buildSampleFromStroke(e, extra = {}) {
+  const upAt = performance.now();
+  const pressMs = Math.max(25, Math.min(500, _downAt ? upAt - _downAt : 70));
+  const hoverMs = Math.max(30, Math.min(3000, _downAt ? _downAt - (_hoverStart || _downAt) : 200));
+  const path = (_path.length ? _path : _lastPathSnapshot).slice(-MAX_PATH_POINTS);
+  const lastT = path.length ? path[path.length - 1].t : hoverMs;
+  const approachMs = Math.max(hoverMs, Math.min(12000, lastT || hoverMs));
+  const down = _downPoint;
+  const t = _target || _checkboxTarget();
+  return {
+    hoverMs: Math.round(hoverMs),
+    pressMs: Math.round(pressMs),
+    approachMs: Math.round(approachMs),
+    path,
+    down: down ? { x: Math.round(down.x), y: Math.round(down.y) } : null,
+    up: e
+      ? { x: Math.round(e.clientX), y: Math.round(e.clientY) }
+      : down
+        ? { x: Math.round(down.x), y: Math.round(down.y) }
+        : t
+          ? { x: Math.round(t.x), y: Math.round(t.y) }
+          : null,
+    target: t
+      ? {
+          x: Math.round(t.x),
+          y: Math.round(t.y),
+          w: Math.round(t.w),
+          h: Math.round(t.h),
+          left: Math.round(t.left),
+          top: Math.round(t.top),
+        }
+      : null,
+    viewport: {
+      w: window.innerWidth,
+      h: window.innerHeight,
+      dpr: window.devicePixelRatio || 1,
+      scrollX: Math.round(window.scrollX || 0),
+      scrollY: Math.round(window.scrollY || 0),
+    },
+    pointerType: e?.pointerType || "mouse",
+    url: location.pathname + location.search,
+    at: Date.now(),
+    ...extra,
+  };
+}
+
 function _resetStroke() {
+  if (_path.length) _lastPathSnapshot = _path.slice(-MAX_PATH_POINTS);
   _path = [];
   _pathStart = 0;
   _downAt = 0;
@@ -178,6 +311,7 @@ function _resetStroke() {
 function _beginChallengeSession() {
   if (_challengeActive) return;
   _challengeActive = true;
+  _wasChallenge = true;
   _resetStroke();
   _target = _checkboxTarget();
 }
@@ -185,7 +319,23 @@ function _beginChallengeSession() {
 function _endChallengeSession() {
   _challengeActive = false;
   _target = null;
+  _pendingIframeClick = false;
   _resetStroke();
+}
+
+function _eventOnCfWidget(e) {
+  const el = e?.target;
+  if (!el) return false;
+  if (el.closest?.(".cf-turnstile, [data-turnstile-widget], #challenge-stage, [data-sitekey]")) {
+    return true;
+  }
+  if (el.tagName === "IFRAME") {
+    const src = (el.src || "").toLowerCase();
+    if (src.includes("challenges.cloudflare") || src.includes("turnstile")) return true;
+    const rect = el.getBoundingClientRect();
+    if (rect.width >= 120 && rect.width <= 420 && rect.height >= 45 && rect.height <= 120) return true;
+  }
+  return false;
 }
 
 async function _onMove(e) {
@@ -199,6 +349,9 @@ async function _onMove(e) {
   if (!_hoverStart && _target && _nearWidget(e.clientX, e.clientY, _target)) {
     _hoverStart = performance.now();
   }
+  if (_target && _nearWidget(e.clientX, e.clientY, _target)) {
+    _lastNearWidgetAt = Date.now();
+  }
   _pushPoint(e);
 }
 
@@ -207,11 +360,20 @@ async function _onDown(e) {
   if (!isCloudflareChallenge() || isCloudflareSolved()) return;
   _beginChallengeSession();
   _target = _checkboxTarget();
-  // Record any left-click during the challenge (iframe clicks may land on parent).
   _downAt = performance.now();
   if (!_hoverStart) _hoverStart = _downAt;
   _downPoint = { x: e.clientX, y: e.clientY };
   _pushPoint(e);
+  if (_eventOnCfWidget(e) || (_target && _nearWidget(e.clientX, e.clientY, _target))) {
+    _pendingIframeClick = true;
+    _lastNearWidgetAt = Date.now();
+  }
+  vsLog("human", "pointer down during challenge", {
+    onWidget: _eventOnCfWidget(e),
+    near: !!(!_target || _nearWidget(e.clientX, e.clientY, _target)),
+    x: Math.round(e.clientX),
+    y: Math.round(e.clientY),
+  });
   try {
     updateCloudflareHud(
       "scanning",
@@ -222,73 +384,29 @@ async function _onDown(e) {
 
 async function _onUp(e) {
   if (!vs.alive || e.button !== 0) return;
-  if (!_downAt) return;
+  if (!_downAt && !_pendingIframeClick) return;
   if (!isCloudflareChallenge() && !isCloudflareSolved()) {
     _resetStroke();
     return;
   }
 
-  const upAt = performance.now();
-  const pressMs = Math.max(25, Math.min(500, upAt - _downAt));
-  const hoverMs = Math.max(30, Math.min(3000, _downAt - (_hoverStart || _downAt)));
-  const lastT = _path.length ? _path[_path.length - 1].t : hoverMs;
-  const approachMs = Math.max(hoverMs, Math.min(12000, lastT || hoverMs));
-  const path = _path.slice(-MAX_PATH_POINTS);
   const near =
     (_target && _nearWidget(e.clientX, e.clientY, _target)) ||
     (_target && _downPoint && _nearWidget(_downPoint.x, _downPoint.y, _target)) ||
-    // If widget rect missing (cross-origin iframe), still save if we have a path.
-    (!_target && path.length >= 2);
+    _eventOnCfWidget(e) ||
+    _pendingIframeClick ||
+    (!_target && (_path.length >= 2 || _lastPathSnapshot.length >= 2));
 
-  const down = _downPoint;
-  _resetStroke();
-  if (!near && path.length < 2) return;
-  // Need at least a tiny stroke or a clear widget hit
-  if (path.length < 1 && !near) return;
-
-  const sample = {
-    hoverMs: Math.round(hoverMs),
-    pressMs: Math.round(pressMs),
-    approachMs: Math.round(approachMs),
-    path,
-    down: down ? { x: Math.round(down.x), y: Math.round(down.y) } : null,
-    up: { x: Math.round(e.clientX), y: Math.round(e.clientY) },
-    target: _target
-      ? {
-          x: Math.round(_target.x),
-          y: Math.round(_target.y),
-          w: Math.round(_target.w),
-          h: Math.round(_target.h),
-          left: Math.round(_target.left),
-          top: Math.round(_target.top),
-        }
-      : null,
-    viewport: {
-      w: window.innerWidth,
-      h: window.innerHeight,
-      dpr: window.devicePixelRatio || 1,
-      scrollX: Math.round(window.scrollX || 0),
-      scrollY: Math.round(window.scrollY || 0),
-    },
-    pointerType: e.pointerType || "mouse",
-    url: location.pathname + location.search,
-    at: Date.now(),
-  };
-
-  // Re-read target for sample (we cleared stroke but _target may still be set until end)
-  if (!sample.target) {
-    const t = _checkboxTarget();
-    if (t) {
-      sample.target = {
-        x: Math.round(t.x),
-        y: Math.round(t.y),
-        w: Math.round(t.w),
-        h: Math.round(t.h),
-        left: Math.round(t.left),
-        top: Math.round(t.top),
-      };
-    }
+  if (!near && _path.length < 2 && _lastPathSnapshot.length < 2) {
+    _resetStroke();
+    return;
   }
+
+  const sample = _buildSampleFromStroke(e, {
+    capture: _pendingIframeClick || _eventOnCfWidget(e) ? "iframe-or-widget" : "page",
+  });
+  _pendingIframeClick = false;
+  _resetStroke();
 
   const profile = await _saveSample(sample);
   if (!profile) return;
@@ -296,12 +414,44 @@ async function _onUp(e) {
   try {
     updateCloudflareHud(
       "success",
-      `Saved verify-human click #${n} — keep clicking naturally when it appears`
+      `Saved verify-human click #${n} — uploaded to server`
     );
   } catch {}
 }
 
-/** How many live samples are stored (for train-window length). */
+/** When CF clears after a click inside the iframe (no mouseup on page), still save. */
+async function _maybeSaveOnChallengeSolved() {
+  const now = Date.now();
+  if (!_wasChallenge) return;
+  if (!isCloudflareSolved() && isCloudflareChallenge()) return;
+  // Only if we recently interacted with the widget / had a pending iframe click.
+  const recent =
+    _pendingIframeClick ||
+    (now - _lastNearWidgetAt < 8000) ||
+    (_lastPathSnapshot.length >= 2 && now - _lastSaveAt > 500);
+  if (!recent) {
+    _wasChallenge = false;
+    _endChallengeSession();
+    return;
+  }
+  const sample = _buildSampleFromStroke(null, { capture: "challenge-solved" });
+  _pendingIframeClick = false;
+  _wasChallenge = false;
+  _endChallengeSession();
+  const profile = await _saveSample(sample, { force: true });
+  if (!profile) return;
+  const n = profile.samples?.length || 0;
+  try {
+    updateCloudflareHud(
+      "success",
+      `Saved verify-human click #${n} (after checkbox) — uploaded to server`
+    );
+  } catch {}
+}
+
+/**
+ * How many live samples are stored (for train-window length).
+ */
 export async function getLiveHumanClickCount() {
   try {
     const profile = await _loadProfile();
@@ -319,6 +469,7 @@ export async function getLiveHumanClickCount() {
 export function startHumanClickTrain() {
   if (_bound) return;
   _bound = true;
+  vsLog("human", "train watcher started", { path: location.pathname });
 
   vs.on(window, "pointermove", _onMove, { passive: true, capture: true });
   vs.on(window, "pointerdown", _onDown, { passive: true, capture: true });
@@ -326,25 +477,46 @@ export function startHumanClickTrain() {
   vs.on(window, "mousemove", _onMove, { passive: true, capture: true });
   vs.on(window, "mousedown", _onDown, { passive: true, capture: true });
   vs.on(window, "mouseup", _onUp, { passive: true, capture: true });
+  // Clicking into the CF iframe often only blurs the page — treat as a click attempt.
+  vs.on(window, "blur", () => {
+    if (!isCloudflareChallenge() || isCloudflareSolved()) return;
+    _pendingIframeClick = true;
+    _lastNearWidgetAt = Date.now();
+    if (!_downAt) {
+      _downAt = performance.now();
+      if (!_hoverStart) _hoverStart = _downAt;
+    }
+    vsLog("human", "page blur during challenge (likely iframe click)");
+  });
 
   const tip = async () => {
     if (!vs.alive) return;
-    if (!isCloudflareChallenge() || isCloudflareSolved()) {
-      if (_challengeActive) _endChallengeSession();
+    const challenged = isCloudflareChallenge() && !isCloudflareSolved();
+    if (challenged) {
+      if (!_wasChallenge) vsLog("human", "challenge detected — recording armed");
+      _wasChallenge = true;
+      _beginChallengeSession();
+      if (!_target) _target = _checkboxTarget();
+      const n = await getLiveHumanClickCount();
+      try {
+        updateCloudflareHud(
+          "scanning",
+          n
+            ? `Train mode — click Verify you are human naturally (saved ${n})`
+            : "Train mode — move mouse naturally, then click Verify you are human (recording…)"
+        );
+      } catch {}
       return;
     }
-    _beginChallengeSession();
-    if (!_target) _target = _checkboxTarget();
-    const n = await getLiveHumanClickCount();
-    try {
-      updateCloudflareHud(
-        "scanning",
-        n
-          ? `Train mode — click Verify you are human naturally (saved ${n})`
-          : "Train mode — move mouse naturally, then click Verify you are human (recording…)"
-      );
-    } catch {}
+    if (_wasChallenge || _challengeActive || _pendingIframeClick) {
+      await _maybeSaveOnChallengeSolved();
+    }
   };
   tip();
-  vs.setInterval(tip, 2500);
+  vs.setInterval(tip, 1200);
+  // Push any older local samples that never reached the server.
+  vs.setTimeout(() => {
+    vsLog("upload", "flushing unsynced local samples…");
+    _flushUnsyncedToServer().catch(() => {});
+  }, 2500);
 }

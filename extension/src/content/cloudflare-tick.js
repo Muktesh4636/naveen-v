@@ -8,6 +8,7 @@ import { getSetting } from "../shared/config.js";
 import { storageGet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
 import { isPortalFatalErrorPage } from "./portal-error-reload.js";
+import { vsLog } from "../shared/debugLog.js";
 
 var _cfWatchTimer = null;
 var _cfAttemptCount = 0;
@@ -221,12 +222,16 @@ async function _fireClicks(points) {
 export async function tryCloudflareTick() {
   if (!await getSetting("autoCloudflareTick")) return false;
   if (isCloudflareSolved()) {
+    if (_challengeSeenAt) vsLog("cf", "challenge already solved");
     _challengeSeenAt = 0;
     await updateCloudflareHud("success");
     return true;
   }
 
-  if (!_challengeSeenAt) _challengeSeenAt = Date.now();
+  if (!_challengeSeenAt) {
+    _challengeSeenAt = Date.now();
+    vsLog("cf", "challenge seen — train window started");
+  }
   // Wait for a manual click so we can record your mouse; longer until we have enough samples.
   const trainMs = await _trainWindowMs();
   if (Date.now() - _challengeSeenAt < trainMs) {
@@ -236,6 +241,8 @@ export async function tryCloudflareTick() {
     );
     return false;
   }
+
+  vsLog("cf", "train window done — attempting auto click");
 
   await updateCloudflareHud("scanning", "Verify you are human page — preparing click…");
   let widgets = _findChallengeWidgets();

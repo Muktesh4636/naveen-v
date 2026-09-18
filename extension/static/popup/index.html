@@ -34,6 +34,22 @@
           </div>
           <p class="local-only-note">Slot checks sync to <a href="https://the.gopg.online" target="_blank" rel="noopener">the.gopg.online</a>. Telegram alerts go via ADB from your phone to Muktesh.</p>
         </div>
+        <div class="status-section">
+          <div class="status-section-header">Verify-human training</div>
+          <div class="status-row">
+            <span class="status-label">Local samples</span>
+            <span class="status-value" id="status-human-local">0</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Uploaded (marked)</span>
+            <span class="status-value" id="status-human-uploaded">0</span>
+          </div>
+        </div>
+        <div class="status-section">
+          <div class="status-section-header">Activity log</div>
+          <pre id="debug-log" class="debug-log" aria-live="polite">No activity yet.</pre>
+          <button type="button" id="debug-log-clear" class="debug-log-clear">Clear log</button>
+        </div>
       </section>
 
       <h3 id="settings-header">Settings</h3>

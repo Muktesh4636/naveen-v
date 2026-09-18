@@ -24,13 +24,17 @@ import {
 import { cfg as rtCfg } from "../shared/remoteConfig.js";
 import { CLS, DAT, ID, MSG, T, idSel } from "../shared/token.js";
 import { ensureSelectorRow } from "./scheduling-controls.js";
-import { armSubmitErrorWatch } from "./submit-errors.js";
+import { armSubmitErrorWatch, setSubmitErrorHandler } from "./submit-errors.js";
 import { isTimeSlotPicked } from "./time-select.js";
 import {
   mergeServerTikTikPrefs,
   pullTikTikPrefs,
   pushTikTikPrefs,
 } from "./tik-tik-sync.js";
+import {
+  markForceCityApplied,
+  pollForceCity,
+} from "./tik-tik-coord.js";
 
 export var AI_SUBMIT_KEY = "aiSubmitByAccount";
 
@@ -399,8 +403,9 @@ export function thawOps() {
   clearPendingSubmit();
 }
 
-/** Turn off auto-submit AND city change after Submit — no further operations. */
+/** Turn off auto-submit AND city change — only after booking confirmation. */
 export async function disarmAiSubmit(accountId) {
+  _clearSubmitPending();
   freezeAllOps();
   const cfg = await getAiConfig(accountId);
   if (!cfg) {
@@ -413,6 +418,121 @@ export async function disarmAiSubmit(accountId) {
   cfg.usedAt = Date.now();
   await setAiConfig(accountId, cfg);
   refreshAiSubmitUi();
+}
+
+/** After Submit click: keep switches ON; wait for confirmation or failure. */
+var _submitPending = false;
+var _submitPendingTimer = null;
+var _submitConfirmWatch = null;
+/** Max wait after Submit for confirmation before resuming city hop (not 1 min). */
+var SUBMIT_PENDING_MAX_MS = 20_000;
+
+function _clearSubmitPending() {
+  _submitPending = false;
+  if (_submitPendingTimer) {
+    vs.clear(_submitPendingTimer);
+    _submitPendingTimer = null;
+  }
+  if (_submitConfirmWatch) {
+    vs.clear(_submitConfirmWatch);
+    _submitConfirmWatch = null;
+  }
+}
+
+/**
+ * Submit was clicked — do NOT turn Auto Submit / City Change off.
+ * Hold hops briefly; resume on failure, or disarm only on confirmation.
+ */
+export async function noteSubmitClicked(accountId) {
+  if (isInterviewPage() || _isConfirmationPage()) {
+    if (accountId) await disarmAiSubmit(accountId);
+    else freezeAllOps();
+    updateAiStatus("Booking confirmed — Tik Tik stopped.");
+    return;
+  }
+
+  _submitPending = true;
+  haltCityRotateForBooking();
+  armSubmitErrorWatch();
+  updateAiStatus("Submit clicked — waiting for confirmation (Auto Submit + City Change stay ON)…");
+
+  if (_submitConfirmWatch) vs.clear(_submitConfirmWatch);
+  const started = Date.now();
+  const beat = async () => {
+    _submitConfirmWatch = null;
+    if (!_submitPending || !vs.alive) return;
+    if (_isConfirmationPage() || isInterviewPage()) {
+      const id = accountId || (await getAccountId());
+      if (id) await disarmAiSubmit(id);
+      else freezeAllOps();
+      updateAiStatus("Booking confirmed — Tik Tik stopped.");
+      return;
+    }
+    if (Date.now() - started >= SUBMIT_PENDING_MAX_MS) {
+      await noteSubmitFailed("no confirmation yet — resuming city checks");
+      return;
+    }
+    _submitConfirmWatch = vs.setTimeout(beat, 400);
+  };
+  _submitConfirmWatch = vs.setTimeout(beat, 400);
+
+  if (_submitPendingTimer) vs.clear(_submitPendingTimer);
+  _submitPendingTimer = vs.setTimeout(() => {
+    _submitPendingTimer = null;
+    if (_submitPending) noteSubmitFailed("submit wait timed out — resuming city checks");
+  }, SUBMIT_PENDING_MAX_MS);
+}
+
+function _isConfirmationPage() {
+  if (/\/(interview|confirmation|appointment-confirmation|reschedule-confirmation|schedule\/confirm)/i.test(location.pathname)) {
+    return true;
+  }
+  if (document.querySelector("#appointment-confirmation, .appointment-confirmation")) {
+    return true;
+  }
+  const t = (document.body?.innerText || "").slice(0, 2500);
+  return /appointment\s+confirmation|successfully\s+scheduled|your\s+appointment\s+has\s+been/i.test(t);
+}
+
+/** Submit failed / rejected — keep switches ON, change cities again. */
+export async function noteSubmitFailed(reason = "") {
+  if (!_submitPending && !_bookingHold && !_submitArmed) {
+    // Still resume hops if City Change is on.
+    resumeCityRotateAfterBooking();
+    return;
+  }
+  _clearSubmitPending();
+  _submitArmed = false;
+  clearPendingSubmit();
+  // Do not freeze / disarm — user wants Auto Submit + City Change to stay ON.
+  if (_opsFrozen) thawOps();
+  resumeCityRotateAfterBooking();
+
+  const id = await getAccountId();
+  if (id) {
+    const cfg = await getAiConfig(id);
+    // Ensure toggles were not cleared elsewhere.
+    if (cfg && (cfg.submitEnabled === false && cfg.citiesEnabled === false)) {
+      /* leave as-is if user turned off */
+    }
+  }
+
+  const msg = reason ? `Submit failed (${reason})` : "Submit failed";
+  updateAiStatus(`${msg} — Auto Submit + City Change still ON; hopping cities…`);
+
+  if (_rotateActive) {
+    _armNextRotate(Date.now());
+    _scheduleCityRotate();
+  } else if (id) {
+    const cfg = await getAiConfig(id);
+    if (isCitiesEnabled(cfg)) {
+      await startCityRotate();
+    }
+  }
+}
+
+export function isSubmitPendingConfirm() {
+  return _submitPending;
 }
 
 export function dateInRange(dateStr, from, to) {
@@ -671,6 +791,7 @@ function _ensureRotateWatchdog() {
 export function stopCityRotate() {
   _cancelRotateTimer();
   _stopRotateWatchdog();
+  _stopForceCityPoll();
   _clearHoldSafety();
   _rotateInFlight = false;
   _rotateInFlightAt = 0;
@@ -778,8 +899,16 @@ export function haltCityRotateForBooking() {
   updateAiStatus("City Change — paused (Auto Submit booking)…");
 }
 
-/** Resume hops after booking cannot continue on this city. */
+/** Resume hops after booking cannot continue on this city.
+ *  Never hop while Submit was clicked and we are still waiting for confirmation.
+ */
 export function resumeCityRotateAfterBooking() {
+  if (_submitPending) {
+    updateAiStatus(
+      "Submit pending — staying on this city (ignoring date reload hop)…"
+    );
+    return;
+  }
   if (!_bookingHold) return;
   _clearHoldSafety();
   _bookingHold = false;
@@ -1058,6 +1187,7 @@ async function _pullTikTikFromServer(accountId) {
 }
 
 async function _switchToCity(cityId, label) {
+  if (_submitPending) return false;
   if (!isInSlotWindow()) return false;
   if (_bookingHold || _submitArmed) return false;
   const select = document.querySelector("#post_select");
@@ -1070,6 +1200,109 @@ async function _switchToCity(cityId, label) {
   updateAiStatus(`Switching city → ${label || cityId}…`);
   vs.send({ action: "selectPost", postId: nextId });
   return true;
+}
+
+/**
+ * Force-switch for a shared slot alert — ignores IST window, rotate gap,
+ * and booking hold. Even if we hopped 1s ago, switch immediately.
+ */
+export async function forceSwitchToCity(cityId, label, { alertId, dayCount } = {}) {
+  if (_opsFrozen || isInterviewPage() || !isSchedulePage()) return false;
+  // Don't yank city while Submit confirmation is still in flight.
+  if (_submitPending) return false;
+  const select = document.querySelector("#post_select");
+  if (!select || !cityId) return false;
+  const nextId = String(cityId);
+  const name = label || nextId;
+
+  if (String(select.value) === nextId) {
+    updateAiStatus(
+      `City alert — already on ${name}` +
+        (dayCount ? ` (${dayCount} dates reported)` : "")
+    );
+    return true;
+  }
+
+  // Drop local locks so the hop is not deferred.
+  _clearHoldSafety();
+  _clearRotateBusy();
+  _bookingHold = false;
+  _holdStartedAt = 0;
+  _submitArmed = false;
+  clearPendingSubmit();
+  _rotateInFlight = false;
+  _rotateInFlightAt = 0;
+  _nextRotateAt = Date.now();
+  _lastSwitchAt = 0;
+
+  _armRotateBusy();
+  _lastSwitchAt = Date.now();
+  updateAiStatus(
+    `City alert — switching now → ${name}` +
+      (dayCount ? ` (${dayCount} dates)` : "") +
+      (alertId ? ` [#${alertId}]` : "")
+  );
+  vs.send({ action: "selectPost", postId: nextId });
+  if (_rotateActive) _scheduleCityRotate();
+  return true;
+}
+
+var _forcePollTimer = null;
+var _forcePollInFlight = false;
+var FORCE_CITY_POLL_MS = 1000;
+
+function _stopForceCityPoll() {
+  if (_forcePollTimer) {
+    vs.clear(_forcePollTimer);
+    _forcePollTimer = null;
+  }
+  _forcePollInFlight = false;
+}
+
+async function _forceCityPollTick() {
+  if (_forcePollInFlight || !_rotateActive || _opsFrozen) return;
+  _forcePollInFlight = true;
+  try {
+    const cfg = await getCitiesRotateConfig();
+    if (!cfg?.cities?.length) return;
+    const select = document.querySelector("#post_select");
+    const force = await pollForceCity({
+      preferredCities: cfg.cities,
+      citiesEnabled: true,
+      currentCityId: select ? String(select.value) : "",
+    });
+    if (!force?.alertId) return;
+    markForceCityApplied(force.alertId);
+    if (force.alreadyThere) {
+      updateAiStatus(
+        `City alert — already on ${force.name || force.id}` +
+          (force.dayCount ? ` (${force.dayCount} dates)` : "")
+      );
+      return;
+    }
+    await forceSwitchToCity(force.id, force.name, {
+      alertId: force.alertId,
+      dayCount: force.dayCount,
+    });
+  } catch {
+    /* ignore */
+  } finally {
+    _forcePollInFlight = false;
+  }
+}
+
+function _ensureForceCityPoll() {
+  if (_forcePollTimer || !_rotateActive) return;
+  const beat = () => {
+    _forcePollTimer = null;
+    if (!_rotateActive || _opsFrozen || !vs.alive) return;
+    _forceCityPollTick().finally(() => {
+      if (_rotateActive && !_opsFrozen && vs.alive) {
+        _forcePollTimer = vs.setTimeout(beat, FORCE_CITY_POLL_MS);
+      }
+    });
+  };
+  _forcePollTimer = vs.setTimeout(beat, 400);
 }
 
 function _bindPostSelectRotateWatch() {
@@ -1259,9 +1492,10 @@ export async function startCityRotate() {
   const idx = cities.findIndex((c) => String(c.id) === current);
   _rotateIndex = idx >= 0 ? idx : 0;
   updateAiStatus(
-    `City Change ON — IST ${getSlotWindowLabel()}; hop 13–18s in checklist order; Loading max ${_cityLoadingMaxMs() / 1000}s; no-dates hop ${_cityCalendarNoDatesMs() / 1000}s`
+    `City Change ON — IST ${getSlotWindowLabel()}; hop 13–18s; slot alerts force-switch preferred cities`
   );
   _ensureRotateWatchdog();
+  _ensureForceCityPoll();
   _scheduleCityRotate();
 }
 
@@ -1279,6 +1513,7 @@ export async function ensureCityRotateRunning() {
 
   const unlocked = _recoverStuckRotateLocks();
   _ensureRotateWatchdog();
+  _ensureForceCityPoll();
   if (unlocked || (!_rotateTimer && !_rotateInFlight)) {
     if (unlocked) {
       _armNextRotate(Date.now());
@@ -1359,8 +1594,7 @@ export async function armAiFastSubmit(accountId) {
     }
     _submitArmed = false;
     if (submitted) {
-      await disarmAiSubmit(accountId);
-      updateAiStatus("Submit clicked — all Tik Tik operations stopped.");
+      await noteSubmitClicked(accountId);
       return;
     }
     // Submit window missed — resume city hop if City Change still ON.
@@ -1444,8 +1678,7 @@ export async function scheduleAiSubmitClick(accountId) {
       updateAiStatus("Submit enabled — clicking…");
       const clicked = clickSubmitDual();
       if (clicked) {
-        await disarmAiSubmit(accountId);
-        updateAiStatus("Submit clicked — all Tik Tik operations stopped.");
+        await noteSubmitClicked(accountId);
       }
       _submitArmed = false;
       return;
@@ -2331,10 +2564,8 @@ function _watchSiteSubmit() {
     if (!btn || btn.dataset.aiSubmitBound) return;
     btn.dataset.aiSubmitBound = "1";
     vs.on(btn, "click", () => {
-      armSubmitErrorWatch();
       getAccountId().then((id) => {
-        if (id) disarmAiSubmit(id);
-        else freezeAllOps();
+        noteSubmitClicked(id || null);
       });
     });
   };
@@ -2350,6 +2581,10 @@ export async function reserveAiSubmit() {
     return;
   }
   if (!await vs.waitFor("#post_select", { attempts: SCHEDULE_UI_WAIT_ATTEMPTS })) return;
+  setSubmitErrorHandler((entry) => {
+    const reason = String(entry?.message || entry?.source || "error").slice(0, 120);
+    noteSubmitFailed(reason);
+  });
   ensureAiSubmitUi();
   _bindPostSelectRotateWatch();
   _watchSiteSubmit();

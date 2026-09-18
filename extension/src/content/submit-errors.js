@@ -10,6 +10,12 @@ export var SUBMIT_ERROR_WATCH_MS = 45_000;
 var _watchUntil = 0;
 var _seen = new Set();
 var _domWatchTimer = null;
+var _onSubmitError = null;
+
+/** Called when a post-Submit error is recorded (keep Tik Tik ON, resume hops). */
+export function setSubmitErrorHandler(fn) {
+  _onSubmitError = typeof fn === "function" ? fn : null;
+}
 
 function _pageContext() {
   const select = document.querySelector("#post_select");
@@ -99,6 +105,9 @@ export async function recordSubmitError(source, message, meta = {}) {
   await _appendStorage(entry);
   try {
     await _notifyTelegram(entry);
+  } catch (e) {}
+  try {
+    _onSubmitError?.(entry);
   } catch (e) {}
 }
 

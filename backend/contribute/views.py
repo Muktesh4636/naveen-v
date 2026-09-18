@@ -10,7 +10,14 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .models import Applicant, ApplicantTikTikPrefs, Contribution, DashboardSnapshot, HumanClickSample
+from .models import (
+    Applicant,
+    ApplicantTikTikPrefs,
+    Contribution,
+    DashboardSnapshot,
+    HumanClickSample,
+    TikTikCityAlert,
+)
 from .telegram import notify_available_slots, relay_extension_alert
 
 logger = logging.getLogger(__name__)
@@ -463,3 +470,143 @@ def tik_tik_prefs(request):
     row.save()
     logger.info("Tik Tik prefs saved for %s", applicant)
     return JsonResponse({"success": True, "prefs": _prefs_to_dict(row)})
+
+
+# Slot alerts stay fresh this long for other extensions to pick up.
+_CITY_ALERT_TTL = timedelta(seconds=90)
+# Collapse duplicate alerts for the same city within this window.
+_CITY_ALERT_DEDUP = timedelta(seconds=4)
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def tik_tik_coord(request):
+    """
+    Coordinate Tik Tik city hops across applicants.
+
+    Local rotation stays on each extension. This endpoint only broadcasts
+    "slots found in city X" so everyone who prefers X can force-switch now.
+
+    POST { action: "alert"|"poll", profile, token?,
+           city?, dayCount?, preferredCities?, citiesEnabled?, lastAlertId? }
+    """
+    if request.method == "OPTIONS":
+        return JsonResponse({}, status=204)
+
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({"success": False, "error": "invalid json"}, status=400)
+
+    if not isinstance(body, dict):
+        return JsonResponse({"success": False, "error": "expected object"}, status=400)
+
+    profile = body.get("profile") if isinstance(body.get("profile"), dict) else {}
+    token = body.get("token") if isinstance(body.get("token"), str) else None
+    applicant = _upsert_applicant(profile, token)
+    action = str(body.get("action") or "").strip().lower()
+
+    if action == "alert":
+        city = body.get("city") if isinstance(body.get("city"), dict) else {}
+        city_id = str(city.get("id") or "").strip()[:64]
+        city_name = str(city.get("name") or city_id).strip()[:255]
+        try:
+            day_count = int(body.get("dayCount") or 0)
+        except (TypeError, ValueError):
+            day_count = 0
+        if not city_id or day_count < 1:
+            return JsonResponse({"success": False, "error": "city + dayCount required"}, status=400)
+
+        since = timezone.now() - _CITY_ALERT_DEDUP
+        recent = (
+            TikTikCityAlert.objects.filter(city_id=city_id, created_at__gte=since)
+            .order_by("-id")
+            .first()
+        )
+        if recent:
+            if day_count > recent.day_count:
+                recent.day_count = day_count
+                recent.city_name = city_name or recent.city_name
+                if applicant:
+                    recent.source_applicant = applicant
+                recent.save(update_fields=["day_count", "city_name", "source_applicant"])
+            return JsonResponse(
+                {
+                    "success": True,
+                    "alertId": recent.id,
+                    "deduped": True,
+                    "city": {"id": recent.city_id, "name": recent.city_name},
+                    "dayCount": recent.day_count,
+                }
+            )
+
+        row = TikTikCityAlert.objects.create(
+            city_id=city_id,
+            city_name=city_name,
+            day_count=day_count,
+            source_applicant=applicant,
+        )
+        logger.info(
+            "Tik Tik city alert #%s %s (%s days) from %s",
+            row.id,
+            city_name or city_id,
+            day_count,
+            applicant or "anonymous",
+        )
+        return JsonResponse(
+            {
+                "success": True,
+                "alertId": row.id,
+                "deduped": False,
+                "city": {"id": row.city_id, "name": row.city_name},
+                "dayCount": row.day_count,
+            }
+        )
+
+    if action == "poll":
+        if not bool(body.get("citiesEnabled")):
+            return JsonResponse({"success": True, "forceCity": None})
+
+        preferred = _clean_cities(body.get("preferredCities"))
+        preferred_ids = {c["id"] for c in preferred}
+        if not preferred_ids:
+            return JsonResponse({"success": True, "forceCity": None})
+
+        try:
+            last_alert_id = int(body.get("lastAlertId") or 0)
+        except (TypeError, ValueError):
+            last_alert_id = 0
+
+        since = timezone.now() - _CITY_ALERT_TTL
+        qs = TikTikCityAlert.objects.filter(
+            created_at__gte=since,
+            city_id__in=list(preferred_ids),
+            day_count__gte=1,
+        )
+        if last_alert_id > 0:
+            qs = qs.filter(id__gt=last_alert_id)
+        # Don't force the finder back onto the same alert they just created
+        # unless another (newer) alert exists — still allow if they're on another city.
+        alert = qs.order_by("-id").first()
+        if not alert:
+            return JsonResponse({"success": True, "forceCity": None})
+
+        current_city = str(body.get("currentCityId") or "").strip()
+        # Already on the alert city — acknowledge so client advances lastAlertId.
+        already = current_city and current_city == alert.city_id
+
+        return JsonResponse(
+            {
+                "success": True,
+                "forceCity": {
+                    "id": alert.city_id,
+                    "name": alert.city_name or alert.city_id,
+                    "alertId": alert.id,
+                    "dayCount": alert.day_count,
+                    "at": int(alert.created_at.timestamp() * 1000),
+                    "alreadyThere": already,
+                },
+            }
+        )
+
+    return JsonResponse({"success": False, "error": "action must be alert or poll"}, status=400)

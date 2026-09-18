@@ -488,7 +488,8 @@ export function startBeeping() {
   tick();
 }
 
-export function stopBeeping() {
+export function stopBeeping(opts = {}) {
+  const keepConsular = !!opts.keepConsular;
   if (beepTimeout) {
     vs.clear(beepTimeout);
     beepTimeout = null;
@@ -498,6 +499,7 @@ export function stopBeeping() {
     slotsTimeout = null;
   }
   stopSubmitAlarm();
+  if (!keepConsular) stopConsularOfcAlarm();
 }
 
 export var submitAlarmTimeout = null;
@@ -595,6 +597,128 @@ export function stopSubmitAlarm() {
     } catch (e) {}
     submitAlarmNodes = null;
   }
+}
+
+/** Consular schedule (not OFC) — means OFC post was booked. */
+export function isConsularSchedulePage() {
+  const path = location.pathname || "";
+  if (/\/ofc-schedule\b/i.test(path)) return false;
+  return /\/(schedule|c-schedule)\b/i.test(path);
+}
+
+export var CONSULAR_OFC_ALARM_MS = 60_000;
+var _consularAlarmTimer = null;
+var _consularBurstTimer = null;
+var _consularTitleTimer = null;
+var _consularTitle = null;
+var _consularNodes = null;
+
+/**
+ * Loud alarm for 1 minute on consular page so the user knows OFC is booked.
+ * Click / key stops it; focus alone does not.
+ */
+export async function playConsularOfcBookedAlarm() {
+  stopConsularOfcAlarm();
+  try {
+    const audioCtx = getAudioContext();
+    if (audioCtx.state === "suspended") {
+      await audioCtx.resume();
+    }
+
+    const master = audioCtx.createGain();
+    master.gain.value = 1;
+    master.connect(audioCtx.destination);
+
+    const osc1 = audioCtx.createOscillator();
+    const osc2 = audioCtx.createOscillator();
+    const gain1 = audioCtx.createGain();
+    const gain2 = audioCtx.createGain();
+    osc1.type = "square";
+    osc2.type = "sawtooth";
+    osc1.frequency.value = 980;
+    osc2.frequency.value = 1470;
+    gain1.gain.value = 0.95;
+    gain2.gain.value = 0.8;
+    osc1.connect(gain1).connect(master);
+    osc2.connect(gain2).connect(master);
+
+    const lfo = audioCtx.createOscillator();
+    const lfoGain = audioCtx.createGain();
+    lfo.type = "square";
+    lfo.frequency.value = 4;
+    lfoGain.gain.value = 320;
+    lfo.connect(lfoGain);
+    lfoGain.connect(osc1.frequency);
+    lfoGain.connect(osc2.frequency);
+
+    const t = audioCtx.currentTime;
+    osc1.start(t);
+    osc2.start(t);
+    lfo.start(t);
+    _consularNodes = { osc1, osc2, lfo, master };
+
+    const burstLoop = () => {
+      if (!_consularNodes) return;
+      playBeep(650);
+      _consularBurstTimer = vs.setTimeout(burstLoop, 900);
+    };
+    burstLoop();
+
+    _consularAlarmTimer = vs.setTimeout(stopConsularOfcAlarm, CONSULAR_OFC_ALARM_MS);
+
+    _consularTitle = document.title;
+    let flash = false;
+    const flashTitle = () => {
+      if (!_consularNodes) return;
+      document.title = flash ? _consularTitle : "!!! OFC BOOKED — CONSULAR PAGE !!!";
+      flash = !flash;
+      _consularTitleTimer = vs.setTimeout(flashTitle, 400);
+    };
+    flashTitle();
+  } catch (e) {
+    console.error("Consular OFC alarm failed:", e);
+  }
+}
+
+export function stopConsularOfcAlarm() {
+  if (_consularAlarmTimer) {
+    vs.clear(_consularAlarmTimer);
+    _consularAlarmTimer = null;
+  }
+  if (_consularBurstTimer) {
+    vs.clear(_consularBurstTimer);
+    _consularBurstTimer = null;
+  }
+  if (_consularTitleTimer) {
+    vs.clear(_consularTitleTimer);
+    _consularTitleTimer = null;
+  }
+  if (_consularTitle) {
+    document.title = _consularTitle;
+    _consularTitle = null;
+  }
+  if (_consularNodes) {
+    try {
+      const { osc1, osc2, lfo } = _consularNodes;
+      osc1.stop();
+      osc2.stop();
+      lfo.stop();
+    } catch (e) {}
+    _consularNodes = null;
+  }
+}
+
+/** Start once per tab session when consular schedule is open. */
+export function maybeStartConsularOfcBookedAlarm() {
+  if (!isConsularSchedulePage()) return;
+  try {
+    const key = "vsConsularOfcBeep";
+    if (sessionStorage.getItem(key) === "1") return;
+    sessionStorage.setItem(key, "1");
+  } catch {
+    /* private mode — still beep */
+  }
+  playConsularOfcBookedAlarm();
 }
 
 export function ensureRecheckButton() {

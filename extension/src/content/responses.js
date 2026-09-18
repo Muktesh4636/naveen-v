@@ -5,11 +5,13 @@ import { notifyTelegramSlots, notifyTelegramCityScreenshot, notifyTelegramCalend
 import { pollAndPickTimeSlot, domShowsEntryTimes, isTimeSlotPicked, pickTimeSlotDual } from "./time-select.js";
 import { submitContribution } from "./reporting.js";
 import { recordSubmitAjaxResponse } from "./submit-errors.js";
+import { reportCitySlotsFound } from "./tik-tik-coord.js";
 import {
   getArmedAiConfig,
   getCitiesRotateConfig,
   haltCityRotateForBooking,
   resumeCityRotateAfterBooking,
+  isSubmitPendingConfirm,
   isInterviewPage,
   isOpsFrozen,
   noteCityRotateResponse,
@@ -480,15 +482,13 @@ export async function handleEvent(event) {
     thawOps();
     // Paint the date list first — storage / auto-select can wait.
     showDates(parsed);
-    {
-      const dayCount = (parsed.response.ScheduleDays || [])
-        .map((d) => normalizeScheduleDate(d?.Date))
-        .filter(Boolean).length;
-      if (dayCount) {
-        setTikTikStatus(
-          `${dayCount} date${dayCount === 1 ? "" : "s"} available — see list below`
-        );
-      }
+    const dayCount = (parsed.response.ScheduleDays || [])
+      .map((d) => normalizeScheduleDate(d?.Date))
+      .filter(Boolean).length;
+    if (dayCount) {
+      setTikTikStatus(
+        `${dayCount} date${dayCount === 1 ? "" : "s"} available — see list below`
+      );
     }
     noteCityRotateResponse();
 
@@ -519,6 +519,15 @@ export async function handleEvent(event) {
       hasError: parsed.response.HasError,
     });
 
+    // Broadcast to other Tik Tik users who prefer this city (force-switch).
+    if (!parsed.response.HasError && dayCount > 0) {
+      reportCitySlotsFound({
+        postId: parsed.params.postId,
+        postName: post?.Name,
+        dayCount,
+      }).catch(() => {});
+    }
+
     await notifyTelegramCityScreenshot(parsed.response.ScheduleDays, {
       postId: parsed.params.postId,
       postName: post?.Name,
@@ -526,8 +535,11 @@ export async function handleEvent(event) {
     });
 
     // If Auto Submit has a matching date, pause city hop while booking (keep City Change ON).
-    // Otherwise resume hop so we don't leave forever on a dead city.
-    if (ai && !parsed.response.HasError) {
+    // While Submit is pending confirmation, NEVER resume hop from a date reload.
+    if (isSubmitPendingConfirm()) {
+      haltCityRotateForBooking();
+      setTikTikStatus("Submit pending — staying on this city (date reload ignored)…");
+    } else if (ai && !parsed.response.HasError) {
       const inRange = filterDaysInAiRange(parsed.response.ScheduleDays, ai.from, ai.to);
       if (inRange.length) {
         haltCityRotateForBooking();
@@ -539,12 +551,14 @@ export async function handleEvent(event) {
       resumeCityRotateAfterBooking();
     }
 
-    const pickedDate = await autoSelectFirstDate(parsed.response.ScheduleDays, parsed.response.HasError);
+    const pickedDate = isSubmitPendingConfirm()
+      ? null
+      : await autoSelectFirstDate(parsed.response.ScheduleDays, parsed.response.HasError);
     if (pickedDate) {
       // Stay held through time pick + Submit
       haltCityRotateForBooking();
       await notifyTelegramCalendarScreenshot(post?.Name, pickedDate);
-    } else if (ai && !parsed.response.HasError) {
+    } else if (ai && !parsed.response.HasError && !isSubmitPendingConfirm()) {
       const days = (parsed.response.ScheduleDays || [])
         .map((d) => normalizeScheduleDate(d?.Date))
         .filter(Boolean);
@@ -594,7 +608,10 @@ export async function handleEvent(event) {
       );
     }
     await autoSelectFirstTime(parsed.response.ScheduleEntries, parsed.response.HasError);
-    if (entries.length) {
+    if (isSubmitPendingConfirm()) {
+      haltCityRotateForBooking();
+      setTikTikStatus("Submit pending — staying on this city (time reload ignored)…");
+    } else if (entries.length) {
       // Keep hold while time → Submit runs
       haltCityRotateForBooking();
       await notifyTelegramTimeScreenshot(

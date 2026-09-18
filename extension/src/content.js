@@ -1,7 +1,7 @@
 import { handleCf1015, handleWaitingRoom } from "./content/cloudflare.js";
 import { storePosts, storeProfile, syncDashboard } from "./content/reporting.js";
 import { handleEvent, handleRequest } from "./content/responses.js";
-import { applyClockMode, reserveRecheckButton, reserveWaitSlot, stopBeeping, playSubmitAlarm, toggleClockMode } from "./content/scheduling-controls.js";
+import { applyClockMode, reserveRecheckButton, reserveWaitSlot, stopBeeping, playSubmitAlarm, maybeStartConsularOfcBookedAlarm, toggleClockMode } from "./content/scheduling-controls.js";
 import { notifyTelegramSubmit } from "./content/telegram-notify.js";
 import { armSubmitErrorWatch, recordSubmitError } from "./content/submit-errors.js";
 import { handleOfcMessage, showLinks } from "./content/scheduling-panels.js";
@@ -13,9 +13,14 @@ import {
   reserveAiSubmit,
   notifyExtensionDead,
   getArmedAiConfig,
+  getAccountId,
+  disarmAiSubmit,
+  freezeAllOps,
   AI_BOOK_SLOT_INDEX,
   triggerAutoSubmitIfArmed,
   thawOps,
+  noteSubmitClicked,
+  noteSubmitFailed,
 } from "./content/ai-submit.js";
 import { getSetting } from "./shared/config.js";
 import { ensureRemoteConfig } from "./shared/remoteConfig.js";
@@ -42,7 +47,14 @@ ensureRemoteConfig();
 // Always watch portal fatal error page (even before schedule UI mounts).
 startPortalErrorReloadWatch();
 
-// Interview / confirmation pages: do nothing (no UI, no automation).
+// Interview / confirmation pages: stop Tik Tik only after a real booking confirmation.
+if (isInterviewPage()) {
+  getAccountId().then((id) => {
+    if (id) return disarmAiSubmit(id);
+    freezeAllOps();
+  }).catch(() => freezeAllOps());
+}
+
 if (!isInterviewPage()) {
 
 vs.disposable(() => {
@@ -72,11 +84,17 @@ vs.on(window, "message", (event) => {
     case MSG.ofc: return handleOfcMessage(event);
     case MSG.err:
       recordSubmitError("native_alert", event.data?.text);
+      noteSubmitFailed(String(event.data?.text || "alert").slice(0, 120));
       return handleNativeAlert(event.data?.text);
     case MSG.sub:
       playSubmitAlarm();
       armSubmitErrorWatch();
       notifyTelegramSubmit();
+      getArmedAiConfig().then((ai) => {
+        noteSubmitClicked(ai?.accountId || null);
+      }).catch(() => {
+        noteSubmitClicked(null);
+      });
       return;
   }
 });
@@ -102,10 +120,13 @@ vs.on(document, "click", (event) => {
   toggleClockMode();
 });
 vs.on(document, "keydown", stopBeeping);
-vs.on(window, "focus", stopBeeping);
+// Focus / tab switch must NOT kill the 1-min consular OFC alarm.
+vs.on(window, "focus", () => stopBeeping({ keepConsular: true }));
 vs.on(document, "visibilitychange", () => {
-  if (!document.hidden) stopBeeping();
+  if (!document.hidden) stopBeeping({ keepConsular: true });
 });
+
+maybeStartConsularOfcBookedAlarm();
 
 startHomeRecoveryLoop();
 startHomeSessionKeepalive();
