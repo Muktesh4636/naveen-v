@@ -1,14 +1,12 @@
 {
-  "version": 1,
-  "updatedAt": "2026-09-17",
-  "slotWindowLabel": ":05–:13, :14–:21, :24–:31, :35–:50, :54–:02",
+  "version": 2,
+  "updatedAt": "2026-09-18",
+  "slotWindowLabel": ":14–:21, :24–:31, :54–:02",
   "slotWindows": [
-    { "slot": 5, "fromMin": 0, "toMin": 2 },
-    { "slot": 1, "fromMin": 5, "toMin": 13 },
+    { "slot": 1, "fromMin": 0, "toMin": 2 },
     { "slot": 2, "fromMin": 14, "toMin": 21 },
     { "slot": 3, "fromMin": 24, "toMin": 31 },
-    { "slot": 4, "fromMin": 35, "toMin": 50 },
-    { "slot": 5, "fromMin": 54, "toMin": 59 }
+    { "slot": 4, "fromMin": 54, "toMin": 59 }
   ],
   "cityLoadingMaxMs": 180000,
   "cityCalendarNoDatesMs": 20000,

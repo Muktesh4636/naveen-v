@@ -15,16 +15,14 @@ var _fetching = null;
 
 /** Bundled defaults — used until/unless a valid server config arrives. */
 export const cfg = {
-  slotWindowLabel: ":05–:13, :14–:21, :24–:31, :35–:50, :54–:02",
+  slotWindowLabel: ":14–:21, :24–:31, :54–:02",
   slotWindows: [
-    { slot: 5, fromMin: 0, toMin: 2 },
-    { slot: 1, fromMin: 5, toMin: 13 },
+    { slot: 1, fromMin: 0, toMin: 2 },
     { slot: 2, fromMin: 14, toMin: 21 },
     { slot: 3, fromMin: 24, toMin: 31 },
-    { slot: 4, fromMin: 35, toMin: 50 },
-    { slot: 5, fromMin: 54, toMin: 59 },
+    { slot: 4, fromMin: 54, toMin: 59 },
   ],
-  windowStartsMin: [0, 5, 14, 24, 35, 54],
+  windowStartsMin: [0, 14, 24, 54],
   cityLoadingMaxMs: 180_000,
   cityCalendarNoDatesMs: 20_000,
   cityRotateMinGapMs: 13_000,

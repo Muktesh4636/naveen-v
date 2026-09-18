@@ -1411,10 +1411,8 @@ async function handleTelegramNotify(message) {
 // ---------------------------------------------------------------------------
 let SLOT_WINDOWS = [
   { fromMin: 0, toMin: 2 },
-  { fromMin: 5, toMin: 13 },
   { fromMin: 14, toMin: 21 },
   { fromMin: 24, toMin: 31 },
-  { fromMin: 35, toMin: 50 },
   { fromMin: 54, toMin: 59 },
 ];
 
