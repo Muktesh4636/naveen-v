@@ -43,7 +43,8 @@ export var AI_DATE_SELECT_MS = 8000;
 export var AI_BOOK_SELECT_MS = 3500;
 export var AI_TIME_DOM_WAIT_MS = 0;
 export var AI_BOOK_POLL_MS = 25;
-export var AI_BOOK_SUBMIT_WAIT_MS = 80;
+/** Extra delay after time pick before trying Submit (0 = click the instant it enables). */
+export var AI_BOOK_SUBMIT_WAIT_MS = 0;
 export var AI_BOOK_SLOT_INDEX = 0;
 /** Wait for Submit to enable: 10s if only one time slot. */
 export var AI_SUBMIT_ARM_MS = 10_000;
@@ -1532,33 +1533,114 @@ function _findSubmitButton() {
     );
 }
 
-/** True only when a time slot is picked AND Submit is present and enabled. */
+/** True only when Submit is present and enabled. */
 export function isSubmitButtonEnabled() {
   const submit = _findSubmitButton();
   return !!(submit && !submit.disabled);
 }
 
-/** Content-script + MAIN-world Submit click — only if the button is enabled. */
-export function clickSubmitDual() {
-  const btn = _findSubmitButton();
+/** Lean Submit: requestSubmit/click first; mouse theater only if needed. */
+function _clickSubmitLocal(btn) {
   if (!btn || btn.disabled) return false;
+  try {
+    const form = btn.form || btn.closest?.("form");
+    if (form && typeof form.requestSubmit === "function") {
+      form.requestSubmit(btn);
+      return true;
+    }
+  } catch {}
+  try {
+    btn.click();
+    return true;
+  } catch {}
   try {
     btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
     btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
     btn.click();
+    return true;
   } catch {}
+  return false;
+}
+
+/** Content-script + MAIN-world Submit — only if the button is enabled. */
+export function clickSubmitDual() {
+  const btn = _findSubmitButton();
+  if (!btn || btn.disabled) return false;
+  const ok = _clickSubmitLocal(btn);
   vs.send({
     action: "forceClickSubmit",
     prefix: T,
     pollMs: AI_BOOK_POLL_MS,
-    maxMs: AI_SUBMIT_ARM_MS,
+    maxMs: Math.min(1500, AI_SUBMIT_ARM_MS),
   });
-  return true;
+  return ok;
 }
 
 function _isBookingReadyToSubmit() {
   if (!isTimeSlotPicked()) return false;
   return isSubmitButtonEnabled();
+}
+
+/**
+ * Resolve as soon as Submit enables (MutationObserver + 25ms poll backup).
+ * Returns true if enabled before maxMs, else false.
+ */
+export function waitForSubmitEnabled(maxMs) {
+  const deadline = Date.now() + Math.max(0, Number(maxMs) || 0);
+  if (isTimeSlotPicked() && isSubmitButtonEnabled()) {
+    return Promise.resolve(true);
+  }
+
+  return new Promise((resolve) => {
+    let done = false;
+    let pollId = null;
+    let obs = null;
+
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      try { obs?.disconnect(); } catch {}
+      if (pollId) vs.clear(pollId);
+      resolve(!!ok);
+    };
+
+    const check = () => {
+      if (!vs.alive || isOpsFrozen() || isInterviewPage()) return finish(false);
+      if (isTimeSlotPicked() && isSubmitButtonEnabled()) return finish(true);
+      if (Date.now() >= deadline) {
+        return finish(isTimeSlotPicked() && isSubmitButtonEnabled());
+      }
+    };
+
+    try {
+      obs = new MutationObserver(check);
+      const btn = _findSubmitButton();
+      if (btn) {
+        obs.observe(btn, { attributes: true, attributeFilter: ["disabled", "class", "aria-disabled"] });
+      }
+      const form = btn?.form || btn?.closest?.("form") || document.querySelector("#page_form, form");
+      if (form) {
+        obs.observe(form, {
+          attributes: true,
+          attributeFilter: ["disabled", "class"],
+          childList: true,
+          subtree: true,
+        });
+      } else {
+        obs.observe(document.documentElement, {
+          attributes: true,
+          attributeFilter: ["disabled"],
+          childList: true,
+          subtree: true,
+        });
+      }
+    } catch {
+      obs = null;
+    }
+
+    pollId = vs.setInterval(check, AI_BOOK_POLL_MS);
+    check();
+  });
 }
 
 export function notifyExtensionDead() {
@@ -1578,7 +1660,7 @@ export async function armAiFastSubmit(accountId) {
 
   const started = Date.now();
   let done = false;
-  let timePickedAt = isTimeSlotPicked() ? Date.now() : 0;
+  let clicked = false;
 
   const finish = async (submitted) => {
     if (done || !_submitArmed || !vs.alive) return;
@@ -1597,7 +1679,6 @@ export async function armAiFastSubmit(accountId) {
       await noteSubmitClicked(accountId);
       return;
     }
-    // Submit window missed — resume city hop if City Change still ON.
     resumeCityRotateAfterBooking();
     if (_rotateActive) {
       updateAiStatus("Auto Submit — Submit not clicked in time; City Change resuming…");
@@ -1614,32 +1695,31 @@ export async function armAiFastSubmit(accountId) {
   window.addEventListener("message", onSubmitMsg);
 
   const tryFinish = async () => {
-    if (done || !_submitArmed || !vs.alive) return;
+    if (done || !_submitArmed || !vs.alive || clicked) return;
 
-    const now = Date.now();
-    const elapsed = now - started;
+    const elapsed = Date.now() - started;
 
-    if (isTimeSlotPicked() && !timePickedAt) {
-      timePickedAt = now;
-      updateAiStatus("Time slot selected — waiting for Submit to enable…");
-    }
-
-    // Click ONLY when Submit is enabled (never while disabled).
-    if (timePickedAt && now - timePickedAt >= AI_BOOK_SUBMIT_WAIT_MS) {
-      if (_isBookingReadyToSubmit()) {
-        updateAiStatus("Submit enabled — clicking…");
-        clickSubmitDual();
-      } else {
-        updateAiStatus("Waiting for Submit button to enable…");
-      }
+    // Click the instant Submit enables (no artificial post-slot delay).
+    if (_isBookingReadyToSubmit()) {
+      clicked = true;
+      updateAiStatus("Submit enabled — clicking…");
+      clickSubmitDual();
+      return;
     }
 
     if (elapsed >= AI_SUBMIT_ARM_MS) {
       return finish(false);
     }
 
+    updateAiStatus("Waiting for Submit to enable…");
     _submitTimer = vs.setTimeout(tryFinish, AI_BOOK_POLL_MS);
   };
+
+  // Observer wakes us as soon as disabled flips; poll is backup.
+  waitForSubmitEnabled(AI_SUBMIT_ARM_MS).then((enabled) => {
+    if (done || !_submitArmed || !vs.alive || clicked) return;
+    if (enabled) tryFinish();
+  });
 
   tryFinish();
 }
@@ -1662,22 +1742,23 @@ export async function scheduleAiSubmitClick(accountId) {
   haltCityRotateForBooking();
   _submitArmed = true;
   const started = Date.now();
+  let clicked = false;
 
   const trySubmit = async () => {
-    if (!_submitArmed || !vs.alive) return;
+    if (!_submitArmed || !vs.alive || clicked) return;
     const elapsed = Date.now() - started;
     const ready = _isBookingReadyToSubmit();
 
-    // Only click when Submit is enabled — never fire on a disabled button.
     if (ready) {
+      clicked = true;
       _submitTimer = null;
       if (isInterviewPage()) {
         _submitArmed = false;
         return;
       }
       updateAiStatus("Submit enabled — clicking…");
-      const clicked = clickSubmitDual();
-      if (clicked) {
+      const ok = clickSubmitDual();
+      if (ok) {
         await noteSubmitClicked(accountId);
       }
       _submitArmed = false;
@@ -1697,6 +1778,9 @@ export async function scheduleAiSubmitClick(accountId) {
   };
 
   updateAiStatus("Time picked — waiting for Submit to enable…");
+  waitForSubmitEnabled(AI_SUBMIT_ARM_MS).then((enabled) => {
+    if (enabled) trySubmit();
+  });
   trySubmit();
 }
 

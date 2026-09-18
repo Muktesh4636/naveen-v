@@ -719,12 +719,32 @@ function clickSubmitButton(prefix) {
     if (btn.disabled) continue;
     const label = (btn.value || btn.textContent || "").toLowerCase();
     if (btn.id === "submitbtn" || /\bsubmit\b/.test(label)) {
-      btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
-      btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
-      btn.click();
-      const $ = window.jQuery || window.$;
-      if ($) {
-        try { $(btn).trigger("mousedown").trigger("mouseup").trigger("click"); } catch (e) {}
+      let fired = false;
+      // Fast path: portal's own submit (same tokens/validation as a user click).
+      try {
+        const form = btn.form || btn.closest?.("form");
+        if (form && typeof form.requestSubmit === "function") {
+          form.requestSubmit(btn);
+          fired = true;
+        }
+      } catch (e) {}
+      if (!fired) {
+        try {
+          btn.click();
+          fired = true;
+        } catch (e) {}
+      }
+      // Fallback: mouse theater if direct path threw.
+      if (!fired) {
+        try {
+          btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+          btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+          btn.click();
+        } catch (e) {}
+        const $ = window.jQuery || window.$;
+        if ($) {
+          try { $(btn).trigger("mousedown").trigger("mouseup").trigger("click"); } catch (e) {}
+        }
       }
       notifySubmit(prefix);
       return true;
@@ -750,7 +770,7 @@ function bookTimeAndSubmitFast(timeStr, dateStr, selectMaxMs, submitWaitMs, domW
   const started = Date.now();
   const initialWait = Math.max(0, Math.min(Number(domWaitMs) || 0, 500));
   const selectDeadline = started + initialWait + Math.max(500, Math.min(Number(selectMaxMs) || 3500, 8000));
-  const waitMs = Math.max(20, Math.min(Number(submitWaitMs) || 50, 120));
+  const waitMs = Math.max(0, Math.min(Number(submitWaitMs) || 0, 120));
   const maxMs = 10_000;
   const tickMs = Math.max(10, Math.min(Number(pollMs) || 25, 200));
   const idx = Number.isFinite(Number(slotIndex)) ? Number(slotIndex) : 0;
@@ -778,10 +798,22 @@ function bookTimeAndSubmitFast(timeStr, dateStr, selectMaxMs, submitWaitMs, domW
       if (btn.disabled) continue;
       const label = (btn.value || btn.textContent || "").toLowerCase();
       if (btn.id === "submitbtn" || /\bsubmit\b/.test(label)) {
-        btn.click();
-        const $ = window.jQuery || window.$;
-        if ($) {
-          try { $(btn).trigger("click"); } catch (e) {}
+        let fired = false;
+        try {
+          const form = btn.form || btn.closest?.("form");
+          if (form && typeof form.requestSubmit === "function") {
+            form.requestSubmit(btn);
+            fired = true;
+          }
+        } catch (e) {}
+        if (!fired) {
+          try { btn.click(); fired = true; } catch (e) {}
+        }
+        if (!fired) {
+          const $ = window.jQuery || window.$;
+          if ($) {
+            try { $(btn).trigger("click"); } catch (e) {}
+          }
         }
         notifySubmit(prefix);
         return true;
@@ -1487,7 +1519,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       message.time,
       message.date || null,
       message.selectMaxMs ?? 3500,
-      message.submitWaitMs ?? 50,
+      message.submitWaitMs ?? 0,
       message.domWaitMs ?? 0,
       message.prefix || "",
       message.slotIndex ?? 0,

@@ -21,13 +21,13 @@ import {
   triggerAutoSubmitIfArmed,
   clickSubmitDual,
   isSubmitButtonEnabled,
+  waitForSubmitEnabled,
   thawOps,
   filterDaysInAiRange,
   dateInRange,
   pickPreferredDateIndex,
   AI_DATE_SELECT_MS,
   AI_BOOK_SELECT_MS,
-  AI_BOOK_SUBMIT_WAIT_MS,
   AI_TIME_DOM_WAIT_MS,
   AI_BOOK_POLL_MS,
   AI_BOOK_SLOT_INDEX,
@@ -250,16 +250,7 @@ function stopTimePickWatchdog() {
   }
 }
 
-/** Poll until Submit is enabled (and a time is picked), up to maxMs. */
-async function waitForSubmitEnabled(maxMs) {
-  const deadline = Date.now() + Math.max(0, Number(maxMs) || 0);
-  while (vs.alive && Date.now() < deadline) {
-    if (isOpsFrozen() || isInterviewPage()) return false;
-    if (isTimeSlotPicked() && isSubmitButtonEnabled()) return true;
-    await new Promise((r) => vs.setTimeout(r, AI_BOOK_POLL_MS));
-  }
-  return !!(isTimeSlotPicked() && isSubmitButtonEnabled());
-}
+
 
 const TIME_SLOT_SELECTOR = [
   "#schedule-entries table input[type=\"radio\"]:not([disabled])",
