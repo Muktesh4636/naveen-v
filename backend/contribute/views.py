@@ -475,7 +475,7 @@ def tik_tik_prefs(request):
 # Slot alerts stay fresh this long for other extensions to pick up.
 _CITY_ALERT_TTL = timedelta(seconds=120)
 # Collapse duplicate alerts for the same city within this window.
-_CITY_ALERT_DEDUP = timedelta(seconds=4)
+_CITY_ALERT_DEDUP = timedelta(seconds=2)
 
 
 @csrf_exempt

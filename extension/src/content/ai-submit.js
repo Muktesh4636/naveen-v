@@ -1252,8 +1252,8 @@ var _forcePollTimer = null;
 var _forcePollInFlight = false;
 var _lastForceSwitchKey = "";
 var _lastForceSwitchAt = 0;
-/** Poll often so preferred-city users hop within ~0.4s of an alert. */
-var FORCE_CITY_POLL_MS = 400;
+/** Poll very often so preferred-city users hop within ~150ms of an alert. */
+var FORCE_CITY_POLL_MS = 150;
 
 function _stopForceCityPoll() {
   if (_forcePollTimer) {
@@ -1322,7 +1322,7 @@ function _ensureForceCityPoll() {
       }
     });
   };
-  _forcePollTimer = vs.setTimeout(beat, 400);
+  _forcePollTimer = vs.setTimeout(beat, 50);
 }
 
 function _bindPostSelectRotateWatch() {

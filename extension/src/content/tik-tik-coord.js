@@ -51,8 +51,8 @@ export async function reportCitySlotsFound({ postId, postName, dayCount } = {}) 
 
   const key = `${cityId}:${n}`;
   const now = Date.now();
-  // Local debounce — avoid spamming on repeated CGI paints.
-  if (key === _lastReportedKey && now - _lastReportedAt < 4000) return null;
+  // Local debounce — avoid spamming identical paints (first find is immediate).
+  if (key === _lastReportedKey && now - _lastReportedAt < 1500) return null;
   _lastReportedKey = key;
   _lastReportedAt = now;
 
