@@ -1643,6 +1643,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // keep channel open for async sendResponse
   }
 
+  if (message.action === "focusHomeForVerify") {
+    const ofcTabId = sender.tab?.id;
+    (async () => {
+      try {
+        const tabs = await chrome.tabs.query({ url: "https://www.usvisascheduling.com/*" });
+        const isOfcUrl = (u) =>
+          /\/(schedule|ofc-schedule|c-schedule|interview|confirmation)/i.test(String(u || ""));
+        let home = tabs.find((t) => {
+          if (!t?.id) return false;
+          if (ofcTabId && t.id === ofcTabId) return false;
+          if (isOfcUrl(t.url)) return false;
+          return true;
+        });
+        if (home) {
+          // Focus Home only — do not reload (keep Verify checkbox if already showing).
+          await chrome.tabs.update(home.id, { active: true });
+          return;
+        }
+        // No Home tab — open Application Home so user can click Verify there.
+        await chrome.tabs.create({
+          url: "https://www.usvisascheduling.com/en-US/",
+          active: true,
+        });
+      } catch (e) {}
+    })();
+  }
+
   if (message.action === "recoveryStart") {
     const ofcTabId = sender.tab?.id;
     const ofcUrl = message.ofcUrl || sender.tab?.url || "";

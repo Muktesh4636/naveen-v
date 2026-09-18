@@ -14,6 +14,8 @@ var _cfWatchTimer = null;
 var _cfAttemptCount = 0;
 var _cfObserver = null;
 var _challengeSeenAt = 0;
+var _homeForVerifyAt = 0;
+var HOME_FOR_VERIFY_COOLDOWN_MS = 25_000;
 
 /** Longer manual window while we still need live verify-human samples. */
 async function _trainWindowMs() {
@@ -218,6 +220,33 @@ async function _fireClicks(points) {
   }
 }
 
+function _isScheduleLikePath() {
+  return /\/(schedule|ofc-schedule|c-schedule)\b/i.test(location.pathname || "");
+}
+
+/**
+ * On OFC / schedule: when "Verify you are human" appears, jump to Application Home
+ * so the user can click the checkbox there (more reliable than on the schedule page).
+ */
+function _maybeTakeUserToHomeForVerify() {
+  if (!_isScheduleLikePath()) return;
+  if (!isCloudflareChallenge() || isCloudflareSolved()) return;
+  const now = Date.now();
+  if (now - _homeForVerifyAt < HOME_FOR_VERIFY_COOLDOWN_MS) return;
+  _homeForVerifyAt = now;
+  vsLog("cf", "verify-human on schedule — focusing Application Home for manual click");
+  updateCloudflareHud(
+    "manual",
+    "Verify you are human — opening Home tab so you can click it there…"
+  ).catch(() => {});
+  try {
+    vs.send({
+      action: "focusHomeForVerify",
+      ofcUrl: location.href,
+    });
+  } catch {}
+}
+
 /** Best-effort Cloudflare / Turnstile tick, including debugger clicks into iframe. */
 export async function tryCloudflareTick() {
   if (!await getSetting("autoCloudflareTick")) return false;
@@ -228,6 +257,9 @@ export async function tryCloudflareTick() {
     return true;
   }
 
+  // Schedule/OFC challenge → take user to Home to click Verify.
+  _maybeTakeUserToHomeForVerify();
+
   if (!_challengeSeenAt) {
     _challengeSeenAt = Date.now();
     vsLog("cf", "challenge seen — train window started");
@@ -237,7 +269,9 @@ export async function tryCloudflareTick() {
   if (Date.now() - _challengeSeenAt < trainMs) {
     await updateCloudflareHud(
       "scanning",
-      "Train window — click Verify you are human yourself (recording your mouse)…"
+      _isScheduleLikePath()
+        ? "Opening Home — click Verify you are human on the Home tab…"
+        : "Train window — click Verify you are human yourself (recording your mouse)…"
     );
     return false;
   }
@@ -295,6 +329,7 @@ function _startChallengeObserver() {
   _cfObserver = new MutationObserver(() => {
     if (!vs.alive) return;
     if (isCloudflareChallenge() && !isCloudflareSolved()) {
+      _maybeTakeUserToHomeForVerify();
       tryCloudflareTick();
     }
   });
