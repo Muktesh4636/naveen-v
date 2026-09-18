@@ -36,26 +36,62 @@ function isExcluded(el) {
   return false;
 }
 
+function fireValueEvents(el) {
+  if (!el) return;
+  try {
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  } catch {
+    /* ignore */
+  }
+}
+
+function clickTheater(el) {
+  if (!el) return;
+  try {
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+    el.click();
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Fast path: set value/checked first; click only if portal did not accept it. */
 function activateInput(el) {
   if (!el || el.disabled) return false;
   try {
-    const row = el.closest("tr");
-    const label = el.id
-      ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`)
-      : null;
-    const targets = [label, el.closest("label"), el, row].filter(Boolean);
-
-    for (const target of targets) {
-      target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
-      target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
-      target.click();
+    if (el.tagName === "SELECT") {
+      if (!el.value || el.value === "0") return false;
+      fireValueEvents(el);
+      if (el.value && el.value !== "0") return true;
+      clickTheater(el);
+      return !!(el.value && el.value !== "0");
     }
 
     if (el.type === "radio" || el.type === "checkbox") {
+      if (el.name) {
+        for (const r of document.getElementsByName(el.name)) {
+          if (r !== el) r.checked = false;
+        }
+      }
       el.checked = true;
+      fireValueEvents(el);
+      if (el.checked) return true;
+
+      const label = el.id
+        ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`)
+        : null;
+      const row = el.closest("tr");
+      for (const target of [label, el.closest("label"), el, row].filter(Boolean)) {
+        clickTheater(target);
+      }
+      el.checked = true;
+      fireValueEvents(el);
+      return el.checked === true;
     }
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
+
+    clickTheater(el);
   } catch {
     return false;
   }
@@ -103,7 +139,7 @@ function collectTimeRows() {
   return rows;
 }
 
-function tryPickSelect(slotIndex) {
+function tryPickSelect(slotIndex, timeStr) {
   for (const sel of document.querySelectorAll(
     '#time_select, select[name*="time" i], select[id*="time" i]'
   )) {
@@ -112,34 +148,67 @@ function tryPickSelect(slotIndex) {
       (o) => !o.disabled && o.value && o.value !== "0" && rowLooksLikeTime({ textContent: o.textContent })
     );
     if (!opts.length) continue;
-    const idx = resolveSlotIndex(opts.length, slotIndex);
-    sel.value = opts[idx].value;
-    sel.dispatchEvent(new Event("change", { bubbles: true }));
-    return true;
+
+    let pick = null;
+    const want = normalizeTime(timeStr);
+    if (want && want !== "00:00") {
+      pick = opts.find((o) => (o.textContent || "").includes(want)) || null;
+      if (!pick) {
+        const hhmm = want.match(/(\d{1,2}:\d{2})/);
+        if (hhmm) pick = opts.find((o) => (o.textContent || "").includes(hhmm[1])) || null;
+      }
+    }
+    if (!pick) {
+      const idx = resolveSlotIndex(opts.length, slotIndex);
+      pick = opts[idx];
+    }
+    if (!pick) continue;
+
+    sel.value = pick.value;
+    if (activateInput(sel)) return true;
   }
   return false;
 }
 
-function tryPickOnce(slotIndex) {
-  if (tryPickSelect(slotIndex)) return true;
+function tryPickOnce(slotIndex, timeStr) {
+  if (tryPickSelect(slotIndex, timeStr)) return true;
 
   const radios = collectTimeRadios();
   if (radios.length) {
-    const idx = resolveSlotIndex(radios.length, slotIndex);
-    if (activateInput(radios[idx])) return true;
+    let pick = null;
+    const want = normalizeTime(timeStr);
+    if (want && want !== "00:00") {
+      pick = radios.find((r) => {
+        const text = (r.closest("tr")?.textContent || r.textContent || "").replace(/\s+/g, " ");
+        return text.includes(want) || text.includes(want.slice(0, 5));
+      }) || null;
+    }
+    if (!pick) {
+      const idx = resolveSlotIndex(radios.length, slotIndex);
+      pick = radios[idx];
+    }
+    if (pick && activateInput(pick)) return true;
   }
 
   const rows = collectTimeRows();
   if (rows.length) {
-    const idx = resolveSlotIndex(rows.length, slotIndex);
-    const row = rows[idx];
+    let row = null;
+    const want = normalizeTime(timeStr);
+    if (want && want !== "00:00") {
+      row = rows.find((r) => (r.textContent || "").includes(want)) || null;
+    }
+    if (!row) {
+      const idx = resolveSlotIndex(rows.length, slotIndex);
+      row = rows[idx];
+    }
+    if (!row) return false;
     const input = row.querySelector(
       'input[type="radio"]:not([disabled]), input[type="checkbox"]:not([disabled])'
     );
     if (input && activateInput(input)) return true;
     const label = row.querySelector("label");
     if (label) {
-      label.click();
+      clickTheater(label);
       return !!row.querySelector('input[type="radio"]:checked, input[type="checkbox"]:checked');
     }
   }
@@ -159,11 +228,12 @@ export function isTimeSlotPicked() {
   return false;
 }
 
-/** Poll every pollMs until slot clicked or deadline. */
+/** Poll every pollMs until slot set (direct) or deadline. */
 export function pollAndPickTimeSlot({
   slotIndex = 0,
   maxMs = 12000,
   pollMs = DEFAULT_POLL_MS,
+  time,
   onTick,
 } = {}) {
   const deadline = Date.now() + maxMs;
@@ -174,7 +244,7 @@ export function pollAndPickTimeSlot({
       if (!vs.alive) return resolve(false);
       onTick?.();
 
-      if (tryPickOnce(slotIndex)) {
+      if (tryPickOnce(slotIndex, time)) {
         return resolve(true);
       }
       if (isTimeSlotPicked()) {
@@ -212,6 +282,7 @@ export function pickTimeSlotDual({ time, date, slotIndex, pollMs, maxMs }) {
     slotIndex: idx,
     maxMs: ms,
     pollMs: poll,
+    time: time || "00:00",
   });
 }
 

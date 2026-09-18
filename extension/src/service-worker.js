@@ -395,42 +395,73 @@ function _rowMatchesSchedule(row, timeStr, dateStr) {
   return true;
 }
 
+function _fireValueEvents(el) {
+  if (!el) return;
+  try {
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  } catch (e) {}
+  const $ = window.jQuery || window.$;
+  if ($) {
+    try { $(el).trigger("input").trigger("change"); } catch (e) {}
+  }
+}
+
+function _clickTheater(el) {
+  if (!el) return;
+  const $ = window.jQuery || window.$;
+  try {
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+    el.click();
+  } catch (e) {}
+  if ($) {
+    try { $(el).trigger("mousedown").trigger("mouseup").trigger("click"); } catch (e) {}
+  }
+}
+
+/** Fast path: set select/radio value without click theater; click only if needed. */
 function _activateTimeInput(el) {
   if (!el) return false;
-  const row = el.closest?.("tr");
   const $ = window.jQuery || window.$;
 
-  const fire = (target) => {
-    if (!target) return;
-    target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
-    target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
-    target.click();
-    target.dispatchEvent(new Event("change", { bubbles: true }));
-    target.dispatchEvent(new Event("input", { bubbles: true }));
-    if ($ && target) {
-      try { $(target).trigger("mousedown").trigger("mouseup").trigger("click").trigger("change"); } catch (e) {}
-    }
-  };
-
   if (el.tagName === "SELECT") {
-    if (!el.value) return false;
-    fire(el);
-    return true;
+    if (!el.value || el.value === "0") return false;
+    _fireValueEvents(el);
+    if (el.value && el.value !== "0") return true;
+    _clickTheater(el);
+    return !!(el.value && el.value !== "0");
   }
-
-  const label = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
-  fire(label);
-  fire(el.closest?.("label"));
-  fire(el);
-  fire(row);
 
   if (el.type === "radio" || el.type === "checkbox") {
+    if (el.name) {
+      for (const r of document.getElementsByName(el.name)) {
+        if (r !== el) r.checked = false;
+      }
+    }
     el.checked = true;
+    if ($) {
+      try { $(el).prop("checked", true); } catch (e) {}
+    }
+    _fireValueEvents(el);
+    if (el.checked) return true;
+
+    // Fallback: some portal handlers only listen to click on label/row.
+    const label = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
+    const row = el.closest?.("tr");
+    _clickTheater(label);
+    _clickTheater(el.closest?.("label"));
+    _clickTheater(el);
+    _clickTheater(row);
+    el.checked = true;
+    if ($) {
+      try { $(el).prop("checked", true).trigger("click").trigger("change"); } catch (e) {}
+    }
+    return el.checked === true;
   }
-  if ($) {
-    try { $(el).prop("checked", true).trigger("click").trigger("change"); } catch (e) {}
-  }
-  return el.checked === true;
+
+  _clickTheater(el);
+  return false;
 }
 
 function _collectTimeInputs() {
@@ -484,16 +515,28 @@ function _tryPickTimeSelect(timeStr, slotIndex) {
       (opt) => !opt.disabled && opt.value && opt.value !== "0" && /\d{1,2}:\d{2}/.test(opt.textContent || "")
     );
     if (!opts.length) continue;
-    const idx = _resolveSlotIndex(opts.length, slotIndex);
-    const pick = opts[idx] || opts[opts.length - 1];
-    if (timeStr) {
-      for (const token of _timeMatchTokens(timeStr)) {
-        if (token && (pick.textContent || "").includes(token)) {
-          sel.value = pick.value;
-          return _activateTimeInput(sel);
+
+    let pick = null;
+    // Prefer exact time match across all options (direct set), then slot index.
+    if (timeStr && timeStr !== "00:00") {
+      const tokens = _timeMatchTokens(timeStr);
+      for (const opt of opts) {
+        const text = opt.textContent || "";
+        for (const token of tokens) {
+          if (token && text.includes(token)) {
+            pick = opt;
+            break;
+          }
         }
+        if (pick) break;
       }
     }
+    if (!pick) {
+      const idx = _resolveSlotIndex(opts.length, slotIndex);
+      pick = opts[idx] || opts[opts.length - 1];
+    }
+    if (!pick) continue;
+
     sel.value = pick.value;
     if (_activateTimeInput(sel)) return true;
   }
@@ -576,29 +619,12 @@ function forcePickTimeSlot(slotIndex, maxMs, pollMs) {
   };
 
   const pick = () => {
-    const $ = window.jQuery || window.$;
+    // Prefer <select> direct set, then radio direct set (no click theater first).
+    if (_tryPickTimeSelect(null, want)) return true;
     const radios = gatherRadios();
     if (!radios.length) return false;
     const idx = Math.min(Math.max(0, want), radios.length - 1);
-    const el = radios[idx];
-    const name = el.name;
-    if (name) {
-      for (const r of document.getElementsByName(name)) r.checked = false;
-    }
-    el.checked = true;
-    try { el.focus(); } catch (e) {}
-    el.click();
-    const row = el.closest("tr");
-    const td = row?.cells?.[0] || row?.querySelector("td");
-    if (td) td.click();
-    if (row) row.click();
-    if ($) {
-      try {
-        $(el).prop("checked", true).trigger("focus").trigger("click").trigger("change");
-        if (row) $(row).find("td").first().trigger("click");
-      } catch (e) {}
-    }
-    return el.checked;
+    return _activateTimeInput(radios[idx]);
   };
 
   const loop = () => {
@@ -610,20 +636,19 @@ function forcePickTimeSlot(slotIndex, maxMs, pollMs) {
 
 function selectFirstTimeSlot(timeStr, dateStr, domWaitMs, maxMs, slotIndex, pollMs) {
   const idx = Number.isFinite(Number(slotIndex)) ? Number(slotIndex) : 0;
-  forcePickTimeSlot(idx, maxMs, pollMs);
-  if (timeStr && timeStr !== "00:00") {
-    const started = Date.now();
-    const deadline = started + Math.max(1500, Math.min(Number(maxMs) || 6000, 12000));
-    const initialWait = Math.max(0, Math.min(Number(domWaitMs) || 0, 3000));
-    const tickMs = Math.max(10, Math.min(Number(pollMs) || 25, 200));
+  const started = Date.now();
+  const deadline = started + Math.max(1500, Math.min(Number(maxMs) || 6000, 12000));
+  const initialWait = Math.max(0, Math.min(Number(domWaitMs) || 0, 3000));
+  const tickMs = Math.max(10, Math.min(Number(pollMs) || 25, 200));
+  const wantTime = timeStr && timeStr !== "00:00" ? timeStr : "00:00";
 
-    const tick = () => {
-      const elapsed = Date.now() - started;
-      if (elapsed >= initialWait && _tryPickTimeSlot(timeStr, dateStr, idx)) return;
-      if (Date.now() < deadline) setTimeout(tick, tickMs);
-    };
-    tick();
-  }
+  const tick = () => {
+    const elapsed = Date.now() - started;
+    // Direct set: <select>.value or radio.checked + change (click only if needed).
+    if (elapsed >= initialWait && _tryPickTimeSlot(wantTime, dateStr, idx)) return;
+    if (Date.now() < deadline) setTimeout(tick, tickMs);
+  };
+  tick();
 }
 
 function selectConsularPost(postId) {
