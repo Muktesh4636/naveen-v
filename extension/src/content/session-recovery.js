@@ -20,6 +20,7 @@ import { cfg as rtCfg } from "../shared/remoteConfig.js";
 var RECOVERY_KEY = "sessionRecovery";
 var KEEPALIVE_AT_KEY = "homeKeepaliveAt";
 var LOADING_STUCK_AT_KEY = "homeLoadingStuckAt";
+var RESUBMIT_FLAG = "vsResubmitContinue";
 var LOADING_STUCK_POLL_MS = 2_000;
 var _recoveryBusy = false;
 var _homeLoop = null;
@@ -27,6 +28,39 @@ var _homeKeepaliveTimer = null;
 var _ofcKeepaliveTimer = null;
 var _loadingStuckTimer = null;
 var _loadingSince = 0;
+
+/**
+ * GET navigation refresh — avoids Chrome "Confirm Form Resubmission"
+ * that blocks location.reload() / tabs.reload() on POST-landed Home pages.
+ */
+export function softRefreshHome() {
+  try {
+    const u = new URL(location.href);
+    u.searchParams.set("_vsr", String(Date.now() % 1e12));
+    location.replace(u.pathname + u.search + u.hash);
+    return true;
+  } catch {
+    try {
+      location.href = location.pathname + location.search;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** After auto-Continue on form resubmission, do one clean GET refresh. */
+export function maybeRefreshAfterResubmitContinue() {
+  try {
+    if (sessionStorage.getItem(RESUBMIT_FLAG) !== "1") return false;
+    sessionStorage.removeItem(RESUBMIT_FLAG);
+  } catch {
+    return false;
+  }
+  if (_isOfcOrSchedule() || document.querySelector("#post_select")) return false;
+  softRefreshHome();
+  return true;
+}
 
 function _homeKeepaliveMinMs() { return rtCfg.homeKeepaliveMinMs; }
 function _homeKeepaliveMaxMs() { return rtCfg.homeKeepaliveMaxMs; }
@@ -382,7 +416,7 @@ export function startHomeSessionKeepalive() {
         return;
       }
       try {
-        location.reload();
+        softRefreshHome();
       } catch {
         arm();
       }
@@ -477,7 +511,16 @@ export function startLoadingStuckHomeReload() {
 }
 
 export async function handleNativeAlert(text) {
-  if (!/PSE0501|unable to load appointment available days/i.test(String(text || ""))) {
+  const msg = String(text || "");
+  if (/form resubmission|information that you entered|action that you took to be repeated|returning to that page might cause/i.test(msg)) {
+    // Confirm was auto-Continue'd in MAIN world — soft GET refresh Home.
+    if (!_isOfcOrSchedule() && !document.querySelector("#post_select")) {
+      try { sessionStorage.setItem(RESUBMIT_FLAG, "1"); } catch {}
+      vs.setTimeout(() => softRefreshHome(), 300);
+    }
+    return;
+  }
+  if (!/PSE0501|unable to load appointment available days/i.test(msg)) {
     return;
   }
   if (_recoveryBusy) return;

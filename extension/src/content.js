@@ -25,7 +25,7 @@ import {
 import { getSetting } from "./shared/config.js";
 import { ensureRemoteConfig } from "./shared/remoteConfig.js";
 import { startTimeSlotWatcher } from "./content/time-select.js";
-import { handleNativeAlert, startHomeRecoveryLoop, startHomeSessionKeepalive, startOfcHomeKeepalive, startLoadingStuckHomeReload } from "./content/session-recovery.js";
+import { handleNativeAlert, startHomeRecoveryLoop, startHomeSessionKeepalive, startOfcHomeKeepalive, startLoadingStuckHomeReload, maybeRefreshAfterResubmitContinue } from "./content/session-recovery.js";
 import { startHumanClickTrain } from "./content/human-click-train.js";
 import { startCloudflareWatch, stopCloudflareWatch } from "./content/cloudflare-tick.js";
 import { startPortalErrorReloadWatch } from "./content/portal-error-reload.js";
@@ -128,6 +128,7 @@ vs.on(document, "visibilitychange", () => {
 
 maybeStartConsularOfcBookedAlarm();
 
+maybeRefreshAfterResubmitContinue();
 startHomeRecoveryLoop();
 startHomeSessionKeepalive();
 startOfcHomeKeepalive();

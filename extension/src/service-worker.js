@@ -672,6 +672,23 @@ function selectConsularPost(postId) {
   return true;
 }
 
+function softReloadHomeTab(home) {
+  if (!home?.id || !home.url) {
+    try { chrome.tabs.reload(home.id).catch(() => {}); } catch (e) {}
+    return;
+  }
+  try {
+    const u = new URL(home.url);
+    // GET navigation — avoids Chrome "Confirm Form Resubmission" on POST Home pages.
+    u.searchParams.set("_vsr", String(Date.now() % 1e12));
+    chrome.tabs.update(home.id, { url: u.origin + u.pathname + u.search + u.hash }).catch(() => {
+      chrome.tabs.reload(home.id).catch(() => {});
+    });
+  } catch (e) {
+    chrome.tabs.reload(home.id).catch(() => {});
+  }
+}
+
 function interceptNativeDialogs(prefix) {
   const origAlert = window.alert;
   const origConfirm = window.confirm;
@@ -681,6 +698,11 @@ function interceptNativeDialogs(prefix) {
     } catch (e) {}
   };
   const isPse = (msg) => /PSE0501|unable to load appointment available days/i.test(String(msg || ""));
+  // Chrome/Firefox "Confirm Form Resubmission" — treat Continue as yes, then soft-refresh.
+  const isFormResubmit = (msg) =>
+    /form resubmission|information that you entered|action that you took to be repeated|returning to that page might cause/i.test(
+      String(msg || "")
+    );
   window.alert = function (msg) {
     relay(msg);
     if (isPse(msg)) return; // auto-dismiss — do not block the page
@@ -689,6 +711,12 @@ function interceptNativeDialogs(prefix) {
   window.confirm = function (msg) {
     relay(msg);
     if (isPse(msg)) return true;
+    if (isFormResubmit(msg)) {
+      try {
+        sessionStorage.setItem("vsResubmitContinue", "1");
+      } catch (e) {}
+      return true; // Continue
+    }
     return origConfirm.apply(this, arguments);
   };
 }
@@ -1632,10 +1660,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return true;
         });
         if (!home) return;
-        // Never reload OFC — only Home.
+        // Never reload OFC — only Home (GET soft-nav avoids form resubmission dialog).
         if (/\/(schedule|ofc-schedule|c-schedule)/i.test(home.url || "")) return;
         await chrome.tabs.update(home.id, { active: true });
-        chrome.tabs.reload(home.id);
+        softReloadHomeTab(home);
       } catch (e) {}
     })();
   }
@@ -1660,7 +1688,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Final hard stop — refuse OFC / schedule tabs.
         if (isOfcUrl(home.url)) return;
         if (ofcTabId && home.id === ofcTabId) return;
-        chrome.tabs.reload(home.id).catch(() => {});
+        softReloadHomeTab(home);
       } catch (e) {}
     })();
   }
