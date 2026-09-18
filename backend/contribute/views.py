@@ -473,7 +473,7 @@ def tik_tik_prefs(request):
 
 
 # Slot alerts stay fresh this long for other extensions to pick up.
-_CITY_ALERT_TTL = timedelta(seconds=90)
+_CITY_ALERT_TTL = timedelta(seconds=120)
 # Collapse duplicate alerts for the same city within this window.
 _CITY_ALERT_DEDUP = timedelta(seconds=4)
 
@@ -529,7 +529,11 @@ def tik_tik_coord(request):
                 recent.city_name = city_name or recent.city_name
                 if applicant:
                     recent.source_applicant = applicant
-                recent.save(update_fields=["day_count", "city_name", "source_applicant"])
+                # Refresh freshness so late pollers still get pulled in.
+                recent.created_at = timezone.now()
+                recent.save(
+                    update_fields=["day_count", "city_name", "source_applicant", "created_at"]
+                )
             return JsonResponse(
                 {
                     "success": True,
@@ -583,17 +587,38 @@ def tik_tik_coord(request):
             city_id__in=list(preferred_ids),
             day_count__gte=1,
         )
-        if last_alert_id > 0:
-            qs = qs.filter(id__gt=last_alert_id)
-        # Don't force the finder back onto the same alert they just created
-        # unless another (newer) alert exists — still allow if they're on another city.
         alert = qs.order_by("-id").first()
         if not alert:
             return JsonResponse({"success": True, "forceCity": None})
 
         current_city = str(body.get("currentCityId") or "").strip()
-        # Already on the alert city — acknowledge so client advances lastAlertId.
-        already = current_city and current_city == alert.city_id
+        already = bool(current_city and current_city == alert.city_id)
+
+        # Already on that city — ack so client can advance lastAlertId.
+        if already:
+            return JsonResponse(
+                {
+                    "success": True,
+                    "forceCity": {
+                        "id": alert.city_id,
+                        "name": alert.city_name or alert.city_id,
+                        "alertId": alert.id,
+                        "dayCount": alert.day_count,
+                        "at": int(alert.created_at.timestamp() * 1000),
+                        "alreadyThere": True,
+                    },
+                }
+            )
+
+        # Not on the alert city: always force-switch while alert is fresh,
+        # even if lastAlertId already saw this row (missed hop / rotated away).
+        # lastAlertId is only used to skip stale duplicates of the same id
+        # when the alert is older than a short grace — still within TTL.
+        if last_alert_id >= alert.id:
+            # Re-issue while fresh so late pollers still hop.
+            age = timezone.now() - alert.created_at
+            if age > timedelta(seconds=60):
+                return JsonResponse({"success": True, "forceCity": None})
 
         return JsonResponse(
             {
@@ -604,7 +629,7 @@ def tik_tik_coord(request):
                     "alertId": alert.id,
                     "dayCount": alert.day_count,
                     "at": int(alert.created_at.timestamp() * 1000),
-                    "alreadyThere": already,
+                    "alreadyThere": False,
                 },
             }
         )

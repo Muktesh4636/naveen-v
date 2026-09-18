@@ -548,8 +548,12 @@ export async function handleEvent(event) {
 
     // Broadcast to other Tik Tik users who prefer this city (force-switch).
     if (!parsed.response.HasError && dayCount > 0) {
+      const postId = String(parsed.params.postId || "");
+      setTikTikStatus(
+        `${dayCount} date${dayCount === 1 ? "" : "s"} — alerting others with this city…`
+      );
       reportCitySlotsFound({
-        postId: parsed.params.postId,
+        postId,
         postName: post?.Name,
         dayCount,
       }).catch(() => {});

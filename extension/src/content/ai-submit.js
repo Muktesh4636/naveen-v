@@ -1250,7 +1250,10 @@ export async function forceSwitchToCity(cityId, label, { alertId, dayCount } = {
 
 var _forcePollTimer = null;
 var _forcePollInFlight = false;
-var FORCE_CITY_POLL_MS = 1000;
+var _lastForceSwitchKey = "";
+var _lastForceSwitchAt = 0;
+/** Poll often so preferred-city users hop within ~0.4s of an alert. */
+var FORCE_CITY_POLL_MS = 400;
 
 function _stopForceCityPoll() {
   if (_forcePollTimer) {
@@ -1273,18 +1276,34 @@ async function _forceCityPollTick() {
       currentCityId: select ? String(select.value) : "",
     });
     if (!force?.alertId) return;
-    markForceCityApplied(force.alertId);
+
     if (force.alreadyThere) {
+      markForceCityApplied(force.alertId);
       updateAiStatus(
         `City alert — already on ${force.name || force.id}` +
           (force.dayCount ? ` (${force.dayCount} dates)` : "")
       );
       return;
     }
-    await forceSwitchToCity(force.id, force.name, {
+
+    // Avoid thrashing the same alert every poll while the city change loads.
+    const key = `${force.id}:${force.alertId}`;
+    const now = Date.now();
+    if (key === _lastForceSwitchKey && now - _lastForceSwitchAt < 6000) {
+      markForceCityApplied(force.alertId);
+      return;
+    }
+
+    const ok = await forceSwitchToCity(force.id, force.name, {
       alertId: force.alertId,
       dayCount: force.dayCount,
     });
+    // Only consume the alert after a successful hop (or already-on).
+    if (ok) {
+      _lastForceSwitchKey = key;
+      _lastForceSwitchAt = now;
+      markForceCityApplied(force.alertId);
+    }
   } catch {
     /* ignore */
   } finally {
