@@ -187,7 +187,69 @@ function selectFirstDate(dateStr, maxMs, pollMs) {
   const deadline = Date.now() + Math.max(500, Math.min(Number(maxMs) || 8000, 15000));
   const tickMs = Math.max(20, Math.min(Number(pollMs) || 50, 200));
   const uiMonth = month - 1;
+  const formatted =
+    String(month).padStart(2, "0") + "/" + String(day).padStart(2, "0") + "/" + year;
 
+  /** Fast path: set date via API / input — do NOT open the calendar popup. */
+  const setDateDirect = ($) => {
+    const picker = $("#datepicker");
+    if (!picker.length) return false;
+
+    if (!picker.hasClass("hasDatepicker")) {
+      try { picker.datepicker(); } catch (e) {}
+    }
+    if (!picker.hasClass("hasDatepicker")) return false;
+
+    const target = new Date(year, uiMonth, day);
+    try {
+      try { picker.datepicker("hide"); } catch (e) {}
+      picker.datepicker("option", "defaultDate", target);
+      picker.datepicker("setDate", target);
+      picker.val(formatted);
+
+      const el = picker[0];
+      try {
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      } catch (e) {}
+      try { picker.trigger("input").trigger("change"); } catch (e) {}
+
+      // Some portal builds only load times from onSelect — call it if present.
+      try {
+        const inst = picker.data("datepicker");
+        if (inst) {
+          const settings = inst.settings || {};
+          const onSelect = settings.onSelect;
+          if (typeof onSelect === "function") {
+            const dateFormat = settings.dateFormat || "mm/dd/yy";
+            const dateText = $.datepicker.formatDate(dateFormat, target, settings);
+            onSelect.call(el, dateText, inst);
+          }
+        }
+      } catch (e) {}
+    } catch (e) {
+      return false;
+    }
+
+    try {
+      const selected = picker.datepicker("getDate");
+      if (
+        selected &&
+        selected.getFullYear() === year &&
+        selected.getMonth() === uiMonth &&
+        selected.getDate() === day
+      ) {
+        return true;
+      }
+    } catch (e) {}
+
+    const v = String(picker.val() || "");
+    if (v === formatted) return true;
+    if (v.includes(String(year)) && v.includes(String(day).padStart(2, "0"))) return true;
+    return false;
+  };
+
+  /** Slow fallback: open calendar and click the day cell (only if direct set failed). */
   const clickDateInWidget = ($) => {
     const picker = $("#datepicker");
     if (!picker.length) return false;
@@ -202,7 +264,7 @@ function selectFirstDate(dateStr, maxMs, pollMs) {
       picker.datepicker("setDate", target);
       picker.datepicker("option", "defaultDate", target);
       try { picker.datepicker("show"); } catch (e) {}
-  } catch (e) {
+    } catch (e) {
       return false;
     }
 
@@ -274,6 +336,7 @@ function selectFirstDate(dateStr, maxMs, pollMs) {
       return;
     }
     try {
+      if (setDateDirect($)) return;
       if (clickDateInWidget($)) return;
     } catch (e) {}
     if (Date.now() < deadline) setTimeout(trySelect, tickMs);

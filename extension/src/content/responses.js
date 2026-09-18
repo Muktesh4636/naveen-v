@@ -138,6 +138,42 @@ function isCalendarDateSelected(dateStr) {
   const [year, month, day] = dateStr.slice(0, 10).split("-").map(Number);
   if (!year || !month || !day) return false;
   const uiMonth = month - 1;
+  const formatted =
+    String(month).padStart(2, "0") + "/" + String(day).padStart(2, "0") + "/" + year;
+
+  // Fast path: input value / jQuery getDate (calendar need not be open).
+  const input = document.querySelector("#datepicker");
+  if (input) {
+    const v = String(input.value || "").trim();
+    if (v === formatted) return true;
+    if (v.includes(String(year)) && v.includes(String(day).padStart(2, "0"))) {
+      // e.g. 10/05/2026 vs 10/5/2026
+      const parts = v.split(/[/-]/).map((p) => parseInt(p, 10));
+      if (parts.length >= 3) {
+        let y; let m; let d;
+        if (parts[2] > 31) {
+          m = parts[0]; d = parts[1]; y = parts[2];
+        } else {
+          y = parts[0]; m = parts[1]; d = parts[2];
+        }
+        if (y === year && m === month && d === day) return true;
+      }
+    }
+    try {
+      const $ = window.jQuery || window.$;
+      if ($ && $(input).hasClass("hasDatepicker")) {
+        const selected = $(input).datepicker("getDate");
+        if (
+          selected &&
+          selected.getFullYear() === year &&
+          selected.getMonth() === uiMonth &&
+          selected.getDate() === day
+        ) {
+          return true;
+        }
+      }
+    } catch {}
+  }
 
   for (const td of document.querySelectorAll(
     "td.ui-datepicker-current-day, td.ui-state-active, td[data-handler='selectDay'].ui-state-active"
@@ -286,8 +322,7 @@ function scheduleTimePickWatchdog(dateStr, slotIndex = 0) {
 
 const DATE_PICKER_SELECTOR = [
   "#datepicker.hasDatepicker",
-  "#datepicker .ui-datepicker",
-  "#ui-datepicker-div",
+  "#datepicker",
 ].join(", ");
 
 export async function autoSelectFirstDate(scheduleDays, hasError = false) {
@@ -311,8 +346,9 @@ export async function autoSelectFirstDate(scheduleDays, hasError = false) {
     : normalized;
   const idx = pickPreferredDateIndex(inRange.length);
 
-  setTikTikStatus(`Selecting date #${idx + 1}: ${picked}…`);
-  await vs.waitFor(DATE_PICKER_SELECTOR, { attempts: 120, interval: AI_BOOK_POLL_MS });
+  setTikTikStatus(`Selecting date #${idx + 1}: ${picked} (fast)…`);
+  // Only need the input — do not wait for the open calendar popup.
+  await vs.waitFor(DATE_PICKER_SELECTOR, { attempts: 80, interval: AI_BOOK_POLL_MS });
 
   vs.send({
     action: "selectFirstDate",
