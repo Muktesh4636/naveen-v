@@ -108,7 +108,6 @@ function syncAudioMuted(waitSeconds) {
 
 var cfShieldCard = document.querySelector("#cfShieldCard");
 var cfShieldStatus = document.querySelector("#cfShieldStatus");
-var cfDebuggerToggle = document.querySelector("#cloudflareDebuggerClick");
 
 async function syncShieldCard() {
   if (!cfShieldCard || !cfShieldStatus) return;
@@ -117,18 +116,8 @@ async function syncShieldCard() {
     cloudflareDebuggerClick: true,
   });
   const active = storage.autoCloudflareTick;
-  const advanced = storage.cloudflareDebuggerClick;
   cfShieldCard.classList.toggle("is-off", !active);
-  if (!active) {
-    cfShieldStatus.textContent = "Off";
-  } else if (advanced) {
-    cfShieldStatus.textContent = "Advanced";
-  } else {
-    cfShieldStatus.textContent = "Standard";
-  }
-  if (cfDebuggerToggle) {
-    cfDebuggerToggle.disabled = !active;
-  }
+  cfShieldStatus.textContent = active ? "On" : "Off";
 }
 
 var SETTINGS = [
@@ -137,7 +126,6 @@ var SETTINGS = [
   { id: "#autoSelectFirstDate", key: "autoSelectFirstDate", type: "checkbox" },
   { id: "#serverSync", key: "serverSync", type: "checkbox" },
   { id: "#autoCloudflareTick", key: "autoCloudflareTick", type: "checkbox", onChange: syncShieldCard },
-  { id: "#cloudflareDebuggerClick", key: "cloudflareDebuggerClick", type: "checkbox", onChange: syncShieldCard },
   { id: "#autofill", key: "autofillLogin", type: "checkbox" },
   { id: "#telegramAlert", key: "telegramAlert", type: "checkbox" },
   { id: "#telegramViaAdb", key: "telegramViaAdb", type: "checkbox" },

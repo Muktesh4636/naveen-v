@@ -8,6 +8,7 @@ const OUT = "dist";
 // popup both reject ESM output.
 const TARGETS = [
   { entry: "src/content.js", outfile: `${OUT}/scripts/content.js` },
+  { entry: "src/cf-frame-click.js", outfile: `${OUT}/scripts/cf-frame-click.js` },
   { entry: "src/questions.js", outfile: `${OUT}/scripts/questions.js` },
   { entry: "src/popup.js", outfile: `${OUT}/popup/script.js` },
 ];

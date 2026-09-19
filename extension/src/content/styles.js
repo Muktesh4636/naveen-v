@@ -926,6 +926,161 @@ export var CSS = `
   0% { transform: scale(0.6); opacity: 1; }
   100% { transform: scale(2.2); opacity: 0; }
 }
+
+/* Sample A — Tik Tik status HUD (bottom-right) */
+#${ID.hud}.${CLS.hud} {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483646;
+  width: 360px;
+  max-width: calc(100vw - 20px);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  box-sizing: border-box;
+  background: #ffffff;
+  border-radius: 14px;
+  box-shadow: 0 14px 36px rgba(11, 58, 110, 0.28);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  color: #0f172a;
+  pointer-events: auto;
+}
+#${ID.hud} .${CLS.hudHead} {
+  background: #0b3a6e;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 12px 18px;
+}
+#${ID.hud} .${CLS.hudName} {
+  font-size: 18px;
+  font-weight: 800;
+  padding: 16px 18px 0;
+  line-height: 1.3;
+}
+#${ID.hud} .${CLS.hudVisa} {
+  font-size: 14px;
+  color: #64748b;
+  padding: 4px 18px 12px;
+}
+#${ID.hud} .${CLS.hudBody} {
+  padding: 0 18px 12px;
+  min-height: 0;
+}
+#${ID.hud} .${CLS.hudCount} {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  background: #eef4fb;
+  border: 1px solid #c7d7ee;
+  border-radius: 10px;
+}
+#${ID.hud} .${CLS.hudCountLabel} {
+  font-size: 14px;
+  color: #334155;
+  font-weight: 600;
+}
+#${ID.hud} .${CLS.hudSecs} {
+  font-size: 36px;
+  font-weight: 800;
+  color: #0b3a6e;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+#${ID.hud} .${CLS.hudStuck} {
+  padding: 14px 16px;
+  background: #f8fafc;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #334155;
+}
+#${ID.hud} .${CLS.hudSubmit} {
+  padding: 14px 16px;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  border-radius: 10px;
+}
+#${ID.hud} .${CLS.hudSubmitTitle} {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #c2410c;
+}
+#${ID.hud} .${CLS.hudSubmitSub} {
+  margin-top: 4px;
+  font-size: 13px;
+  color: #9a3412;
+}
+#${ID.hud} .${CLS.hudCities} {
+  display: none !important;
+}
+#${ID.hud} .${CLS.hudCitiesTitle},
+#${ID.hud} .${CLS.hudHistTitle} {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+#${ID.hud} .${CLS.hudCityLabel} {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #0f172a;
+  padding: 4px 0;
+  cursor: pointer;
+  user-select: none;
+}
+#${ID.hud} .${CLS.hudCityLabel} input {
+  margin-top: 2px;
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+#${ID.hud} .${CLS.hudHist} {
+  border-top: 1px solid #e2e8f0;
+  padding: 12px 18px 16px;
+}
+#${ID.hud} .${CLS.hudHistRow} {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  padding: 5px 0;
+  color: #0f172a;
+}
+#${ID.hud} .${CLS.hudHistRow} > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+#${ID.hud} .${CLS.hudPillOk},
+#${ID.hud} .${CLS.hudPillNo} {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+#${ID.hud} .${CLS.hudPillOk} {
+  background: #dcfce7;
+  color: #166534;
+}
+#${ID.hud} .${CLS.hudPillNo} {
+  background: #f1f5f9;
+  color: #64748b;
+}
 `;
 
 export function injectStyles() {

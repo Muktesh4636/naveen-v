@@ -263,20 +263,74 @@ def telegram_relay(request):
 
 
 @csrf_exempt
-@require_http_methods(["POST", "OPTIONS"])
+@require_http_methods(["GET", "POST", "OPTIONS"])
 def human_click_sample(request):
     """
-    Extension → server: one Verify-you-are-human click sample for model training.
+    Extension ↔ server: Verify-you-are-human click samples.
 
-    Body: {
-      profile?: { id, email, name, visa },
-      sample: { hoverMs, pressMs, approachMs, path, down, up, target, viewport, ... },
-      client_id?: str,
-      profile_meta?: { avgHoverMs, avgPressMs, sampleCount, ... }
-    }
+    POST — upload one sample for training.
+    GET  — download a replay library (deduped) so other clients can click like humans.
     """
     if request.method == "OPTIONS":
         return JsonResponse({}, status=204)
+
+    if request.method == "GET":
+        try:
+            limit = int(request.GET.get("limit") or 40)
+        except (TypeError, ValueError):
+            limit = 40
+        limit = max(5, min(limit, 80))
+
+        rows = list(HumanClickSample.objects.order_by("-id")[: limit * 3])
+        samples = []
+        seen = set()
+        for row in rows:
+            cid = str(row.client_id or "").strip()
+            if cid:
+                if cid in seen:
+                    continue
+                seen.add(cid)
+            raw = row.sample if isinstance(row.sample, dict) else {}
+            path = raw.get("path") if isinstance(raw.get("path"), list) else []
+            if len(path) > 200:
+                path = path[-200:]
+            hover = int(row.hover_ms or raw.get("hoverMs") or 0)
+            press = int(row.press_ms or raw.get("pressMs") or 0)
+            # Skip empty / junk blur saves (no path + default 500ms press).
+            if not path and press >= 480:
+                continue
+            samples.append(
+                {
+                    "hoverMs": hover,
+                    "pressMs": press,
+                    "approachMs": int(row.approach_ms or raw.get("approachMs") or hover or 0),
+                    "path": path,
+                    "pointerType": str(row.pointer_type or raw.get("pointerType") or "mouse")[:32],
+                    "at": int(raw.get("at") or 0) or None,
+                    "source": "server",
+                }
+            )
+            if len(samples) >= limit:
+                break
+
+        # Prefer path-rich samples first for clients that only take a subset.
+        samples.sort(key=lambda s: (-(len(s.get("path") or [])), -(s.get("at") or 0)))
+        avg_hover = 0
+        avg_press = 0
+        if samples:
+            avg_hover = int(sum(s["hoverMs"] for s in samples) / len(samples))
+            avg_press = int(sum(s["pressMs"] for s in samples) / len(samples))
+        return JsonResponse(
+            {
+                "success": True,
+                "samples": samples,
+                "count": len(samples),
+                "avgHoverMs": avg_hover,
+                "avgPressMs": avg_press,
+                "liveTrained": True,
+                "source": "server-library",
+            }
+        )
 
     try:
         body = json.loads(request.body)

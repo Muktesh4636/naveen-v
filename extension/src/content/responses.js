@@ -28,6 +28,8 @@ import {
   dateInRange,
   pickPreferredDateIndex,
   noteDatePicked,
+  noteTikTikHudSlots,
+  tryNextDateOnThisCity,
   AI_DATE_SELECT_MS,
   AI_BOOK_SELECT_MS,
   AI_TIME_DOM_WAIT_MS,
@@ -291,22 +293,63 @@ const TIME_SLOT_SELECTOR = [
 var _cachedScheduleEntries = null;
 var _cachedEntriesDate = null;
 var _timePickWatchdog = null;
+var _activeBookDate = "";
 
 function cacheScheduleEntries(entries, dateStr) {
   _cachedScheduleEntries = entries;
   _cachedEntriesDate = dateStr ? String(dateStr).slice(0, 10) : null;
 }
 
+/** If this date has no times, try the other dates before leaving the city. */
+const NO_TIME_SLOTS_MS = 8_000;
+var _movingToNextDate = false;
+
+async function moveToNextDateOrHop(reason) {
+  if (_movingToNextDate || isSubmitPendingConfirm()) return false;
+  _movingToNextDate = true;
+  try {
+    stopTimePickWatchdog();
+    _cachedScheduleEntries = null;
+    _cachedEntriesDate = null;
+    const next = await tryNextDateOnThisCity(reason);
+    if (next) {
+      _activeBookDate = next;
+      scheduleDatePickWatchdog(next, true);
+      scheduleTimePickWatchdog(next, AI_BOOK_SLOT_INDEX);
+      return true;
+    }
+    resumeCityRotateAfterBooking();
+    setTikTikStatus("No time slots left on this city — next city in 15–18s…");
+    return false;
+  } finally {
+    _movingToNextDate = false;
+  }
+}
+
 function scheduleTimePickWatchdog(dateStr, slotIndex = 0) {
   if (_timePickWatchdog) vs.clear(_timePickWatchdog);
   const targetDate = dateStr ? String(dateStr).slice(0, 10) : null;
-  let rounds = 0;
+  const started = Date.now();
 
   const run = async () => {
-    if (!vs.alive || isOpsFrozen() || ++rounds > 240) return;
+    if (!vs.alive || isOpsFrozen()) return;
     if (isTimeSlotPicked()) return;
 
-    const entries = (_cachedScheduleEntries || []).filter((e) => e && e.Time);
+    if (Date.now() - started >= NO_TIME_SLOTS_MS) {
+      const cached = _cachedEntriesDate === targetDate
+        ? (_cachedScheduleEntries || []).filter((e) => e && e.Time)
+        : [];
+      const visible = document.querySelector(TIME_SLOT_SELECTOR);
+      if (!cached.length && !visible) {
+        await moveToNextDateOrHop("No time slots");
+        return;
+      }
+      if (Date.now() - started >= 20_000) return;
+    }
+
+    const entries = _cachedEntriesDate === targetDate
+      ? (_cachedScheduleEntries || []).filter((e) => e && e.Time)
+      : [];
     if (entries.length) {
       const { entry, slotIndex: idx } = pickScheduleSlot(entries);
       setTikTikStatus(`Watchdog: picking time slot #${idx + 1}…`);
@@ -378,6 +421,7 @@ export async function autoSelectFirstDate(scheduleDays, hasError = false) {
 
   setTikTikStatus(`Selecting date #${idx + 1}: ${picked} (fast)…`);
   noteDatePicked(picked);
+  _activeBookDate = String(picked).slice(0, 10);
   // Only need the input — do not wait for the open calendar popup.
   await vs.waitFor(DATE_PICKER_SELECTOR, { attempts: 80, interval: AI_BOOK_POLL_MS });
 
@@ -574,6 +618,7 @@ export async function handleEvent(event) {
       const postId = String(parsed.params.postId || "");
       const bestDate = normalizedDates[0];
       const dateTo = normalizedDates[normalizedDates.length - 1];
+      noteTikTikHudSlots(postId, true, "");
       setTikTikStatus(
         `${dayCount} date${dayCount === 1 ? "" : "s"} — alerting others FAST…`
       );
@@ -586,6 +631,8 @@ export async function handleEvent(event) {
         dateTo,
         bestDate,
       }).catch(() => {});
+    } else if (!parsed.response.HasError) {
+      noteTikTikHudSlots(String(parsed.params.postId || ""), false, "");
     }
 
     const ai = await getArmedAiConfig();
@@ -638,6 +685,7 @@ export async function handleEvent(event) {
         rangeFrom: rangeOrAi?.from || null,
         rangeTo: rangeOrAi?.to || null,
       }).catch(() => {});
+      noteTikTikHudSlots(postId, true, post?.Name || "");
     }
 
     await alertOnAvailability(parsed.response.ScheduleDays, {
@@ -726,11 +774,15 @@ export async function handleEvent(event) {
       }
     }
     const entries = (parsed.response.ScheduleEntries || []).filter((e) => e && e.Time);
+    if (_activeBookDate && targetDate !== _activeBookDate) {
+      await submitContribution();
+      return;
+    }
+    const open = entries.filter(
+      (e) => e.EntriesAvailable == null || Number(e.EntriesAvailable) > 0
+    );
     showScheduleEntries(entries, targetDate, post?.Name);
     if (entries.length) {
-      const open = entries.filter(
-        (e) => e.EntriesAvailable == null || Number(e.EntriesAvailable) > 0
-      );
       const totalAvail = open.reduce((sum, e) => {
         const n = Number(e.EntriesAvailable);
         return sum + (Number.isFinite(n) ? n : 0);
@@ -744,18 +796,17 @@ export async function handleEvent(event) {
     if (isSubmitPendingConfirm()) {
       haltCityRotateForBooking();
       setTikTikStatus("Submit pending — staying on this city (time reload ignored)…");
-    } else if (entries.length) {
+    } else if (open.length) {
       // Keep hold while time → Submit runs
       haltCityRotateForBooking();
       await notifyTelegramTimeScreenshot(
         post?.Name,
         parsed.params.Date,
-        entries.length
+        open.length
       );
     } else {
-      // No time slots on this date — resume city hop
-      resumeCityRotateAfterBooking();
-      setTikTikStatus("No time slots on this date — next city in 15–18s…");
+      // Times missing or all full — try the other dates on this city first.
+      await moveToNextDateOrHop("No time slots on this date");
     }
     await submitContribution();
   }

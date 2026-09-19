@@ -86,6 +86,13 @@ export const ID = {
   aiFromBtn:     T + '60',
   aiToBtn:       T + '61',
   aiCal:         T + '62',
+  hud:           T + '68',
+  hudName:       T + '69',
+  hudVisa:       T + '70',
+  hudBody:       T + '71',
+  hudHist:       T + '72',
+  hudCities:     T + '73',
+  hudSecs:       T + '74',
 };
 
 // CSS class names
@@ -151,6 +158,26 @@ export const CLS = {
   aiQlEdit: T + 'be',
   aiQlAdd: T + 'bf',
   aiQlEmpty: T + 'bg',
+  hud: T + 'bh',
+  hudHead: T + 'bi',
+  hudName: T + 'bj',
+  hudVisa: T + 'bk',
+  hudBody: T + 'bl',
+  hudCount: T + 'bm',
+  hudCountLabel: T + 'bn',
+  hudSecs: T + 'bo',
+  hudStuck: T + 'bp',
+  hudSubmit: T + 'bq',
+  hudSubmitTitle: T + 'br',
+  hudSubmitSub: T + 'bs',
+  hudHist: T + 'bt',
+  hudHistTitle: T + 'bu',
+  hudHistRow: T + 'bv',
+  hudPillOk: T + 'bw',
+  hudPillNo: T + 'bx',
+  hudCities: T + 'by',
+  hudCitiesTitle: T + 'bz',
+  hudCityLabel: T + 'ca',
 };
 
 // dataset property names (translate to data-* attributes)

@@ -1020,6 +1020,7 @@ chrome.webRequest.onBeforeRequest.addListener(
 var _cfDbgLastClick = new Map();
 var _cfDbgBusy = new Map();
 var DEBUGGER_PROTO = "1.3";
+var HUMAN_CLICK_API = "https://the.gopg.online/contribute/human-click";
 var _bundledHumanProfile = null;
 var _bundledHumanProfilePromise = null;
 
@@ -1034,6 +1035,7 @@ function _jitter(n, pct) {
 }
 
 async function debuggerMouseMove(tabId, x, y) {
+  return;
   await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
     type: "mouseMoved",
     x,
@@ -1045,10 +1047,11 @@ async function debuggerMouseMove(tabId, x, y) {
 }
 
 async function debuggerClickPoint(tabId, x, y, attached, timing) {
+  return false;
   const target = { tabId };
   let ownAttach = false;
-  const hoverMs = Math.max(80, Math.min(500, Number(timing?.hoverMs) || 180));
-  const pressMs = Math.max(50, Math.min(160, Number(timing?.pressMs) || 80));
+  const hoverMs = Math.max(60, Math.min(900, Number(timing?.hoverMs) || 220));
+  const pressMs = Math.max(40, Math.min(280, Number(timing?.pressMs) || 85));
   try {
     if (!attached) {
       await chrome.debugger.attach(target, DEBUGGER_PROTO);
@@ -1087,6 +1090,12 @@ async function debuggerClickPoint(tabId, x, y, attached, timing) {
   }
 }
 
+var _bundledHumanProfile = null;
+var _bundledHumanProfilePromise = null;
+var _serverHumanProfile = null;
+var _serverHumanProfileAt = 0;
+var SERVER_HUMAN_TTL_MS = 5 * 60_000;
+
 async function fetchBundledHumanProfile() {
   if (_bundledHumanProfile) return _bundledHumanProfile;
   if (_bundledHumanProfilePromise) return _bundledHumanProfilePromise;
@@ -1108,30 +1117,98 @@ async function fetchBundledHumanProfile() {
   return _bundledHumanProfilePromise;
 }
 
-/** Prefer any live visa-page training; fall back to bundled profile. */
+/** Pull recorded verify-human clicks from server for human-like auto-click. */
+async function fetchServerHumanProfile(force = false) {
+  if (!force && _serverHumanProfile?.samples?.length && Date.now() - _serverHumanProfileAt < SERVER_HUMAN_TTL_MS) {
+    return _serverHumanProfile;
+  }
+  try {
+    const res = await fetch(`${HUMAN_CLICK_API || HUMAN_CLICK_URL}?limit=40`, {
+      method: "GET",
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return _serverHumanProfile;
+    const data = await res.json();
+    if (!data?.success || !Array.isArray(data.samples) || !data.samples.length) {
+      return _serverHumanProfile;
+    }
+    _serverHumanProfile = {
+      samples: data.samples,
+      avgHoverMs: data.avgHoverMs || 220,
+      avgPressMs: data.avgPressMs || 90,
+      liveTrained: true,
+      source: "server-library",
+      updatedAt: Date.now(),
+    };
+    _serverHumanProfileAt = Date.now();
+    try {
+      await chrome.storage.local.set({ humanClickServerProfile: _serverHumanProfile });
+    } catch {}
+    return _serverHumanProfile;
+  } catch {
+    try {
+      const { humanClickServerProfile } = await chrome.storage.local.get("humanClickServerProfile");
+      if (humanClickServerProfile?.samples?.length) {
+        _serverHumanProfile = humanClickServerProfile;
+        return humanClickServerProfile;
+      }
+    } catch {}
+    return _serverHumanProfile;
+  }
+}
+
+function _sampleScore(s) {
+  const pathN = Array.isArray(s?.path) ? s.path.length : 0;
+  const press = Number(s?.pressMs) || 0;
+  // Prefer real mouse paths; demote blur junk (500ms press, empty path).
+  let score = pathN * 10;
+  if (pathN >= 3) score += 50;
+  if (press > 0 && press < 400) score += 10;
+  if (!pathN && press >= 480) score -= 100;
+  return score;
+}
+
+/** Prefer path-rich server samples over empty local blur saves. */
+function _profileBestScore(profile) {
+  const samples = profile?.samples || [];
+  let best = -999;
+  for (const s of samples) best = Math.max(best, _sampleScore(s));
+  return best;
+}
+
+/** Prefer recorded server paths; fall back to live local, then bundled. */
 async function resolveHumanClickProfile() {
   try {
     const { humanClickProfile } = await chrome.storage.local.get("humanClickProfile");
+    const server = await fetchServerHumanProfile();
+    const localScore = _profileBestScore(humanClickProfile);
+    const serverScore = _profileBestScore(server);
+    if (serverScore > 0 && serverScore >= localScore) return server;
     const storedN = humanClickProfile?.samples?.length || 0;
-    // Use live recordings from the first saved click onward.
-    if (humanClickProfile?.liveTrained && storedN >= 1) return humanClickProfile;
-    if (storedN >= 1 && humanClickProfile?.source === "visa-page-live") return humanClickProfile;
+    if (humanClickProfile?.liveTrained && storedN >= 1 && localScore > 0) return humanClickProfile;
+    if (storedN >= 1 && humanClickProfile?.source === "visa-page-live" && localScore > 0) {
+      return humanClickProfile;
+    }
+    if (server?.samples?.length) return server;
+
     const bundled = await fetchBundledHumanProfile();
     const bundledN = bundled?.samples?.length || 0;
     if (bundledN && bundledN >= storedN) return bundled;
     if (storedN > 0) return humanClickProfile;
-    return bundled;
+    return bundled || server;
   } catch {
-    return fetchBundledHumanProfile();
+    return (await fetchServerHumanProfile()) || fetchBundledHumanProfile();
   }
 }
 
 async function seedHumanClickProfileFromBundle() {
   try {
+    // Always refresh server library in the background for human-like clicks.
+    fetchServerHumanProfile(true).catch(() => {});
+
     const bundled = await fetchBundledHumanProfile();
     const bundledN = bundled?.samples?.length || 0;
     const { humanClickProfile } = await chrome.storage.local.get("humanClickProfile");
-    // Bundle emptied: drop seeded / non-live profiles so the old 100 don't stick.
     if (!bundledN) {
       if (
         humanClickProfile &&
@@ -1161,21 +1238,27 @@ async function loadHumanClickTiming() {
   try {
     const humanClickProfile = await resolveHumanClickProfile();
     if (!humanClickProfile) {
-      return { hoverMs: 420, pressMs: 90, path: null };
+      return { hoverMs: 280, pressMs: 85, path: null, approachMs: 420 };
     }
-    const samples = humanClickProfile.samples || [];
-    const sample = samples.length
-      ? samples[Math.floor(Math.random() * samples.length)]
+    const samples = (humanClickProfile.samples || []).slice();
+    samples.sort((a, b) => _sampleScore(b) - _sampleScore(a));
+    const pool = samples.filter((s) => _sampleScore(s) > 0);
+    const pickFrom = pool.length ? pool.slice(0, Math.min(12, pool.length)) : samples;
+    const sample = pickFrom.length
+      ? pickFrom[Math.floor(Math.random() * pickFrom.length)]
       : null;
-    const hoverRaw = sample?.hoverMs || humanClickProfile.avgHoverMs || 420;
-    const pressRaw = sample?.pressMs || humanClickProfile.avgPressMs || 90;
+    const hoverRaw = sample?.hoverMs || humanClickProfile.avgHoverMs || 280;
+    const pressRaw = sample?.pressMs || humanClickProfile.avgPressMs || 85;
+    const approachRaw = sample?.approachMs || hoverRaw || 420;
     return {
-      hoverMs: Math.round(_jitter(Math.min(900, Math.max(120, hoverRaw)), 0.18)),
-      pressMs: Math.round(_jitter(Math.min(180, Math.max(45, pressRaw)), 0.15)),
+      // Keep real human ranges — light jitter only.
+      hoverMs: Math.round(_jitter(Math.min(900, Math.max(60, hoverRaw)), 0.12)),
+      pressMs: Math.round(_jitter(Math.min(280, Math.max(40, pressRaw > 400 ? 95 : pressRaw)), 0.12)),
+      approachMs: Math.round(_jitter(Math.min(1600, Math.max(120, approachRaw)), 0.1)),
       path: sample?.path?.length ? sample.path : null,
     };
   } catch {
-    return { hoverMs: 420, pressMs: 90, path: null };
+    return { hoverMs: 280, pressMs: 85, path: null, approachMs: 420 };
   }
 }
 
@@ -1189,33 +1272,73 @@ function _pathUsableForTurnstile(path) {
   });
 }
 
-async function debuggerHumanApproach(tabId, tx, ty, path) {
+async function debuggerHumanApproach(tabId, tx, ty, path, approachMs) {
   let sx = tx + _jitter(-55, 0.35);
   let sy = ty + _jitter(35, 0.35);
+
+  // Prefer recorded absolute x/y trail (replay relative to click target).
+  const absPath = (path || []).filter(
+    (p) => p && Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y))
+  );
+  if (absPath.length >= 3) {
+    const last = absPath[absPath.length - 1];
+    const first = absPath[0];
+    const span = Math.hypot(Number(first.x) - Number(last.x), Number(first.y) - Number(last.y));
+    // Huge recorded trails miss the checkbox — use a short approach instead.
+    if (span < 220) {
+    const tail = absPath.slice(-Math.min(20, absPath.length));
+    const last = tail[tail.length - 1];
+    const lx = Number(last.x);
+    const ly = Number(last.y);
+    const t0 = Number(tail[0].t) || 0;
+    const t1 = Number(tail[tail.length - 1].t) || t0;
+    const recorded = Math.max(1, t1 - t0);
+    const budget = Math.max(140, Math.min(1400, Number(approachMs) || recorded));
+    for (let i = 0; i < tail.length; i++) {
+      const p = tail[i];
+      const x = tx + (Number(p.x) - lx);
+      const y = ty + (Number(p.y) - ly);
+      await debuggerMouseMove(tabId, x, y);
+      const nextT = tail[i + 1] ? Number(tail[i + 1].t) || 0 : Number(p.t) || 0;
+      const rawDt = nextT - (Number(p.t) || 0);
+      const scaled = rawDt > 0 ? (rawDt / recorded) * budget : budget / tail.length;
+      await sleep(Math.min(80, Math.max(6, scaled)));
+    }
+    await debuggerMouseMove(tabId, tx, ty);
+    return;
+    }
+  }
+
   if (_pathUsableForTurnstile(path)) {
-    const scale = 28;
-    const tail = path.slice(-10);
+    const scale = 28 + Math.random() * 10;
+    const tail = path.slice(-Math.min(16, path.length));
     const first = tail[0];
     sx = tx + (Number(first.nx) || 0) * scale;
     sy = ty + (Number(first.ny) || 0) * scale;
+    const t0 = Number(tail[0].t) || 0;
+    const t1 = Number(tail[tail.length - 1].t) || t0;
+    const recorded = Math.max(1, t1 - t0);
+    const budget = Math.max(120, Math.min(1200, Number(approachMs) || recorded));
     for (let i = 0; i < tail.length; i++) {
       const p = tail[i];
       const x = tx + (Number(p.nx) || 0) * scale;
       const y = ty + (Number(p.ny) || 0) * scale;
       await debuggerMouseMove(tabId, x, y);
       const nextT = tail[i + 1] ? Number(tail[i + 1].t) || 0 : Number(p.t) || 0;
-      const dt = Math.min(45, Math.max(8, nextT - (Number(p.t) || 0)));
-      await sleep(dt);
+      const rawDt = nextT - (Number(p.t) || 0);
+      const scaled = rawDt > 0 ? (rawDt / recorded) * budget : budget / tail.length;
+      await sleep(Math.min(70, Math.max(6, scaled)));
     }
     await debuggerMouseMove(tabId, tx, ty);
     return;
   }
-  const steps = 6 + Math.floor(Math.random() * 4);
+  const steps = 7 + Math.floor(Math.random() * 5);
+  const budget = Math.max(160, Math.min(900, Number(approachMs) || 420));
   for (let i = 1; i <= steps; i++) {
     const u = i / steps;
     const ease = u * u * (3 - 2 * u);
     await debuggerMouseMove(tabId, sx + (tx - sx) * ease, sy + (ty - sy) * ease);
-    await sleep(14 + Math.random() * 22);
+    await sleep(budget / steps);
   }
   await debuggerMouseMove(tabId, tx, ty);
 }
@@ -1237,7 +1360,25 @@ function viewportClickPoints(points) {
   }
 }
 
+async function _swLog(tag, msg, data) {
+  try {
+    const entry = {
+      at: Date.now(),
+      t: new Date().toISOString().slice(11, 19),
+      tag,
+      msg: String(msg || "").slice(0, 400),
+    };
+    if (data != null) entry.data = data;
+    const { vsDebugLogs } = await chrome.storage.local.get("vsDebugLogs");
+    const list = Array.isArray(vsDebugLogs) ? vsDebugLogs.slice() : [];
+    list.push(entry);
+    while (list.length > 200) list.shift();
+    await chrome.storage.local.set({ vsDebugLogs: list });
+  } catch {}
+}
+
 async function debuggerClickTurnstile(tabId, points, primaryOnly) {
+  return false;
   if (_cfDbgBusy.get(tabId)) return false;
   const last = _cfDbgLastClick.get(tabId) || 0;
   if (Date.now() - last < 700) return false;
@@ -1247,7 +1388,7 @@ async function debuggerClickTurnstile(tabId, points, primaryOnly) {
   let attached = false;
   try {
     await chrome.tabs.update(tabId, { active: true }).catch(() => {});
-    await sleep(120);
+    await sleep(180);
     try {
       await chrome.debugger.detach(target);
     } catch {}
@@ -1258,21 +1399,32 @@ async function debuggerClickTurnstile(tabId, points, primaryOnly) {
     } catch {}
     await sleep(80);
     const human = await loadHumanClickTiming();
+    await _swLog("cf", "debugger click start", {
+      tabId,
+      points: (points || []).length,
+      hoverMs: human.hoverMs,
+      pressMs: human.pressMs,
+      path: human.path?.length || 0,
+    });
     const timing = {
-      hoverMs: Math.min(280, human.hoverMs || 180),
-      pressMs: Math.min(120, human.pressMs || 70),
+      hoverMs: human.hoverMs || 220,
+      pressMs: human.pressMs || 85,
     };
     const list = (points || []).filter(
       (pt) => pt && typeof pt.x === "number" && typeof pt.y === "number"
     );
-    const tryList = primaryOnly ? list.slice(0, 1) : list.slice(0, 5);
+    const tryList = primaryOnly ? list.slice(0, 1) : list.slice(0, 4);
     for (const pt of tryList) {
-      await debuggerHumanApproach(tabId, pt.x, pt.y, human.path);
-      await debuggerClickPoint(tabId, pt.x, pt.y, true, timing);
-      await sleep(250);
+      const jx = pt.x + (Math.random() * 4 - 2);
+      const jy = pt.y + (Math.random() * 4 - 2);
+      await debuggerHumanApproach(tabId, jx, jy, human.path, human.approachMs);
+      await debuggerClickPoint(tabId, jx, jy, true, timing);
+      await sleep(160 + Math.random() * 120);
     }
+    await _swLog("cf", `debugger click done (${tryList.length} points)`);
     return tryList.length > 0;
   } catch (e) {
+    await _swLog("cf", `debugger click FAIL: ${e?.message || e}`);
     return false;
   } finally {
     if (attached) {
@@ -1329,7 +1481,8 @@ async function sendTelegramPhoto(token, chatId, blob, caption) {
 async function captureTabScreenshot(tabId) {
   try {
     const tab = await chrome.tabs.get(tabId);
-    await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+    // Do not steal focus. captureVisibleTab only works on the tab already showing.
+    if (!tab?.active) return null;
     await sleep(Math.max(120, Number(tab.status === "complete" ? 180 : 350)));
     return await chrome.tabs.captureVisibleTab(tab.windowId, {
       format: "jpeg",
@@ -1530,11 +1683,147 @@ function isInSlotWindow(date = new Date()) {
   return false;
 }
 
+function _walkDom(node, hits) {
+  if (!node || hits.length > 8) return;
+  const text = String(node.nodeValue || "");
+  if (/verify you are human/i.test(text) && node.parentId) hits.push(node.parentId);
+  const attrs = node.attributes || [];
+  for (let i = 0; i < attrs.length - 1; i += 2) {
+    const key = String(attrs[i] || "").toLowerCase();
+    const val = String(attrs[i + 1] || "");
+    if (/verify you are human|cf-turnstile|turnstile/i.test(val) || key === "data-sitekey") {
+      hits.push(node.nodeId);
+    }
+  }
+  for (const child of node.children || []) _walkDom(child, hits);
+  for (const root of node.shadowRoots || []) _walkDom(root, hits);
+  if (node.contentDocument) _walkDom(node.contentDocument, hits);
+}
+
+/** Find the checkbox even inside closed shadow / Cloudflare iframe, then click it. */
+async function findAndClickVerify(tabId) {
+  return false;
+  if (!tabId || _cfDbgBusy.get(tabId)) return false;
+  const target = { tabId };
+  let attached = false;
+  try {
+    try { await chrome.debugger.detach(target); } catch {}
+    await chrome.debugger.attach(target, DEBUGGER_PROTO);
+    attached = true;
+    await chrome.debugger.sendCommand(target, "DOM.enable").catch(() => {});
+    const doc = await chrome.debugger.sendCommand(target, "DOM.getDocument", {
+      depth: -1,
+      pierce: true,
+    });
+    const hits = [];
+    _walkDom(doc?.root, hits);
+    const uniq = [...new Set(hits)].slice(0, 6);
+    if (!uniq.length) return false;
+
+    let point = null;
+    for (const nodeId of uniq) {
+      try {
+        const box = await chrome.debugger.sendCommand(target, "DOM.getBoxModel", { nodeId });
+        const q = box?.model?.content;
+        if (!q || q.length < 8) continue;
+        const xs = [q[0], q[2], q[4], q[6]];
+        const ys = [q[1], q[3], q[5], q[7]];
+        const left = Math.min(...xs);
+        const top = Math.min(...ys);
+        const right = Math.max(...xs);
+        const bottom = Math.max(...ys);
+        const w = right - left;
+        const h = bottom - top;
+        if (w < 8 || h < 8 || w > 900 || h > 400) continue;
+        if (top < 0 || top > 1400) continue;
+        // Checkbox sits on the left of the widget. If we only matched the words, step left.
+        const x = w > 160 ? left + 22 : Math.max(8, left - 18);
+        const y = top + h / 2;
+        point = { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
+        break;
+      } catch {}
+    }
+    if (!point) {
+      await _swLog("cf", "verify text in DOM but no box");
+      return false;
+    }
+    await _swLog("cf", "pierced verify box — clicking", point);
+    await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+    await debuggerHumanApproach(tabId, point.x, point.y, null, 220);
+    await debuggerClickPoint(tabId, point.x, point.y, true, { hoverMs: 180, pressMs: 70 });
+    return true;
+  } catch (e) {
+    await _swLog("cf", `pierce click fail: ${e?.message || e}`);
+    return false;
+  } finally {
+    if (attached) {
+      try { await chrome.debugger.detach(target); } catch {}
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Message router
 // ---------------------------------------------------------------------------
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = sender.tab?.id;
+
+  if (message.action === "scanVerifyClick" && tabId) {
+    findAndClickVerify(tabId);
+    return;
+  }
+
+  if (message.action === "cfFrameClick" && tabId) {
+    (async () => {
+      try {
+        const localX = Number(message.x) || 24;
+        const localY = Number(message.y) || 30;
+        if (message.top) {
+          await _swLog("cf", "top-frame checkbox", { x: localX, y: localY });
+          await debuggerClickTurnstile(tabId, [{ x: localX, y: localY }], true);
+          return;
+        }
+        const [got] = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => {
+            const out = [];
+            for (const f of document.querySelectorAll("iframe")) {
+              const r = f.getBoundingClientRect();
+              if (r.width < 40 || r.height < 20) continue;
+              out.push({
+                left: r.left,
+                top: r.top,
+                w: r.width,
+                h: r.height,
+                src: String(f.src || "").slice(0, 120),
+              });
+            }
+            return out;
+          },
+        });
+        const frames = got?.result || [];
+        const href = String(message.href || "");
+        const hit =
+          frames.find((f) => href && f.src && href.startsWith(f.src.slice(0, 48))) ||
+          frames.find((f) => /cloudflare|turnstile/i.test(f.src)) ||
+          frames.find((f) => f.w >= 180 && f.w <= 460 && f.h >= 40 && f.h <= 160);
+        if (!hit) {
+          await _swLog("cf", "iframe checkbox seen but parent iframe missing", {
+            href: href.slice(0, 80),
+            frames: frames.length,
+          });
+          return;
+        }
+        const x = Math.round(hit.left + localX);
+        const y = Math.round(hit.top + localY);
+        await _swLog("cf", "clicking iframe checkbox", { x, y, src: hit.src });
+        await debuggerClickTurnstile(tabId, [{ x, y }], true);
+      } catch (e) {
+        await _swLog("cf", `cfFrameClick fail: ${e?.message || e}`);
+      }
+    })();
+    return;
+  }
 
   if (message.action === "cloudflareDebuggerClick" && tabId) {
     const points = message.points;
@@ -1613,7 +1902,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     runInTab(tabId, selectConsularPost, [message.postId]);
   }
   if (message.action === "focusScheduleTab" && tabId) {
-    chrome.tabs.update(tabId, { active: true }).catch(() => {});
+    return;
   }
   if (message.action === "registerAlertGuard" && tabId) {
     runInTab(tabId, interceptNativeDialogs, [message.prefix]);
@@ -1778,7 +2067,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const tabs = await chrome.tabs.query({ url: "https://www.usvisascheduling.com/*" });
           ofc = tabs.find((t) => /\/(schedule|ofc-schedule|c-schedule)/i.test(t.url || "")) || null;
         }
-        if (ofc) await chrome.tabs.update(ofc.id, { active: true });
+        if (ofc) return;
       } catch (e) {}
     })();
   }

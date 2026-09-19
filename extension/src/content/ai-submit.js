@@ -35,6 +35,12 @@ import {
   markForceCityApplied,
   pollForceCity,
 } from "./tik-tik-coord.js";
+import {
+  noteHudCityHop,
+  noteHudCitySlots,
+  startTikTikHudLoop,
+  stopTikTikHudLoop,
+} from "./tik-tik-hud.js";
 
 export var AI_SUBMIT_KEY = "aiSubmitByAccount";
 
@@ -480,49 +486,58 @@ function _datepickerToIso() {
 }
 
 /**
- * After Submit error: try another in-range date on this city.
- * Returns true if a next date was selected; false if none left (caller should hop city).
+ * Try another in-range date on this city (no time slots, or Submit failed).
+ * Returns the date selected, or null if none left (caller should hop city).
  */
-async function tryNextInRangeDateAfterSubmitFail() {
-  if (_opsFrozen || isInterviewPage() || !isOfcSchedulePage()) return false;
+export async function tryNextDateOnThisCity(reason = "No time slots") {
+  if (_opsFrozen || isInterviewPage() || !isOfcSchedulePage()) return null;
+  if (_submitPending) return null;
+
   const ai = await getArmedAiConfig();
-  if (!ai) return false;
+  const range = ai || (await getDateRangeConfig());
+  if (!range?.from || !range?.to) return null;
 
   const select = document.querySelector("#post_select");
   const postId = select ? String(select.value) : "";
-  if (!postId) return false;
+  if (!postId) return null;
 
   const current = _datepickerToIso();
   if (current) _markSubmitDateFailed(current);
 
   const posts = await getPosts();
   const post = posts.find((p) => String(p.ID) === postId);
-  const inRange = filterDaysInAiRange(post?.Days || [], ai.from, ai.to);
+  const inRange = filterDaysInAiRange(post?.Days || [], range.from, range.to);
   const remaining = inRange.filter((d) => !_failedSubmitDates.has(String(d.Date).slice(0, 10)));
-  if (!remaining.length) return false;
+  if (!remaining.length) return null;
 
   const idx = pickPreferredDateIndex(remaining.length);
   const next = remaining[idx];
-  if (!next?.Date) return false;
+  if (!next?.Date) return null;
 
   const date = String(next.Date).slice(0, 10);
   noteDatePicked(date);
+  // Fresh hold so walking dates does not trip the 45s city timeout.
+  _holdStartedAt = 0;
   haltCityRotateForBooking();
   thawOps();
-  updateAiStatus(
-    `Submit failed — trying next date #${idx + 1} (${date})` +
-      ` (${remaining.length} left in range)…`
-  );
-  setTikTikStatus(
-    `Submit failed — next date ${date} (${remaining.length} left)…`
-  );
+  const msg =
+    `${reason} — trying next date #${idx + 1} (${date})` +
+    ` (${remaining.length} left in range)…`;
+  updateAiStatus(msg);
+  setTikTikStatus(msg);
   vs.send({
     action: "selectFirstDate",
     date,
     maxMs: AI_DATE_SELECT_MS,
     pollMs: AI_BOOK_POLL_MS,
   });
-  return true;
+  return date;
+}
+
+/** After Submit error: try another in-range date on this city. */
+async function tryNextInRangeDateAfterSubmitFail() {
+  const date = await tryNextDateOnThisCity("Submit failed");
+  return !!date;
 }
 
 /**
@@ -944,6 +959,41 @@ export function stopCityRotate() {
 
 export function isCityRotateHeld() {
   return _bookingHold;
+}
+
+/** Snapshot for the Sample A bottom-right HUD. */
+export async function getTikTikHudState() {
+  if (!isOfcSchedulePage() || isInterviewPage() || _opsFrozen) {
+    return { hide: true };
+  }
+  const now = Date.now();
+  const submitPending = !!_submitPending;
+  const loadingStuck = !!(_rotateBusy && _domShowsDateLoading());
+  // Whole seconds only — never expose milliseconds to the HUD.
+  let secondsUntilHop = null;
+  if (_rotateActive && !submitPending && !loadingStuck) {
+    if (_rotateBusy && _busyStartedAt) {
+      const left = Math.max(0, _cityCalendarNoDatesMs() - (now - _busyStartedAt));
+      secondsUntilHop = Math.max(0, Math.ceil(left / 1000));
+    } else if (_bookingHold || _alertCityHoldUntil > now) {
+      secondsUntilHop = null;
+    } else if (isInSlotWindow(new Date(now))) {
+      secondsUntilHop = Math.max(0, Math.ceil(_msUntilNextRotate(now) / 1000));
+    } else {
+      secondsUntilHop = null;
+    }
+  }
+
+  return {
+    submitPending,
+    loadingStuck,
+    rotateActive: !!_rotateActive,
+    secondsUntilHop,
+  };
+}
+
+export function noteTikTikHudSlots(cityId, found, cityName) {
+  noteHudCitySlots(cityId, found, cityName);
 }
 
 function _clearRotateBusy() {
@@ -1533,6 +1583,7 @@ async function _switchToCity(cityId, label) {
   _armRotateBusy();
   _lastSwitchAt = Date.now();
   _armNextRotate(_lastSwitchAt);
+  noteHudCityHop(nextId, label || nextId);
   updateAiStatus(`Switching city → ${label || cityId}…`);
   _clearFailedSubmitDates();
   vs.send({ action: "selectPost", postId: nextId });
@@ -1601,6 +1652,7 @@ export async function forceSwitchToCity(cityId, label, { alertId, dayCount, best
   try { playBeepBurst(3, 80, 50); } catch { /* ignore */ }
   try { vs.send({ action: "focusScheduleTab" }); } catch { /* ignore */ }
   // force:true bypasses IST slot gate in the service worker.
+  noteHudCityHop(nextId, name);
   vs.send({ action: "selectPost", postId: nextId, force: true });
   haltCityRotateForBooking();
   if (_rotateActive) _scheduleCityRotate();
@@ -1756,6 +1808,7 @@ function _onPostSelectCityChanged(cityId, selectEl) {
     (selectEl?.selectedOptions && selectEl.selectedOptions[0]?.textContent?.trim()) ||
     selectEl?.options?.[selectEl.selectedIndex]?.textContent?.trim() ||
     id;
+  noteHudCityHop(id, name);
   updateAiStatus(
     fromSystem
       ? `City Change — on ${name}; waiting for dates…`
@@ -3135,6 +3188,8 @@ export function removeStaleTikTikUi() {
 export function removeTikTikUi() {
   document.querySelector(idSel(ID.aiPanel))?.remove();
   document.querySelector(idSel(ID.aiBtn))?.remove();
+  document.querySelector(idSel(ID.hud))?.remove();
+  stopTikTikHudLoop();
   removeStaleTikTikUi();
 }
 
@@ -3377,6 +3432,7 @@ export async function reserveAiSubmit() {
   if (isInterviewPage()) return;
   if (!isOfcSchedulePage()) {
     removeTikTikUi();
+    stopTikTikHudLoop();
     return;
   }
   if (!await vs.waitFor("#post_select", { attempts: SCHEDULE_UI_WAIT_ATTEMPTS })) return;
@@ -3387,6 +3443,16 @@ export async function reserveAiSubmit() {
   ensureAiSubmitUi();
   _bindPostSelectRotateWatch();
   _watchSiteSubmit();
+  startTikTikHudLoop(() => getTikTikHudState());
+  // Seed current city into history once.
+  const sel = document.querySelector("#post_select");
+  if (sel?.value) {
+    const nm =
+      sel.selectedOptions?.[0]?.textContent?.trim() ||
+      sel.options?.[sel.selectedIndex]?.textContent?.trim() ||
+      sel.value;
+    noteHudCityHop(String(sel.value), nm);
+  }
   if (_aiSubmitMounted) return;
   _aiSubmitMounted = true;
   vs.setTimeout(() => refreshAiSubmitUi(), 800);

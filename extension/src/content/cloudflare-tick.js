@@ -17,18 +17,16 @@ var _challengeSeenAt = 0;
 var _homeForVerifyAt = 0;
 var HOME_FOR_VERIFY_COOLDOWN_MS = 25_000;
 
-/** Longer manual window while we still need live verify-human samples. */
+/** Click soon — recorded samples already exist on the server. */
 async function _trainWindowMs() {
   try {
-    const store = await storageGet("humanClickProfile");
-    const p = store.humanClickProfile;
-    const n = p?.liveTrained ? p.samples?.length || 0 : 0;
-    if (n < 5) return 15_000;
-    if (n < 20) return 10_000;
-    if (n < 50) return 6_000;
-    return 3_500;
+    const store = await storageGet(["humanClickProfile", "humanClickServerProfile"]);
+    const localN = store.humanClickProfile?.samples?.length || 0;
+    const serverN = store.humanClickServerProfile?.samples?.length || 0;
+    if (localN + serverN >= 1) return 400;
+    return 4_000;
   } catch {
-    return 12_000;
+    return 800;
   }
 }
 
@@ -99,12 +97,16 @@ function _findChallengeWidgets() {
       el.hasAttribute?.("data-turnstile-widget")
     );
     if (!isCfIframe && !isCfHost) {
-      if (el.tagName === "IFRAME" && rect.width >= 120 && rect.width <= 420 && rect.height >= 45 && rect.height <= 120) {
-        // Sized like a Turnstile widget — include generic iframes on challenge pages.
-        if (!CHALLENGE_TEXT.test(document.body?.innerText || "")) return;
-      } else {
-        return;
-      }
+      const sized =
+        el.tagName === "IFRAME" &&
+        rect.width >= 180 &&
+        rect.width <= 460 &&
+        rect.height >= 40 &&
+        rect.height <= 160;
+      const pageHit = CHALLENGE_TEXT.test(
+        `${document.title || ""} ${document.body?.innerText || ""}`.slice(0, 4000)
+      );
+      if (!sized || !pageHit) return;
     }
     seen.add(el);
     widgets.push({ el, rect });
@@ -139,6 +141,24 @@ function _scrollWidgetsIntoView(widgets) {
     }
   }
   try { window.focus(); } catch (e) {}
+}
+
+function _findVerifyTextPoints() {
+  const points = [];
+  const nodes = document.querySelectorAll("label, span, div, p, button");
+  for (const el of nodes) {
+    if (points.length >= 2) break;
+    const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+    if (!/verify you are human/i.test(t) || t.length > 48) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 16 || r.height < 10) continue;
+    if (r.bottom < 0 || r.top > window.innerHeight) continue;
+    points.push({
+      x: Math.round(r.left + Math.min(22, Math.max(12, r.width * 0.12))),
+      y: Math.round(r.top + r.height / 2),
+    });
+  }
+  return points;
 }
 
 function _collectTurnstileClickPoints(widgets) {
@@ -212,12 +232,6 @@ async function _fireClicks(points) {
   if (!points.length) return;
   flashClickPoints(points.slice(0, 3));
   vs.send({ action: "viewportClickPoints", points });
-  if (await getSetting("cloudflareDebuggerClick")) {
-    await updateCloudflareHud("debugger", "Trained click on Verify you are human…");
-    vs.send({ action: "cloudflareDebuggerClick", points, primaryOnly: true });
-  } else {
-    await updateCloudflareHud("dom");
-  }
 }
 
 function _isScheduleLikePath() {
@@ -257,8 +271,8 @@ export async function tryCloudflareTick() {
     return true;
   }
 
-  // Schedule/OFC challenge → take user to Home to click Verify.
-  _maybeTakeUserToHomeForVerify();
+  // Stay on this tab and auto-click. Do not steal focus to Home
+  // (that made the debugger click the wrong page).
 
   if (!_challengeSeenAt) {
     _challengeSeenAt = Date.now();
@@ -267,23 +281,25 @@ export async function tryCloudflareTick() {
   // Wait for a manual click so we can record your mouse; longer until we have enough samples.
   const trainMs = await _trainWindowMs();
   if (Date.now() - _challengeSeenAt < trainMs) {
-    await updateCloudflareHud(
-      "scanning",
-      _isScheduleLikePath()
-        ? "Opening Home — click Verify you are human on the Home tab…"
-        : "Train window — click Verify you are human yourself (recording your mouse)…"
-    );
+    await updateCloudflareHud("scanning", "Verify you are human — clicking in a moment…");
     return false;
   }
-
-  vsLog("cf", "train window done — attempting auto click");
 
   await updateCloudflareHud("scanning", "Verify you are human page — preparing click…");
   let widgets = _findChallengeWidgets();
   _scrollWidgetsIntoView(widgets);
-  await _sleep(350);
+  await _sleep(250);
   widgets = _findChallengeWidgets();
   const points = _collectTurnstileClickPoints(widgets);
+
+  vsLog("cf", "train window done — attempting auto click", {
+    widgets: widgets.length,
+    points: points.length,
+  });
+
+  if (!points.length) {
+    vsLog("cf", "no checkbox points — widget not found on this page");
+  }
 
   if (points.length) {
     await _fireClicks(points);
@@ -329,7 +345,6 @@ function _startChallengeObserver() {
   _cfObserver = new MutationObserver(() => {
     if (!vs.alive) return;
     if (isCloudflareChallenge() && !isCloudflareSolved()) {
-      _maybeTakeUserToHomeForVerify();
       tryCloudflareTick();
     }
   });
@@ -352,21 +367,28 @@ export function stopCloudflareWatch() {
 
 export async function startCloudflareWatch() {
   stopCloudflareWatch();
-  if (!await getSetting("autoCloudflareTick")) return;
-
   _startChallengeObserver();
 
   const tick = async () => {
     if (!vs.alive) return;
-    if (!await getSetting("autoCloudflareTick")) return;
-    if (isCloudflareChallenge() && !isCloudflareSolved()) {
-      await tryCloudflareTick();
+    const widgets = _findChallengeWidgets();
+    const points = [
+      ..._findVerifyTextPoints(),
+      ..._collectTurnstileClickPoints(widgets),
+    ].slice(0, 3);
+    if (!points.length) {
+      if (getCloudflareHudState()) {
+        _cfAttemptCount = 0;
+        await updateCloudflareHud("success");
+      }
       return;
     }
-    if (getCloudflareHudState()) {
-      _cfAttemptCount = 0;
-      await updateCloudflareHud("success");
-    }
+    vsLog("cf", "verify widget found — clicking", {
+      widgets: widgets.length,
+      points,
+    });
+    await updateCloudflareHud("scanning", "Clicking Verify you are human…");
+    await _fireClicks(points);
   };
   tick();
   _cfWatchTimer = vs.setInterval(tick, 1800);
