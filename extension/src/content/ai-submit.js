@@ -571,13 +571,40 @@ export function filterDaysInAiRange(scheduleDays, from, to) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return (scheduleDays || [])
-    .filter((d) => d && typeof d.Date === "string" && d.Date.length >= 10)
+    .map((d) => {
+      if (!d) return null;
+      const raw = d.Date != null ? d.Date : d.date;
+      const iso = _normalizeDayIso(raw);
+      if (!iso) return null;
+      return { ...d, Date: iso };
+    })
+    .filter(Boolean)
     .filter((d) => dateInRange(d.Date, from, to))
     .filter((d) => {
       const [y, m, day] = d.Date.slice(0, 10).split("-").map(Number);
       return new Date(y, m - 1, day) >= today;
     })
     .sort((a, b) => String(a.Date).localeCompare(String(b.Date)));
+}
+
+/** Normalize portal day strings to YYYY-MM-DD for range checks. */
+function _normalizeDayIso(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const slash = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (slash) {
+    const [, mm, dd, yyyy] = slash;
+    return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+  }
+  const ms = s.match(/\/Date\((-?\d+)\)\//);
+  if (ms) {
+    const d = new Date(Number(ms[1]));
+    if (!Number.isNaN(d.getTime())) {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    }
+  }
+  return null;
 }
 
 var _submitArmed = false;
@@ -736,27 +763,32 @@ function _ensureRotateWatchdog() {
     const inWindow = !!isInSlotWindow(new Date(now));
     const timerArmed = !!_rotateTimer;
 
-    // Long intentional waits (outside IST window / Loading poll) are NOT stuck.
+    // Long intentional waits are NOT stuck (booking hold must not require a timer).
     const intentionalWait =
       (!inWindow && timerArmed) ||
-      ((_rotateBusy || _bookingHold || _submitArmed) && timerArmed);
+      _rotateBusy ||
+      _bookingHold ||
+      _submitArmed ||
+      _submitPending;
 
     const tickStale =
       !intentionalWait &&
       _lastRotateTickAt > 0 &&
       now - _lastRotateTickAt >= CITY_STUCK_TICK_MS;
 
-    const timerLost = !timerArmed && !_rotateInFlight;
+    const timerLost = !timerArmed && !_rotateInFlight && !intentionalWait;
 
     if (unlocked || tickStale || timerLost) {
       if (tickStale) {
         // Hard unstick inside a hop cycle — clear locks and hop ASAP (no extra 13–18s).
+        // Never wipe an active booking hold (hold has its own ~45s safety).
         _rotateInFlight = false;
         _rotateInFlightAt = 0;
         _clearRotateBusy();
-        _clearHoldSafety();
-        _bookingHold = false;
-        _holdStartedAt = 0;
+        if (!_bookingHold && !_submitPending) {
+          _clearHoldSafety();
+          _holdStartedAt = 0;
+        }
         if (_submitArmed && !_submitTimer) _submitArmed = false;
         _nextRotateAt = now;
         updateAiStatus(
@@ -765,7 +797,7 @@ function _ensureRotateWatchdog() {
             : `City Change — unstuck; waiting for IST window ${getSlotWindowLabel()}…`
         );
       } else if (unlocked) {
-        _nextRotateAt = now;
+        if (!_bookingHold && !_submitPending) _nextRotateAt = now;
         updateAiStatus(
           inWindow
             ? "City Change — lock cleared; hopping now…"
@@ -774,6 +806,7 @@ function _ensureRotateWatchdog() {
       } else {
         updateAiStatus("City Change — timer lost; restarting…");
       }
+      _lastRotateTickAt = now;
       _scheduleCityRotate();
     } else if (!inWindow && timerArmed) {
       const wait = msUntilSlotWindow(new Date(now));
@@ -897,6 +930,10 @@ export function haltCityRotateForBooking() {
   _cancelRotateTimer();
   _clearRotateBusy();
   _armHoldSafety();
+  // Keep a rotate timer armed while held — otherwise the watchdog thinks we are
+  // stuck (no timer) and clears the hold ~20s later, hopping mid date-select.
+  _lastRotateTickAt = Date.now();
+  if (_rotateActive) _scheduleCityRotate();
   updateAiStatus("City Change — paused (Auto Submit booking)…");
 }
 

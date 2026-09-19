@@ -517,6 +517,12 @@ export async function handleEvent(event) {
         `${dayCount} date${dayCount === 1 ? "" : "s"} available — see list below`
       );
     }
+
+    // Pause hops IMMEDIATELY when any dates arrive — before awaits — so City Change
+    // cannot race ahead of middle-date select. Resume later if out of range / no AI.
+    if (dayCount > 0 && !parsed.response.HasError) {
+      haltCityRotateForBooking();
+    }
     noteCityRotateResponse();
 
     const ai = await getArmedAiConfig();
@@ -565,7 +571,7 @@ export async function handleEvent(event) {
       hasError: parsed.response.HasError,
     });
 
-    // If Auto Submit has a matching date, pause city hop while booking (keep City Change ON).
+    // If Auto Submit has a matching date, keep city hop paused while booking.
     // While Submit is pending confirmation, NEVER resume hop from a date reload.
     if (isSubmitPendingConfirm()) {
       haltCityRotateForBooking();
@@ -574,12 +580,19 @@ export async function handleEvent(event) {
       const inRange = filterDaysInAiRange(parsed.response.ScheduleDays, ai.from, ai.to);
       if (inRange.length) {
         haltCityRotateForBooking();
+        setTikTikStatus(
+          `${inRange.length} date${inRange.length === 1 ? "" : "s"} in range — selecting (city hold)…`
+        );
       } else {
         resumeCityRotateAfterBooking();
       }
     } else if (ai) {
       // No slots / error — hop OK
       resumeCityRotateAfterBooking();
+    } else if (dayCount > 0 && !parsed.response.HasError) {
+      // Optimistic hold above — no Auto Submit; release unless date auto-select will run.
+      const willAuto = await getSetting("autoSelectFirstDate");
+      if (!willAuto) resumeCityRotateAfterBooking();
     }
 
     const pickedDate = isSubmitPendingConfirm()
