@@ -427,6 +427,10 @@ var _submitPendingTimer = null;
 var _submitConfirmWatch = null;
 /** Max wait after Submit for confirmation before resuming city hop (not 1 min). */
 var SUBMIT_PENDING_MAX_MS = 20_000;
+/** Dates that already failed Submit on the current city (YYYY-MM-DD). */
+var _failedSubmitDates = new Set();
+var _failedSubmitDatesCity = "";
+var _lastPickedDateIso = "";
 
 function _clearSubmitPending() {
   _submitPending = false;
@@ -438,6 +442,87 @@ function _clearSubmitPending() {
     vs.clear(_submitConfirmWatch);
     _submitConfirmWatch = null;
   }
+}
+
+function _clearFailedSubmitDates() {
+  _failedSubmitDates.clear();
+  _failedSubmitDatesCity = "";
+}
+
+function _markSubmitDateFailed(dateIso) {
+  const d = String(dateIso || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+  const city = String(document.querySelector("#post_select")?.value || "");
+  if (city !== _failedSubmitDatesCity) {
+    _failedSubmitDates.clear();
+    _failedSubmitDatesCity = city;
+  }
+  _failedSubmitDates.add(d);
+}
+
+/** Remember the date we just selected (for submit-fail retry). */
+export function noteDatePicked(dateIso) {
+  const d = String(dateIso || "").slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(d)) _lastPickedDateIso = d;
+}
+
+function _datepickerToIso() {
+  const input = document.querySelector("#datepicker");
+  const v = String(input?.value || "").trim();
+  if (!v) return _lastPickedDateIso || "";
+  if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
+  const slash = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (slash) {
+    const [, mm, dd, yyyy] = slash;
+    return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+  }
+  return _lastPickedDateIso || "";
+}
+
+/**
+ * After Submit error: try another in-range date on this city.
+ * Returns true if a next date was selected; false if none left (caller should hop city).
+ */
+async function tryNextInRangeDateAfterSubmitFail() {
+  if (_opsFrozen || isInterviewPage() || !isSchedulePage()) return false;
+  const ai = await getArmedAiConfig();
+  if (!ai) return false;
+
+  const select = document.querySelector("#post_select");
+  const postId = select ? String(select.value) : "";
+  if (!postId) return false;
+
+  const current = _datepickerToIso();
+  if (current) _markSubmitDateFailed(current);
+
+  const posts = await getPosts();
+  const post = posts.find((p) => String(p.ID) === postId);
+  const inRange = filterDaysInAiRange(post?.Days || [], ai.from, ai.to);
+  const remaining = inRange.filter((d) => !_failedSubmitDates.has(String(d.Date).slice(0, 10)));
+  if (!remaining.length) return false;
+
+  const idx = pickPreferredDateIndex(remaining.length);
+  const next = remaining[idx];
+  if (!next?.Date) return false;
+
+  const date = String(next.Date).slice(0, 10);
+  noteDatePicked(date);
+  haltCityRotateForBooking();
+  thawOps();
+  updateAiStatus(
+    `Submit failed — trying next date #${idx + 1} (${date})` +
+      ` (${remaining.length} left in range)…`
+  );
+  setTikTikStatus(
+    `Submit failed — next date ${date} (${remaining.length} left)…`
+  );
+  vs.send({
+    action: "selectFirstDate",
+    date,
+    maxMs: AI_DATE_SELECT_MS,
+    pollMs: AI_BOOK_POLL_MS,
+  });
+  return true;
 }
 
 /**
@@ -495,10 +580,11 @@ function _isConfirmationPage() {
   return /appointment\s+confirmation|successfully\s+scheduled|your\s+appointment\s+has\s+been/i.test(t);
 }
 
-/** Submit failed / rejected — keep switches ON, change cities again. */
+/** Submit failed / rejected — try another in-range date first; hop city only if none left. */
 export async function noteSubmitFailed(reason = "") {
   if (!_submitPending && !_bookingHold && !_submitArmed) {
-    // Still resume hops if City Change is on.
+    const tried = await tryNextInRangeDateAfterSubmitFail();
+    if (tried) return;
     resumeCityRotateAfterBooking();
     return;
   }
@@ -507,27 +593,28 @@ export async function noteSubmitFailed(reason = "") {
   clearPendingSubmit();
   // Do not freeze / disarm — user wants Auto Submit + City Change to stay ON.
   if (_opsFrozen) thawOps();
-  resumeCityRotateAfterBooking();
-
-  const id = await getAccountId();
-  if (id) {
-    const cfg = await getAiConfig(id);
-    // Ensure toggles were not cleared elsewhere.
-    if (cfg && (cfg.submitEnabled === false && cfg.citiesEnabled === false)) {
-      /* leave as-is if user turned off */
-    }
-  }
 
   const msg = reason ? `Submit failed (${reason})` : "Submit failed";
-  updateAiStatus(`${msg} — Auto Submit + City Change still ON; hopping cities…`);
+  const triedNext = await tryNextInRangeDateAfterSubmitFail();
+  if (triedNext) {
+    updateAiStatus(`${msg} — staying on city; trying another date…`);
+    return;
+  }
+
+  _clearFailedSubmitDates();
+  resumeCityRotateAfterBooking();
+  updateAiStatus(`${msg} — no other dates in range; hopping cities…`);
 
   if (_rotateActive) {
     _armNextRotate(Date.now());
     _scheduleCityRotate();
-  } else if (id) {
-    const cfg = await getAiConfig(id);
-    if (isCitiesEnabled(cfg)) {
-      await startCityRotate();
+  } else {
+    const id = await getAccountId();
+    if (id) {
+      const cfg = await getAiConfig(id);
+      if (isCitiesEnabled(cfg)) {
+        await startCityRotate();
+      }
     }
   }
 }
@@ -988,6 +1075,7 @@ export async function probeAutoSubmitForCurrentCity() {
       const idx = pickPreferredDateIndex(inRange.length);
       const date = inRange[idx].Date;
       updateAiStatus(`Auto Submit: picking date #${idx + 1} (${date.slice(0, 10)})…`);
+      noteDatePicked(date);
       vs.send({ action: "selectFirstDate", date, maxMs: AI_DATE_SELECT_MS, pollMs: AI_BOOK_POLL_MS });
       return;
     }
@@ -1236,6 +1324,7 @@ async function _switchToCity(cityId, label) {
   }
   _armRotateBusy();
   updateAiStatus(`Switching city → ${label || cityId}…`);
+  _clearFailedSubmitDates();
   vs.send({ action: "selectPost", postId: nextId });
   return true;
 }
@@ -1275,6 +1364,7 @@ export async function forceSwitchToCity(cityId, label, { alertId, dayCount } = {
 
   _armRotateBusy();
   _lastSwitchAt = Date.now();
+  _clearFailedSubmitDates();
   updateAiStatus(
     `City alert — switching now → ${name}` +
       (dayCount ? ` (${dayCount} dates)` : "") +

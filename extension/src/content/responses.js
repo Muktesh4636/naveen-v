@@ -26,6 +26,7 @@ import {
   filterDaysInAiRange,
   dateInRange,
   pickPreferredDateIndex,
+  noteDatePicked,
   AI_DATE_SELECT_MS,
   AI_BOOK_SELECT_MS,
   AI_TIME_DOM_WAIT_MS,
@@ -338,6 +339,7 @@ export async function autoSelectFirstDate(scheduleDays, hasError = false) {
   const idx = pickPreferredDateIndex(inRange.length);
 
   setTikTikStatus(`Selecting date #${idx + 1}: ${picked} (fast)…`);
+  noteDatePicked(picked);
   // Only need the input — do not wait for the open calendar popup.
   await vs.waitFor(DATE_PICKER_SELECTOR, { attempts: 80, interval: AI_BOOK_POLL_MS });
 
