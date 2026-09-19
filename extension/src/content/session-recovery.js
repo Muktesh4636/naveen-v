@@ -467,7 +467,7 @@ async function _claimLoadingStuckSlot() {
 }
 
 /**
- * On OFC / schedule: if Date shows Loading… continuously for ≥ 2 min,
+ * On OFC / schedule: if Date shows Loading… continuously for ≥ 1 min,
  * reload Application Home in the background. Never reload this OFC tab.
  */
 export function startLoadingStuckHomeReload() {

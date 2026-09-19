@@ -56,6 +56,11 @@ export const ID = {
   aiCitiesNone: T + '35',
   aiLoginToggle: T + '36',
   aiLoginBody:   T + '37',
+  aiProfiles:    T + '63',
+  aiProfilesList: T + '64',
+  aiAddProfile:  T + '65',
+  aiLoginCancel: T + '66',
+  aiLoginEditorTitle: T + '67',
   aiSubmitOn:    T + '38',
   aiSubmitOff:   T + '39',
   aiCitiesOn:    T + '40',
@@ -137,6 +142,15 @@ export const CLS = {
   aiCalMuted: T + 'av',
   aiCalOn: T + 'aw',
   aiCalToday: T + 'ax',
+  aiQl: T + 'ay',
+  aiQlTitle: T + 'az',
+  aiQlSub: T + 'ba',
+  aiQlCard: T + 'bb',
+  aiQlMeta: T + 'bc',
+  aiQlBadge: T + 'bd',
+  aiQlEdit: T + 'be',
+  aiQlAdd: T + 'bf',
+  aiQlEmpty: T + 'bg',
 };
 
 // dataset property names (translate to data-* attributes)

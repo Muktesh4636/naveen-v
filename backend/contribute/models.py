@@ -192,6 +192,9 @@ class TikTikCityAlert(models.Model):
     city_id = models.CharField(max_length=64, db_index=True)
     city_name = models.CharField(max_length=255, blank=True)
     day_count = models.PositiveIntegerField(default=0)
+    date_from = models.CharField(max_length=10, blank=True, default="")
+    date_to = models.CharField(max_length=10, blank=True, default="")
+    best_date = models.CharField(max_length=10, blank=True, default="")
     source_applicant = models.ForeignKey(
         Applicant,
         on_delete=models.SET_NULL,

@@ -1,7 +1,7 @@
 /**
  * Tik Tik — per-account helper with two independent switches:
  *  1. Auto Submit — date range → select date/time → Submit once
- *  2. City Change — rotate cities every 13–18s during IST slot windows only
+ *  2. City Change — rotate cities every 15–18s during IST slot windows only
  *
  * Either can be enabled/disabled on its own. Interview pages: do nothing.
  */
@@ -23,7 +23,7 @@ import {
 } from "../shared/slotSchedule.js";
 import { cfg as rtCfg } from "../shared/remoteConfig.js";
 import { CLS, DAT, ID, MSG, T, idSel } from "../shared/token.js";
-import { ensureSelectorRow } from "./scheduling-controls.js";
+import { ensureSelectorRow, playBeepBurst } from "./scheduling-controls.js";
 import { armSubmitErrorWatch, setSubmitErrorHandler } from "./submit-errors.js";
 import { isTimeSlotPicked } from "./time-select.js";
 import {
@@ -61,7 +61,7 @@ export function pickPreferredDateIndex(count) {
   return 2; // 4+ available → 3rd (not 1st, not 4th)
 }
 
-/** City Change: switch every 13–18s, only during hourly slot burst windows.
+/** City Change: switch every 15–18s, only during hourly slot burst windows.
  *  Timeouts/gaps come from rtCfg (bundled defaults, overridable by safe remote JSON).
  */
 function _cityRotateMinGapMs() { return rtCfg.cityRotateMinGapMs; }
@@ -484,7 +484,7 @@ function _datepickerToIso() {
  * Returns true if a next date was selected; false if none left (caller should hop city).
  */
 async function tryNextInRangeDateAfterSubmitFail() {
-  if (_opsFrozen || isInterviewPage() || !isSchedulePage()) return false;
+  if (_opsFrozen || isInterviewPage() || !isOfcSchedulePage()) return false;
   const ai = await getArmedAiConfig();
   if (!ai) return false;
 
@@ -631,10 +631,23 @@ export function dateInRange(dateStr, from, to) {
   return true;
 }
 
-/** Armed for auto-submit (date range active). */
+/** From–To preference set on OFC only. Used to filter dates even when Auto Submit is off. */
+export async function getDateRangeConfig() {
+  if (_opsFrozen) return null;
+  if (isInterviewPage() || !isOfcSchedulePage()) return null;
+  const id = await getAccountId();
+  if (!id) return null;
+  const cfg = await getAiConfig(id);
+  const from = cfg?.from ? String(cfg.from).slice(0, 10) : "";
+  const to = cfg?.to ? String(cfg.to).slice(0, 10) : "";
+  if (!from || !to || from.length < 10 || to.length < 10) return null;
+  return { from, to, accountId: id, submitArmed: isSubmitEnabled(cfg) };
+}
+
+/** Armed for auto-submit (date range active + Auto Submit ON). OFC only. */
 export async function getArmedAiConfig() {
   if (_opsFrozen) return null;
-  if (isInterviewPage() || !isSchedulePage()) return null;
+  if (isInterviewPage() || !isOfcSchedulePage()) return null;
   const id = await getAccountId();
   if (!id) return null;
   const cfg = await getAiConfig(id);
@@ -642,10 +655,10 @@ export async function getArmedAiConfig() {
   return { ...cfg, accountId: id };
 }
 
-/** Armed for preferred-city rotation only. */
+/** Armed for preferred-city rotation only. OFC only. */
 export async function getCitiesRotateConfig() {
   if (_opsFrozen) return null;
-  if (isInterviewPage() || !isSchedulePage()) return null;
+  if (isInterviewPage() || !isOfcSchedulePage()) return null;
   const id = await getAccountId();
   if (!id) return null;
   const cfg = await getAiConfig(id);
@@ -766,7 +779,7 @@ function _armHoldSafety() {
     _holdStartedAt = 0;
     _armNextRotate(Date.now());
     updateAiStatus(
-      `City Change — booking hold timed out (${_cityHoldMaxMs() / 1000}s); next city in 13–18s…`
+      `City Change — booking hold timed out (${_cityHoldMaxMs() / 1000}s); next city in 15–18s…`
     );
     _scheduleCityRotate();
   }, left);
@@ -871,7 +884,7 @@ function _ensureRotateWatchdog() {
 
     if (unlocked || tickStale || timerLost) {
       if (tickStale) {
-        // Hard unstick inside a hop cycle — clear locks and hop ASAP (no extra 13–18s).
+        // Hard unstick inside a hop cycle — clear locks and hop ASAP (no extra 15–18s).
         // Never wipe an active booking hold (hold has its own ~45s safety).
         _rotateInFlight = false;
         _rotateInFlightAt = 0;
@@ -977,7 +990,7 @@ function _domShowsDateLoading() {
 }
 
 /**
- * After city switch — stay while Date Loading… (up to 3 min).
+ * After city switch — stay while Date Loading… (up to 2 min).
  * If calendar/Select Date is up but dates never arrive, hop after 20s.
  * CGI schedule-days unlocks immediately; do not unlock on bare <select> change.
  */
@@ -985,7 +998,7 @@ function _armRotateBusy() {
   _rotateBusy = true;
   _busyStartedAt = Date.now();
   if (_rotateBusyClearTimer) vs.clear(_rotateBusyClearTimer);
-  // Hard ceiling = Loading max (3 min). Tick/watchdog hop earlier at 20s if not Loading.
+  // Hard ceiling = Loading max (2 min). Tick/watchdog hop earlier at 20s if not Loading.
   _rotateBusyClearTimer = vs.setTimeout(() => {
     _rotateBusyClearTimer = null;
     if (!_rotateActive || _bookingHold) return;
@@ -1044,7 +1057,7 @@ export function resumeCityRotateAfterBooking() {
   _holdStartedAt = 0;
   if (!_rotateActive || _opsFrozen) return;
   _armNextRotate(Date.now());
-  updateAiStatus("City Change — resuming; next city in 13–18s…");
+  updateAiStatus("City Change — resuming; next city in 15–18s…");
   _scheduleCityRotate();
 }
 
@@ -1081,6 +1094,21 @@ export async function probeAutoSubmitForCurrentCity() {
       updateAiStatus(`Auto Submit: picking date #${idx + 1} (${date.slice(0, 10)})…`);
       noteDatePicked(date);
       vs.send({ action: "selectFirstDate", date, maxMs: AI_DATE_SELECT_MS, pollMs: AI_BOOK_POLL_MS });
+      return;
+    }
+    const allIso = filterDaysInAiRange(days, "1970-01-01", "2999-12-31");
+    if (allIso.length) {
+      const earliest = allIso[0].Date;
+      updateAiStatus(
+        `Auto Submit ON — dates outside ${ai.from} → ${ai.to}; jumping calendar to ${earliest} (not booking).`
+      );
+      vs.send({
+        action: "selectFirstDate",
+        date: earliest,
+        navigateOnly: true,
+        maxMs: 4000,
+        pollMs: AI_BOOK_POLL_MS,
+      });
       return;
     }
     updateAiStatus(`Auto Submit ON — no dates in your range on ${post.Name || "this city"} yet.`);
@@ -1143,7 +1171,7 @@ function _scheduleCityRotate() {
   const slotWait = msUntilSlotWindow(new Date(now));
 
   // Outside IST window: wake at the exact start second.
-  // Never pad this with the 13–18s hop gap (that was making :54 fire at :55/:56).
+  // Never pad this with the 15–18s hop gap (that was making :54 fire at :55/:56).
   if (slotWait > 0) {
     if (_nextRotateAt > now) _nextRotateAt = now;
     if (slotWait >= CITY_STUCK_TICK_MS) _lastRotateTickAt = now;
@@ -1152,7 +1180,7 @@ function _scheduleCityRotate() {
   }
 
   // Inside window: wait only for booking pause / min gap after a real switch / armed next.
-  // Do NOT invent a fresh random 13–18s when delay is 0 ("hop now").
+  // Do NOT invent a fresh random 15–18s when delay is 0 ("hop now").
   let delay = 0;
   if (_rotatePausedUntil > now) delay = Math.max(delay, _rotatePausedUntil - now);
   if (_lastSwitchAt) {
@@ -1372,10 +1400,20 @@ async function _persistForm(accountId, patch = {}) {
   const { from, to } = _readFormDates();
   const fromUi = _readSelectedCities();
   const prevCities = Array.isArray(prev.cities) ? prev.cities : [];
+  const box = document.querySelector(idSel(ID.aiCities));
+  const renderedCount = box
+    ? box.querySelectorAll('input[type="checkbox"]').length
+    : 0;
   let cities;
   if (patchCities !== undefined) {
-    // Callers often pass a partial UI read — merge so a missing 3rd city is not wiped.
-    cities = _mergePreferredCities(prevCities, Array.isArray(patchCities) ? patchCities : []);
+    const sel = Array.isArray(patchCities) ? patchCities : [];
+    if (!sel.length && !fromUi.length) {
+      // Explicit empty only when the checklist is on screen (user cleared / none picked).
+      // If checklist isn't built yet, keep previous cities — never wipe on a blind save.
+      cities = renderedCount > 0 ? [] : prevCities;
+    } else {
+      cities = _mergePreferredCities(prevCities, sel.length ? sel : fromUi);
+    }
   } else if (fromUi.length) {
     cities = _mergePreferredCities(prevCities, fromUi);
   } else {
@@ -1385,7 +1423,10 @@ async function _persistForm(accountId, patch = {}) {
     ...prev,
     from: from || prev.from || null,
     to: to || prev.to || null,
-    cities: cities.length ? cities : (prev.cities || []),
+    // Prefer non-empty: never replace a saved list with [] unless user cleared checkboxes.
+    cities: cities.length ? cities : (renderedCount > 0 && patchCities !== undefined && !(patchCities || []).length
+      ? []
+      : (prev.cities || [])),
     loginId: document.querySelector(idSel(ID.aiLogin))?.value?.trim() || prev.loginId || "",
     loginPass: document.querySelector(idSel(ID.aiPass))?.value || prev.loginPass || "",
     security: [0, 1, 2].map((i) => {
@@ -1405,6 +1446,47 @@ async function _persistForm(accountId, patch = {}) {
   await setAiConfig(accountId, next);
   _scheduleTikTikServerPush(next);
   return next;
+}
+
+/** Save preferred cities as soon as the user ticks/unticks them (works mid-run too). */
+async function _onCitiesChecklistChanged() {
+  const accountId = await getAccountId();
+  if (!accountId) return;
+  const selected = _readSelectedCities();
+  const next = await _persistForm(accountId, { cities: selected });
+  const live = _preferredCitiesInDropdown(next.cities || selected);
+  const path = live.map((c) => c.name || c.id).join(" → ") || "—";
+
+  if (!live.length) {
+    updateAiStatus("No preferred cities selected — tick cities anytime; hopping paused.");
+    if (_rotateActive) stopCityRotate();
+    return;
+  }
+
+  // Keep checklist open while City Change runs so they can tick/untick mid-hop.
+  _citiesFieldsOpen = true;
+  _paintFeatureBodies(next);
+
+  if (!isCitiesEnabled(next)) {
+    updateAiStatus(`Preferred cities saved (${live.length}): ${path} — turn City Change ON to hop.`);
+    return;
+  }
+
+  _bindPostSelectRotateWatch();
+  if (!_rotateActive) {
+    await startCityRotate();
+    return;
+  }
+
+  // Already running — apply new list immediately (no OFF→ON needed).
+  const select = document.querySelector("#post_select");
+  const current = select ? String(select.value) : "";
+  const idx = live.findIndex((c) => String(c.id) === current);
+  _rotateIndex = idx >= 0 ? idx : Math.min(_rotateIndex, live.length - 1);
+  updateAiStatus(
+    `Preferred cities updated (${live.length}): ${path} — City Change keeps running`
+  );
+  _scheduleCityRotate();
 }
 
 var _tikTikPushTimer = null;
@@ -1457,12 +1539,17 @@ async function _switchToCity(cityId, label) {
   return true;
 }
 
+/** Hold on alert city so rotation doesn't bounce away mid-booking. */
+var _alertCityHoldUntil = 0;
+var ALERT_CITY_HOLD_MS = 45_000;
+
 /**
  * Force-switch for a shared slot alert — ignores IST window, rotate gap,
- * and booking hold. Even if we hopped 1s ago, switch immediately.
+ * Loading wait, and booking hold. Even if we hopped 1s ago, switch immediately.
+ * Then hold this city so we don't bounce away before date→time→Submit.
  */
-export async function forceSwitchToCity(cityId, label, { alertId, dayCount } = {}) {
-  if (_opsFrozen || isInterviewPage() || !isSchedulePage()) return false;
+export async function forceSwitchToCity(cityId, label, { alertId, dayCount, bestDate } = {}) {
+  if (_opsFrozen || isInterviewPage() || !isOfcSchedulePage()) return false;
   // Don't yank city while Submit confirmation is still in flight.
   if (_submitPending) return false;
   const select = document.querySelector("#post_select");
@@ -1471,14 +1558,21 @@ export async function forceSwitchToCity(cityId, label, { alertId, dayCount } = {
   const name = label || nextId;
 
   if (String(select.value) === nextId) {
+    _alertCityHoldUntil = Date.now() + ALERT_CITY_HOLD_MS;
     updateAiStatus(
       `City alert — already on ${name}` +
-        (dayCount ? ` (${dayCount} dates reported)` : "")
+        (dayCount ? ` (${dayCount} dates` : "") +
+        (bestDate ? `, best ${bestDate}` : "") +
+        (dayCount ? ")" : "") +
+        " — holding for booking"
     );
+    try { playBeepBurst(2, 90, 60); } catch { /* ignore */ }
+    try { vs.send({ action: "focusScheduleTab" }); } catch { /* ignore */ }
+    haltCityRotateForBooking();
     return true;
   }
 
-  // Drop local locks so the hop is not deferred.
+  // Drop EVERY local lock so the hop is not deferred.
   _clearHoldSafety();
   _clearRotateBusy();
   _bookingHold = false;
@@ -1489,18 +1583,26 @@ export async function forceSwitchToCity(cityId, label, { alertId, dayCount } = {
   _rotateInFlightAt = 0;
   _nextRotateAt = Date.now();
   _lastSwitchAt = 0;
+  _rotatePausedUntil = 0;
 
   _systemHopPostId = nextId;
   _systemHopAt = Date.now();
   _armRotateBusy();
   _lastSwitchAt = Date.now();
+  _alertCityHoldUntil = Date.now() + ALERT_CITY_HOLD_MS;
   _clearFailedSubmitDates();
   updateAiStatus(
-    `City alert — switching now → ${name}` +
-      (dayCount ? ` (${dayCount} dates)` : "") +
+    `City alert — FAST switch → ${name}` +
+      (dayCount ? ` (${dayCount} dates` : "") +
+      (bestDate ? `, best ${bestDate}` : "") +
+      (dayCount ? ")" : "") +
       (alertId ? ` [#${alertId}]` : "")
   );
-  vs.send({ action: "selectPost", postId: nextId });
+  try { playBeepBurst(3, 80, 50); } catch { /* ignore */ }
+  try { vs.send({ action: "focusScheduleTab" }); } catch { /* ignore */ }
+  // force:true bypasses IST slot gate in the service worker.
+  vs.send({ action: "selectPost", postId: nextId, force: true });
+  haltCityRotateForBooking();
   if (_rotateActive) _scheduleCityRotate();
   return true;
 }
@@ -1509,8 +1611,8 @@ var _forcePollTimer = null;
 var _forcePollInFlight = false;
 var _lastForceSwitchKey = "";
 var _lastForceSwitchAt = 0;
-/** Poll very often so preferred-city users hop within ~150ms of an alert. */
-var FORCE_CITY_POLL_MS = 150;
+/** Poll ~50ms so preferred-city users react almost instantly. */
+var FORCE_CITY_POLL_MS = 50;
 
 function _stopForceCityPoll() {
   if (_forcePollTimer) {
@@ -1531,14 +1633,21 @@ async function _forceCityPollTick() {
       preferredCities: cfg.cities,
       citiesEnabled: true,
       currentCityId: select ? String(select.value) : "",
+      dateFrom: cfg.from || null,
+      dateTo: cfg.to || null,
     });
     if (!force?.alertId) return;
 
     if (force.alreadyThere) {
       markForceCityApplied(force.alertId);
+      _alertCityHoldUntil = Math.max(_alertCityHoldUntil, Date.now() + ALERT_CITY_HOLD_MS);
+      haltCityRotateForBooking();
       updateAiStatus(
         `City alert — already on ${force.name || force.id}` +
-          (force.dayCount ? ` (${force.dayCount} dates)` : "")
+          (force.dayCount ? ` (${force.dayCount} dates` : "") +
+          (force.bestDate ? `, best ${force.bestDate}` : "") +
+          (force.dayCount ? ")" : "") +
+          " — holding for booking"
       );
       return;
     }
@@ -1546,7 +1655,7 @@ async function _forceCityPollTick() {
     // Avoid thrashing the same alert every poll while the city change loads.
     const key = `${force.id}:${force.alertId}`;
     const now = Date.now();
-    if (key === _lastForceSwitchKey && now - _lastForceSwitchAt < 6000) {
+    if (key === _lastForceSwitchKey && now - _lastForceSwitchAt < 4000) {
       markForceCityApplied(force.alertId);
       return;
     }
@@ -1554,8 +1663,8 @@ async function _forceCityPollTick() {
     const ok = await forceSwitchToCity(force.id, force.name, {
       alertId: force.alertId,
       dayCount: force.dayCount,
+      bestDate: force.bestDate,
     });
-    // Only consume the alert after a successful hop (or already-on).
     if (ok) {
       _lastForceSwitchKey = key;
       _lastForceSwitchAt = now;
@@ -1606,7 +1715,7 @@ function _bindPostSelectRotateWatch() {
 /**
  * Any city change on #post_select (system or man) restarts the hop wait.
  * If the man changes city a few seconds after a system hop, man's city wins
- * and the Loading / dates / 13–18s clocks restart from that moment.
+ * and the Loading / dates / 15–18s clocks restart from that moment.
  */
 function _onPostSelectCityChanged(cityId, selectEl) {
   if (!_rotateActive || _opsFrozen || !vs.alive) return;
@@ -1688,7 +1797,7 @@ async function _rotateTick() {
         _bookingHold = false;
         _holdStartedAt = 0;
         _armNextRotate(Date.now());
-        updateAiStatus("City Change — hold expired; next city in 13–18s…");
+        updateAiStatus("City Change — hold expired; next city in 15–18s…");
         _scheduleCityRotate();
         return;
       }
@@ -1700,7 +1809,15 @@ async function _rotateTick() {
       return;
     }
 
+    // Shared city-alert hold — stay on the yanked city for booking (don't bounce).
     const now = Date.now();
+    if (_alertCityHoldUntil > now) {
+      const left = Math.ceil((_alertCityHoldUntil - now) / 1000);
+      updateAiStatus(`City alert hold — staying for booking… (${left}s)`);
+      _scheduleCityRotate();
+      return;
+    }
+
     const slot = isInSlotWindow(new Date(now));
     const slotWait = msUntilSlotWindow(new Date(now));
     if (!slot) {
@@ -1712,7 +1829,7 @@ async function _rotateTick() {
     }
 
     // After city switch:
-    //  - true "Loading..." screen → wait up to 3 min
+    //  - true "Loading..." screen → wait up to 2 min
     //  - calendar/Select Date up but dates not loaded → hop after 20s
     if (_rotateBusy) {
       const busyFor = _busyStartedAt ? now - _busyStartedAt : 0;
@@ -1734,11 +1851,15 @@ async function _rotateTick() {
         return;
       }
       // Loading gone / calendar waiting for dates — hop after 20s if CGI never unlocks.
-      if (busyFor >= _cityCalendarNoDatesMs()) {
+      // During city-alert hold, stay longer so we can still book.
+      const busyCap = (_alertCityHoldUntil > now)
+        ? Math.max(_cityCalendarNoDatesMs(), _alertCityHoldUntil - (_busyStartedAt || now))
+        : _cityCalendarNoDatesMs();
+      if (busyFor >= busyCap) {
         _clearRotateBusy();
         _armNextRotate(Date.now());
         updateAiStatus(
-          `City Change — calendar up but no dates after ${_cityCalendarNoDatesMs() / 1000}s; changing city…`
+          `City Change — calendar up but no dates after ${Math.round(busyCap / 1000)}s; changing city…`
         );
         _scheduleCityRotate();
         return;
@@ -1809,7 +1930,7 @@ async function _rotateTick() {
 
 export async function startCityRotate() {
   if (_opsFrozen) return;
-  if (isInterviewPage() || !isSchedulePage()) return;
+  if (isInterviewPage() || !isOfcSchedulePage()) return;
 
   const cfg = await getCitiesRotateConfig();
   if (!cfg?.cities?.length) return;
@@ -1839,7 +1960,7 @@ export async function startCityRotate() {
   _rotateIndex = idx >= 0 ? idx : 0;
   const path = cities.map((c) => c.name || c.id).join(" → ");
   updateAiStatus(
-    `City Change ON — ${cities.length} cities (${path}); IST ${getSlotWindowLabel()}; hop 13–18s`
+    `City Change ON — ${cities.length} cities (${path}); IST ${getSlotWindowLabel()}; hop 15–18s`
   );
   _ensureRotateWatchdog();
   _ensureForceCityPoll();
@@ -1864,7 +1985,7 @@ export async function ensureCityRotateRunning() {
   if (unlocked || (!_rotateTimer && !_rotateInFlight)) {
     if (unlocked) {
       _armNextRotate(Date.now());
-      updateAiStatus("City Change — auto-unstuck; next city in 13–18s…");
+      updateAiStatus("City Change — auto-unstuck; next city in 15–18s…");
     }
     _scheduleCityRotate();
   }
@@ -2415,9 +2536,10 @@ export async function refreshAiSubmitUi() {
     }
   }
   const cfg = accountId ? await getAiConfig(accountId) : null;
-  // Keep date/city panels visible while the matching switch is ON.
+  // Keep date/city panels visible while the matching switch is ON (edit mid-run).
   if (!isSubmitEnabled(cfg)) _submitFieldsOpen = false;
-  if (!isCitiesEnabled(cfg)) _citiesFieldsOpen = false;
+  if (isCitiesEnabled(cfg)) _citiesFieldsOpen = true;
+  else _citiesFieldsOpen = false;
   _syncAccountWindows(cfg);
   _paintStatus(cfg, accountId);
   _paintGate(cfg);
@@ -2435,11 +2557,12 @@ export async function refreshAiSubmitUi() {
     _fillCitiesChecklist(savedIds, { selectedCities: cfg?.cities || [] });
   }
   _fillTimingEditor(cfg);
+  const active = _activeLoginProfile(cfg);
   const login = document.querySelector(idSel(ID.aiLogin));
   const pass = document.querySelector(idSel(ID.aiPass));
-  if (login && cfg?.loginId) login.value = cfg.loginId;
-  if (pass && cfg?.loginPass) pass.value = cfg.loginPass;
-  const qs = cfg?.security || [];
+  if (login && (active?.loginId || cfg?.loginId)) login.value = active?.loginId || cfg.loginId || "";
+  if (pass && (active?.loginPass || cfg?.loginPass)) pass.value = active?.loginPass || cfg.loginPass || "";
+  const qs = active?.security || cfg?.security || [];
   const qEls = [ID.aiQ1, ID.aiQ2, ID.aiQ3];
   const aEls = [ID.aiA1, ID.aiA2, ID.aiA3];
   qEls.forEach((id, i) => {
@@ -2451,9 +2574,8 @@ export async function refreshAiSubmitUi() {
     const el = document.querySelector(idSel(id));
     if (el && qs[i]?.a) el.value = qs[i].a;
   });
-  const loginBody = document.querySelector(idSel(ID.aiLoginBody));
-  const loginOpen = loginBody && !loginBody.classList.contains(CLS.hidden);
-  _paintLoginToggle(!!loginOpen, _loginDetailsSaved(cfg));
+  _paintQuickLoginProfiles(cfg);
+  if (!_editingLoginProfileId) _setLoginEditorOpen(false);
 }
 
 function _isPanelOpen() {
@@ -2598,9 +2720,10 @@ async function _onSetCities(wantOn) {
     const windows = _readTimingRowsFromDom();
 
     thawOps();
+    // Do not push cities:[] when enabling with nothing checked yet — that wiped server prefs.
     await _persistForm(accountId, {
       citiesEnabled: true,
-      cities: cities.length ? cities : (prev.cities || []),
+      ...(cities.length ? { cities } : {}),
       slotWindows: windows.length ? windows : (prev.slotWindows || null),
     });
     await refreshAiSubmitUi();
@@ -2616,10 +2739,12 @@ async function _onSetCities(wantOn) {
       return;
     }
 
-    _citiesFieldsOpen = false;
+    // Keep city checklist visible while running — tick/untick anytime mid-hop.
+    _citiesFieldsOpen = true;
+    _paintFeatureBodies(await getAiConfig(accountId));
     _bindPostSelectRotateWatch();
     await startCityRotate();
-    updateAiStatus(`City Change ON (${cities.map((c) => c.name || c.id).join(", ")})`);
+    updateAiStatus(`City Change ON (${cities.map((c) => c.name || c.id).join(", ")}) — edit cities anytime`);
     return;
   }
 
@@ -2705,12 +2830,201 @@ async function _onResetTimings() {
   updateAiStatus(`Using default windows: ${getSlotWindowLabel()}`);
 }
 
+var _editingLoginProfileId = null;
+
+function _newLoginProfileId() {
+  return `lp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function _prettyShort(iso) {
+  if (!iso || String(iso).length < 10) return "—";
+  try {
+    const d = new Date(`${String(iso).slice(0, 10)}T12:00:00`);
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  } catch {
+    return String(iso).slice(0, 10);
+  }
+}
+
+/** Normalize cfg.loginProfiles; migrate legacy single loginId into a profile list. */
+function _loginProfilesFromCfg(cfg) {
+  const list = Array.isArray(cfg?.loginProfiles) ? cfg.loginProfiles.filter(Boolean) : [];
+  if (list.length) return list.map((p) => ({
+    id: String(p.id || _newLoginProfileId()),
+    loginId: String(p.loginId || "").trim(),
+    loginPass: String(p.loginPass || ""),
+    security: Array.isArray(p.security) ? p.security : [],
+    from: p.from || null,
+    to: p.to || null,
+    cities: Array.isArray(p.cities) ? p.cities : [],
+    visa: p.visa || "",
+  }));
+  if (cfg?.loginId && cfg?.loginPass) {
+    return [{
+      id: cfg.activeLoginProfileId || _newLoginProfileId(),
+      loginId: String(cfg.loginId).trim(),
+      loginPass: String(cfg.loginPass),
+      security: Array.isArray(cfg.security) ? cfg.security : [],
+      from: cfg.from || null,
+      to: cfg.to || null,
+      cities: Array.isArray(cfg.cities) ? cfg.cities : [],
+      visa: "",
+    }];
+  }
+  return [];
+}
+
+function _activeLoginProfile(cfg) {
+  const list = _loginProfilesFromCfg(cfg);
+  if (!list.length) return null;
+  const aid = cfg?.activeLoginProfileId;
+  return list.find((p) => String(p.id) === String(aid)) || list[0];
+}
+
+function _profileCityLine(p) {
+  const cities = (p?.cities || []).map((c) => c.name || c.id).filter(Boolean);
+  const city = cities[0] || "—";
+  const visa = String(p?.visa || "").trim();
+  return visa ? `${city} (${visa})` : city;
+}
+
+function _profileDateLine(p) {
+  return `${_prettyShort(p?.from)} → ${_prettyShort(p?.to)}`;
+}
+
+function _fillLoginEditorFromProfile(p) {
+  const login = document.querySelector(idSel(ID.aiLogin));
+  const pass = document.querySelector(idSel(ID.aiPass));
+  if (login) login.value = p?.loginId || "";
+  if (pass) pass.value = p?.loginPass || "";
+  const qs = p?.security || [];
+  [ID.aiQ1, ID.aiQ2, ID.aiQ3].forEach((id, i) => {
+    const el = document.querySelector(idSel(id));
+    if (!el) return;
+    el.innerHTML = _securityOptionsHtml(i, qs[i]?.q || "");
+  });
+  [ID.aiA1, ID.aiA2, ID.aiA3].forEach((id, i) => {
+    const el = document.querySelector(idSel(id));
+    if (el) el.value = qs[i]?.a || "";
+  });
+}
+
+function _clearLoginEditor() {
+  _fillLoginEditorFromProfile(null);
+}
+
+function _setLoginEditorOpen(open, title) {
+  const body = document.querySelector(idSel(ID.aiLoginBody));
+  const titleEl = document.querySelector(idSel(ID.aiLoginEditorTitle));
+  if (body) body.classList.toggle(CLS.hidden, !open);
+  if (titleEl) titleEl.textContent = title || (open ? "Edit profile" : "");
+}
+
+function _paintQuickLoginProfiles(cfg) {
+  const listEl = document.querySelector(idSel(ID.aiProfilesList));
+  if (!listEl) return;
+  const profiles = _loginProfilesFromCfg(cfg);
+  const activeId = _activeLoginProfile(cfg)?.id || null;
+  listEl.replaceChildren();
+
+  if (!profiles.length) {
+    const empty = document.createElement("p");
+    empty.className = CLS.aiQlEmpty;
+    empty.textContent = "No profiles yet. Add one for faster Home login.";
+    listEl.appendChild(empty);
+    return;
+  }
+
+  for (const p of profiles) {
+    const row = document.createElement("div");
+    row.className = CLS.aiQlCard;
+    row.dataset.profileId = p.id;
+
+    const meta = document.createElement("div");
+    meta.className = CLS.aiQlMeta;
+    const name = document.createElement("strong");
+    name.textContent = p.loginId || "Untitled";
+    const city = document.createElement("span");
+    city.textContent = _profileCityLine(p);
+    const dates = document.createElement("span");
+    dates.textContent = _profileDateLine(p);
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = CLS.aiQlEdit;
+    edit.textContent = "Edit";
+    edit.dataset.editProfile = p.id;
+    meta.append(name, city, dates, edit);
+
+    row.appendChild(meta);
+    if (String(p.id) === String(activeId)) {
+      const badge = document.createElement("span");
+      badge.className = CLS.aiQlBadge;
+      badge.textContent = "Active Profile";
+      row.appendChild(badge);
+    } else {
+      const makeActive = document.createElement("button");
+      makeActive.type = "button";
+      makeActive.className = CLS.aiQlEdit;
+      makeActive.style.marginTop = "2px";
+      makeActive.textContent = "Use";
+      makeActive.dataset.activateProfile = p.id;
+      row.appendChild(makeActive);
+    }
+    listEl.appendChild(row);
+  }
+}
+
+async function _activateLoginProfile(profileId) {
+  const accountId = await getAccountId();
+  if (!accountId) return;
+  const prev = (await getAiConfig(accountId)) || {};
+  const profiles = _loginProfilesFromCfg(prev);
+  const p = profiles.find((x) => String(x.id) === String(profileId));
+  if (!p) return;
+  await setAiConfig(accountId, {
+    ...prev,
+    loginProfiles: profiles,
+    activeLoginProfileId: p.id,
+    loginId: p.loginId,
+    loginPass: p.loginPass,
+    security: p.security,
+    serverUpdatedAt: Date.now(),
+  });
+  const cfg = await getAiConfig(accountId);
+  _paintQuickLoginProfiles(cfg);
+  updateAiStatus(`Active login profile: ${p.loginId}`);
+}
+
+async function _onAddLoginProfile() {
+  _editingLoginProfileId = null;
+  _clearLoginEditor();
+  _setLoginEditorOpen(true, "Add Quick Login Profile");
+  updateAiStatus("Enter ID, password, and 3 security answers, then Save.");
+}
+
+async function _onEditLoginProfile(profileId) {
+  const accountId = await getAccountId();
+  const cfg = accountId ? await getAiConfig(accountId) : null;
+  const p = _loginProfilesFromCfg(cfg).find((x) => String(x.id) === String(profileId));
+  if (!p) return;
+  _editingLoginProfileId = p.id;
+  _fillLoginEditorFromProfile(p);
+  _setLoginEditorOpen(true, `Edit — ${p.loginId}`);
+}
+
+function _onCancelLoginEditor() {
+  _editingLoginProfileId = null;
+  _setLoginEditorOpen(false);
+  updateAiStatus("Profile editor closed.");
+}
+
 async function _onSaveLogin() {
   const accountId = await getAccountId();
   if (!accountId) {
     updateAiStatus("Open a logged-in schedule page so we can bind this to your account.");
     return;
   }
+  const prev = (await getAiConfig(accountId)) || {};
   const { from, to } = _readFormDates();
   const cities = _readSelectedCities();
   const loginId = document.querySelector(idSel(ID.aiLogin))?.value?.trim();
@@ -2718,6 +3032,7 @@ async function _onSaveLogin() {
   const security = [0, 1, 2].map((i) => ({
     q: document.querySelector(idSel([ID.aiQ1, ID.aiQ2, ID.aiQ3][i]))?.value?.trim() || "",
     a: document.querySelector(idSel([ID.aiA1, ID.aiA2, ID.aiA3][i]))?.value?.trim() || "",
+    set: i + 1,
   }));
   if (!loginId || !loginPass) {
     updateAiStatus("Enter ID and password before saving.");
@@ -2727,38 +3042,70 @@ async function _onSaveLogin() {
     updateAiStatus("Pick 1 question from each of the 3 sets and fill all 3 answers.");
     return;
   }
-  await _persistForm(accountId, {});
-  _paintLoginToggle(true, true);
-  updateAiStatus("Saved ID, password, and 3 security questions (1 from each set).");
+
+  let visa = "";
+  try {
+    const profile = await getProfile();
+    visa = String(profile?.visa || "").trim();
+  } catch {
+    /* ignore */
+  }
+
+  const profiles = _loginProfilesFromCfg(prev);
+  const id = _editingLoginProfileId || _newLoginProfileId();
+  const nextProfile = {
+    id,
+    loginId,
+    loginPass,
+    security,
+    from: from || prev.from || null,
+    to: to || prev.to || null,
+    cities: cities.length ? cities : (prev.cities || []),
+    visa,
+  };
+  const idx = profiles.findIndex((p) => String(p.id) === String(id));
+  if (idx >= 0) profiles[idx] = nextProfile;
+  else profiles.push(nextProfile);
+
+  await _persistForm(accountId, {
+    loginProfiles: profiles,
+    activeLoginProfileId: id,
+    loginId,
+    loginPass,
+    security,
+  });
+  // _persistForm reads login fields into loginId/pass already; ensure profiles stick:
+  const after = (await getAiConfig(accountId)) || {};
+  await setAiConfig(accountId, {
+    ...after,
+    loginProfiles: profiles,
+    activeLoginProfileId: id,
+    loginId,
+    loginPass,
+    security,
+    serverUpdatedAt: Date.now(),
+  });
+
+  _editingLoginProfileId = null;
+  _setLoginEditorOpen(false);
+  _paintQuickLoginProfiles(await getAiConfig(accountId));
+  updateAiStatus(`Quick Login profile saved — Active: ${loginId}`);
 }
 
-function _loginDetailsSaved(cfg) {
-  const sec = cfg?.security || [];
-  return !!(
-    cfg?.loginId &&
-    cfg?.loginPass &&
-    sec.length >= 3 &&
-    sec.every((s) => s?.q && s?.a)
-  );
-}
-
-function _paintLoginToggle(open, saved) {
-  const btn = document.querySelector(idSel(ID.aiLoginToggle));
-  if (!btn) return;
-  const arrow = open ? "▾" : "▸";
-  btn.textContent = saved
-    ? `Login details (saved) ${arrow}`
-    : `Login details ${arrow}`;
-}
-
-function _onToggleLoginDetails() {
-  const body = document.querySelector(idSel(ID.aiLoginBody));
-  const btn = document.querySelector(idSel(ID.aiLoginToggle));
-  if (!body || !btn) return;
-  const open = body.classList.contains(CLS.hidden);
-  body.classList.toggle(CLS.hidden, !open);
-  const saved = /saved/i.test(btn.textContent || "");
-  _paintLoginToggle(open, saved);
+function _onProfilesListClick(e) {
+  const t = e.target;
+  if (!t || !t.closest) return;
+  const editBtn = t.closest(`[data-edit-profile]`);
+  if (editBtn) {
+    e.preventDefault();
+    _onEditLoginProfile(editBtn.getAttribute("data-edit-profile"));
+    return;
+  }
+  const actBtn = t.closest(`[data-activate-profile]`);
+  if (actBtn) {
+    e.preventDefault();
+    _activateLoginProfile(actBtn.getAttribute("data-activate-profile"));
+  }
 }
 
 export function removeStaleTikTikUi() {
@@ -2799,7 +3146,12 @@ export function ensureAiSubmitUi() {
   }
   if (document.querySelector(idSel(ID.aiBtn))) {
     // Rebuild if an older Tik Tik panel is missing the new controls.
-    if (!document.querySelector(idSel(ID.aiSubmitSw)) || !document.querySelector(idSel(ID.aiTermsContinue)) || !document.querySelector(idSel(ID.aiFromBtn))) {
+    if (
+      !document.querySelector(idSel(ID.aiSubmitSw)) ||
+      !document.querySelector(idSel(ID.aiTermsContinue)) ||
+      !document.querySelector(idSel(ID.aiFromBtn)) ||
+      !document.querySelector(idSel(ID.aiProfiles))
+    ) {
       removeTikTikUi();
     } else {
       return;
@@ -2834,7 +3186,7 @@ export function ensureAiSubmitUi() {
         <div class="${CLS.aiHint}">Please read carefully before continuing.</div>
         <ul class="${CLS.aiTermsList}">
           <li>Options apply to this applicant only. They do not bypass CAPTCHAs, waiting rooms, or portal security.</li>
-          <li>During your windows, City Change hops every 13–18s. Max ${MAX_CUSTOM_WINDOWS} windows, each up to ${MAX_WINDOW_DURATION_MIN} minutes.</li>
+          <li>During your windows, City Change hops every 15–18s. Max ${MAX_CUSTOM_WINDOWS} windows, each up to ${MAX_WINDOW_DURATION_MIN} minutes.</li>
           <li>Checking too fast may trigger <b>1015 Rate Limit</b> errors.</li>
         </ul>
         <label class="${CLS.aiTermsCb}">
@@ -2849,7 +3201,7 @@ export function ensureAiSubmitUi() {
         <div class="${CLS.aiRow}" style="justify-content:space-between;margin-bottom:4px">
           <div>
             <div class="${CLS.aiHead}" style="font-size:17px">Auto Submit</div>
-            <div class="${CLS.aiHint}" style="margin:2px 0 0">Book automatically when a date in your range appears.</div>
+            <div class="${CLS.aiHint}" style="margin:2px 0 0">Book only dates in your From–To range. Out of range → jump calendar, no book.</div>
           </div>
           <button type="button" id="${ID.aiSubmitSw}" class="${CLS.aiSwitch}" role="switch" aria-checked="false" aria-label="Auto Submit">
             <span class="${CLS.aiKnob}"></span>
@@ -2896,12 +3248,15 @@ export function ensureAiSubmitUi() {
         </div>
       </div>
       <div class="${CLS.aiSec}">
-        <div class="${CLS.aiRow}" style="margin:0">
-          <button type="button" id="${ID.aiLoginToggle}">Login details ▸</button>
-          <button type="button" id="${ID.aiClose}">Close</button>
+        <div id="${ID.aiProfiles}" class="${CLS.aiQl}">
+          <div class="${CLS.aiQlTitle}">Quick Login Profiles</div>
+          <p class="${CLS.aiQlSub}">Active Profile is used for quick login to the visa portal.</p>
+          <div id="${ID.aiProfilesList}"></div>
+          <button type="button" id="${ID.aiAddProfile}" class="${CLS.aiQlAdd}">+ Add Profile</button>
         </div>
-        <div id="${ID.aiLoginBody}" class="${CLS.hidden}" style="margin-top:8px">
-          <div class="${CLS.aiHint}" style="margin:4px 0;font-weight:600;color:#111827">Login (auto-login on Home when logged out)</div>
+        <div id="${ID.aiLoginBody}" class="${CLS.hidden}" style="margin-top:10px">
+          <div id="${ID.aiLoginEditorTitle}" class="${CLS.aiHead}" style="font-size:15px;margin:0 0 8px">Add Quick Login Profile</div>
+          <div class="${CLS.aiHint}" style="margin:0 0 8px">Saved on this computer only. Used for auto-login on Home when logged out.</div>
           <div class="${CLS.aiRow}">
             <label>ID / email <input type="email" id="${ID.aiLogin}" autocomplete="off" /></label>
             <label>Password <input type="password" id="${ID.aiPass}" autocomplete="off" /></label>
@@ -2934,8 +3289,12 @@ export function ensureAiSubmitUi() {
             </label>
           </div>
           <div class="${CLS.aiRow}">
-            <button type="button" id="${ID.aiSaveLogin}">Save login details</button>
+            <button type="button" id="${ID.aiSaveLogin}">Save profile</button>
+            <button type="button" id="${ID.aiLoginCancel}">Cancel</button>
           </div>
+        </div>
+        <div class="${CLS.aiRow}" style="margin-top:10px">
+          <button type="button" id="${ID.aiClose}">Close</button>
         </div>
       </div>
     </div>
@@ -2958,10 +3317,21 @@ export function ensureAiSubmitUi() {
   vs.on(panel.querySelector(idSel(ID.aiWinSave)), "click", _onSaveTimings);
   vs.on(panel.querySelector(idSel(ID.aiWinReset)), "click", _onResetTimings);
   vs.on(panel.querySelector(idSel(ID.aiSaveLogin)), "click", _onSaveLogin);
-  vs.on(panel.querySelector(idSel(ID.aiLoginToggle)), "click", _onToggleLoginDetails);
+  vs.on(panel.querySelector(idSel(ID.aiLoginCancel)), "click", _onCancelLoginEditor);
+  vs.on(panel.querySelector(idSel(ID.aiAddProfile)), "click", _onAddLoginProfile);
+  vs.on(panel.querySelector(idSel(ID.aiProfilesList)), "click", _onProfilesListClick);
   vs.on(panel.querySelector(idSel(ID.aiClose)), "click", () => _togglePanel(false));
-  vs.on(panel.querySelector(idSel(ID.aiCitiesAll)), "click", () => _setAllCitiesChecked(true));
-  vs.on(panel.querySelector(idSel(ID.aiCitiesNone)), "click", () => _setAllCitiesChecked(false));
+  vs.on(panel.querySelector(idSel(ID.aiCitiesAll)), "click", () => {
+    _setAllCitiesChecked(true);
+    _onCitiesChecklistChanged();
+  });
+  vs.on(panel.querySelector(idSel(ID.aiCitiesNone)), "click", () => {
+    _setAllCitiesChecked(false);
+    _onCitiesChecklistChanged();
+  });
+  vs.on(panel.querySelector(idSel(ID.aiCities)), "change", (e) => {
+    if (e.target && e.target.type === "checkbox") _onCitiesChecklistChanged();
+  });
   vs.on(panel.querySelector(idSel(ID.aiTermsAgree)), "change", () => { _onTermsAgreeToggle(); });
   vs.on(panel.querySelector(idSel(ID.aiTermsContinue)), "click", () => { _onTermsContinue(); });
 

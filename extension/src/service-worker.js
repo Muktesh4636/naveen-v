@@ -179,7 +179,7 @@ function readOfcAppointments(prefix) {
 // MAIN-world helper: trigger date-picker selection.
 // (No extension-branded state needed here.)
 // ---------------------------------------------------------------------------
-function selectFirstDate(dateStr, maxMs, pollMs) {
+function selectFirstDate(dateStr, maxMs, pollMs, navigateOnly) {
   if (!dateStr) return;
   const [year, month, day] = dateStr.slice(0, 10).split("-").map(Number);
   if (!year || !month || !day) return;
@@ -189,9 +189,52 @@ function selectFirstDate(dateStr, maxMs, pollMs) {
   const uiMonth = month - 1;
   const formatted =
     String(month).padStart(2, "0") + "/" + String(day).padStart(2, "0") + "/" + year;
+  const monthOnly = !!navigateOnly;
+
+  /** Navigate calendar month without booking (no onSelect / no time load). */
+  const navigateMonthOnly = ($) => {
+    const picker = $("#datepicker");
+    if (!picker.length) return false;
+    if (!picker.hasClass("hasDatepicker")) {
+      try { picker.datepicker(); } catch (e) {}
+    }
+    if (!picker.hasClass("hasDatepicker")) return false;
+    const target = new Date(year, uiMonth, day);
+    try {
+      try { picker.datepicker("hide"); } catch (e) {}
+      picker.datepicker("option", "defaultDate", target);
+      picker.datepicker("setDate", target);
+      // Clear selection highlight so portal does not treat this as a booked pick.
+      const root = picker[0];
+      if (root) {
+        root.querySelectorAll("td.ui-datepicker-current-day").forEach((td) => {
+          td.classList.remove("ui-datepicker-current-day");
+        });
+        root.querySelectorAll('a.ui-state-active[aria-current="true"]').forEach((a) => {
+          a.classList.remove("ui-state-active");
+          a.setAttribute("aria-current", "false");
+        });
+      }
+      const div = document.getElementById("ui-datepicker-div");
+      if (div) {
+        div.querySelectorAll("td.ui-datepicker-current-day").forEach((td) => {
+          td.classList.remove("ui-datepicker-current-day");
+        });
+        div.querySelectorAll('a.ui-state-active[aria-current="true"]').forEach((a) => {
+          a.classList.remove("ui-state-active");
+          a.setAttribute("aria-current", "false");
+        });
+      }
+    } catch (e) {
+      return false;
+    }
+    return true;
+  };
 
   /** Fast path: set date via API / input — do NOT open the calendar popup. */
   const setDateDirect = ($) => {
+    if (monthOnly) return navigateMonthOnly($);
+
     const picker = $("#datepicker");
     if (!picker.length) return false;
 
@@ -264,7 +307,7 @@ function selectFirstDate(dateStr, maxMs, pollMs) {
       picker.datepicker("setDate", target);
       picker.datepicker("option", "defaultDate", target);
       try { picker.datepicker("show"); } catch (e) {}
-    } catch (e) {
+  } catch (e) {
       return false;
     }
 
@@ -337,7 +380,8 @@ function selectFirstDate(dateStr, maxMs, pollMs) {
     }
     try {
       if (setDateDirect($)) return;
-      if (clickDateInWidget($)) return;
+      // Never click a day cell for navigate-only — that would book/load times.
+      if (!monthOnly && clickDateInWidget($)) return;
     } catch (e) {}
     if (Date.now() < deadline) setTimeout(trySelect, tickMs);
   };
@@ -1521,6 +1565,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       message.date,
       message.maxMs ?? 8000,
       message.pollMs ?? 25,
+      !!message.navigateOnly,
     ]);
   }
   if (message.action === "forcePickTimeSlot" && tabId) {
@@ -1563,8 +1608,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     runInTab(tabId, clickSubmitButton, [message.prefix || ""]);
   }
   if (message.action === "selectPost" && tabId) {
-    if (!isInSlotWindow()) return;
+    // Force hops (shared city alerts) must work outside IST windows.
+    if (!message.force && !isInSlotWindow()) return;
     runInTab(tabId, selectConsularPost, [message.postId]);
+  }
+  if (message.action === "focusScheduleTab" && tabId) {
+    chrome.tabs.update(tabId, { active: true }).catch(() => {});
   }
   if (message.action === "registerAlertGuard" && tabId) {
     runInTab(tabId, interceptNativeDialogs, [message.prefix]);

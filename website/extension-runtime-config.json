@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updatedAt": "2026-09-18",
+  "updatedAt": "2026-09-19",
   "slotWindowLabel": ":14–:21, :24–:31, :54–:02",
   "slotWindows": [
     { "slot": 1, "fromMin": 0, "toMin": 2 },
@@ -8,14 +8,14 @@
     { "slot": 3, "fromMin": 24, "toMin": 31 },
     { "slot": 4, "fromMin": 54, "toMin": 59 }
   ],
-  "cityLoadingMaxMs": 180000,
+  "cityLoadingMaxMs": 120000,
   "cityCalendarNoDatesMs": 20000,
-  "cityRotateMinGapMs": 13000,
+  "cityRotateMinGapMs": 15000,
   "cityRotateMaxGapMs": 18000,
   "cityHoldMaxMs": 45000,
   "homeKeepaliveMinMs": 600000,
   "homeKeepaliveMaxMs": 600000,
   "homeKeepaliveDebounceMs": 480000,
-  "loadingStuckMs": 120000,
+  "loadingStuckMs": 60000,
   "loadingStuckDebounceMs": 90000
 }

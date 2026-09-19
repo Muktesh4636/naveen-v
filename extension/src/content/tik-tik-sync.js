@@ -46,6 +46,15 @@ export function mergeServerTikTikPrefs(localCfg, serverPrefs) {
     return local;
   }
   const safe = pickSafeTikTikPrefs(serverPrefs);
+  // Never let an empty server cities list wipe cities the user already saved locally.
+  if (
+    Array.isArray(safe.cities) &&
+    !safe.cities.length &&
+    Array.isArray(local.cities) &&
+    local.cities.length
+  ) {
+    delete safe.cities;
+  }
   const next = { ...local, ...safe };
   if (typeof safe.submitEnabled === "boolean") next.enabled = safe.submitEnabled;
   if (serverPrefs.updatedAt) next.serverUpdatedAt = serverPrefs.updatedAt;

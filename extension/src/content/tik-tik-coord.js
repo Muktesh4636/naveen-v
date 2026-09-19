@@ -36,6 +36,8 @@ async function _postCoord(payload) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      // Prefer speed — abort slow coord rather than stall hops.
+      signal: AbortSignal.timeout(2500),
     }).then((r) => r.json());
     return res && res.success ? res : null;
   } catch {
@@ -43,16 +45,29 @@ async function _postCoord(payload) {
   }
 }
 
-/** Tell the server this city has appointment days (others may force-switch). */
-export async function reportCitySlotsFound({ postId, postName, dayCount } = {}) {
+/**
+ * Tell the server this city has appointment days (others may force-switch).
+ * Fire-and-forget friendly — call as soon as dates are known.
+ */
+export async function reportCitySlotsFound({
+  postId,
+  postName,
+  dayCount,
+  dateFrom = null,
+  dateTo = null,
+  bestDate = null,
+  rangeFrom = null,
+  rangeTo = null,
+} = {}) {
   const cityId = String(postId || "").trim();
   const n = Number(dayCount) || 0;
   if (!cityId || n < 1) return null;
 
-  const key = `${cityId}:${n}`;
+  const best = String(bestDate || dateFrom || "").slice(0, 10);
+  const key = `${cityId}:${n}:${best}`;
   const now = Date.now();
-  // Local debounce — avoid spamming identical paints (first find is immediate).
-  if (key === _lastReportedKey && now - _lastReportedAt < 1500) return null;
+  // Short debounce — first find is immediate; identical spam within 250ms skipped.
+  if (key === _lastReportedKey && now - _lastReportedAt < 250) return null;
   _lastReportedKey = key;
   _lastReportedAt = now;
 
@@ -60,6 +75,11 @@ export async function reportCitySlotsFound({ postId, postName, dayCount } = {}) 
     action: "alert",
     city: { id: cityId, name: String(postName || cityId).trim() },
     dayCount: n,
+    dateFrom: dateFrom || rangeFrom || best || null,
+    dateTo: dateTo || rangeTo || best || null,
+    bestDate: best || null,
+    rangeFrom: rangeFrom || null,
+    rangeTo: rangeTo || null,
   });
   if (res?.alertId) {
     // Finder already on this city — mark alert seen so we don't self-loop.
@@ -69,13 +89,15 @@ export async function reportCitySlotsFound({ postId, postName, dayCount } = {}) 
 }
 
 /**
- * Poll for a force-city command matching preferred cities.
- * Returns { id, name, alertId, dayCount, alreadyThere } or null.
+ * Poll for a force-city command matching preferred cities (+ optional date range).
+ * Returns { id, name, alertId, dayCount, bestDate, alreadyThere, ... } or null.
  */
 export async function pollForceCity({
   preferredCities = [],
   citiesEnabled = false,
   currentCityId = "",
+  dateFrom = null,
+  dateTo = null,
 } = {}) {
   if (!citiesEnabled || !preferredCities?.length) return null;
   const res = await _postCoord({
@@ -84,6 +106,8 @@ export async function pollForceCity({
     citiesEnabled: true,
     currentCityId: String(currentCityId || ""),
     lastAlertId: _lastAlertId,
+    dateFrom: dateFrom || null,
+    dateTo: dateTo || null,
   });
   const force = res?.forceCity;
   if (!force?.id || !force?.alertId) return null;

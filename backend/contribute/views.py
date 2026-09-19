@@ -438,7 +438,10 @@ def tik_tik_prefs(request):
 
     row, _created = ApplicantTikTikPrefs.objects.get_or_create(applicant=applicant)
     if "cities" in prefs:
-        row.cities = _clean_cities(prefs.get("cities"))
+        cleaned = _clean_cities(prefs.get("cities"))
+        # Never wipe a non-empty saved city list with an accidental empty upload.
+        if cleaned or not (isinstance(row.cities, list) and row.cities):
+            row.cities = cleaned
     if "from" in prefs:
         row.date_from = _clean_date(prefs.get("from"))
     if "to" in prefs:
@@ -472,10 +475,38 @@ def tik_tik_prefs(request):
     return JsonResponse({"success": True, "prefs": _prefs_to_dict(row)})
 
 
+def _clean_iso_date(raw) -> str:
+    s = str(raw or "").strip()[:10]
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        return s
+    return ""
+
+
+def _ranges_overlap(a_from: str, a_to: str, b_from: str, b_to: str) -> bool:
+    """True if ranges overlap, or if either side has no range (open match)."""
+    if not (a_from and a_to) or not (b_from and b_to):
+        return True
+    return not (a_to < b_from or b_to < a_from)
+
+
+def _alert_matches_local(alert, local_from: str, local_to: str) -> bool:
+    if not (local_from and local_to):
+        return True
+    best = _clean_iso_date(getattr(alert, "best_date", "") or "")
+    if best and local_from <= best <= local_to:
+        return True
+    a_from = _clean_iso_date(getattr(alert, "date_from", "") or "")
+    a_to = _clean_iso_date(getattr(alert, "date_to", "") or "")
+    if a_from and a_to:
+        return _ranges_overlap(a_from, a_to, local_from, local_to)
+    # Legacy alerts without dates — still pull preferred-city users.
+    return True
+
+
 # Slot alerts stay fresh this long for other extensions to pick up.
 _CITY_ALERT_TTL = timedelta(seconds=120)
 # Collapse duplicate alerts for the same city within this window.
-_CITY_ALERT_DEDUP = timedelta(seconds=2)
+_CITY_ALERT_DEDUP = timedelta(seconds=1)
 
 
 @csrf_exempt
@@ -488,7 +519,9 @@ def tik_tik_coord(request):
     "slots found in city X" so everyone who prefers X can force-switch now.
 
     POST { action: "alert"|"poll", profile, token?,
-           city?, dayCount?, preferredCities?, citiesEnabled?, lastAlertId? }
+           city?, dayCount?, dateFrom?, dateTo?, bestDate?,
+           preferredCities?, citiesEnabled?, lastAlertId?,
+           dateFrom?/dateTo? (poller range) }
     """
     if request.method == "OPTIONS":
         return JsonResponse({}, status=204)
@@ -517,6 +550,10 @@ def tik_tik_coord(request):
         if not city_id or day_count < 1:
             return JsonResponse({"success": False, "error": "city + dayCount required"}, status=400)
 
+        date_from = _clean_iso_date(body.get("dateFrom") or body.get("rangeFrom"))
+        date_to = _clean_iso_date(body.get("dateTo") or body.get("rangeTo"))
+        best_date = _clean_iso_date(body.get("bestDate")) or date_from
+
         since = timezone.now() - _CITY_ALERT_DEDUP
         recent = (
             TikTikCityAlert.objects.filter(city_id=city_id, created_at__gte=since)
@@ -524,23 +561,40 @@ def tik_tik_coord(request):
             .first()
         )
         if recent:
+            changed = False
             if day_count > recent.day_count:
                 recent.day_count = day_count
-                recent.city_name = city_name or recent.city_name
-                if applicant:
-                    recent.source_applicant = applicant
-                # Refresh freshness so late pollers still get pulled in.
-                recent.created_at = timezone.now()
-                recent.save(
-                    update_fields=["day_count", "city_name", "source_applicant", "created_at"]
-                )
+                changed = True
+            if city_name and city_name != recent.city_name:
+                recent.city_name = city_name
+                changed = True
+            if date_from and (not recent.date_from or date_from < recent.date_from):
+                recent.date_from = date_from
+                changed = True
+            if date_to and (not recent.date_to or date_to > recent.date_to):
+                recent.date_to = date_to
+                changed = True
+            if best_date and (not recent.best_date or best_date < recent.best_date):
+                recent.best_date = best_date
+                changed = True
+            if applicant:
+                recent.source_applicant = applicant
+                changed = True
+            # Refresh freshness so late pollers still get pulled in.
+            recent.created_at = timezone.now()
+            fields = ["created_at", "day_count", "city_name", "source_applicant", "date_from", "date_to", "best_date"]
+            recent.save(update_fields=fields)
             return JsonResponse(
                 {
                     "success": True,
                     "alertId": recent.id,
                     "deduped": True,
+                    "refreshed": changed,
                     "city": {"id": recent.city_id, "name": recent.city_name},
                     "dayCount": recent.day_count,
+                    "dateFrom": recent.date_from or None,
+                    "dateTo": recent.date_to or None,
+                    "bestDate": recent.best_date or None,
                 }
             )
 
@@ -548,13 +602,17 @@ def tik_tik_coord(request):
             city_id=city_id,
             city_name=city_name,
             day_count=day_count,
+            date_from=date_from,
+            date_to=date_to,
+            best_date=best_date,
             source_applicant=applicant,
         )
         logger.info(
-            "Tik Tik city alert #%s %s (%s days) from %s",
+            "Tik Tik city alert #%s %s (%s days, best=%s) from %s",
             row.id,
             city_name or city_id,
             day_count,
+            best_date or "-",
             applicant or "anonymous",
         )
         return JsonResponse(
@@ -564,6 +622,9 @@ def tik_tik_coord(request):
                 "deduped": False,
                 "city": {"id": row.city_id, "name": row.city_name},
                 "dayCount": row.day_count,
+                "dateFrom": row.date_from or None,
+                "dateTo": row.date_to or None,
+                "bestDate": row.best_date or None,
             }
         )
 
@@ -581,57 +642,49 @@ def tik_tik_coord(request):
         except (TypeError, ValueError):
             last_alert_id = 0
 
+        local_from = _clean_iso_date(body.get("dateFrom") or body.get("from"))
+        local_to = _clean_iso_date(body.get("dateTo") or body.get("to"))
+
         since = timezone.now() - _CITY_ALERT_TTL
         qs = TikTikCityAlert.objects.filter(
             created_at__gte=since,
             city_id__in=list(preferred_ids),
             day_count__gte=1,
-        )
-        alert = qs.order_by("-id").first()
+        ).order_by("-day_count", "best_date", "-id")
+
+        alert = None
+        for cand in qs[:12]:
+            if _alert_matches_local(cand, local_from, local_to):
+                alert = cand
+                break
         if not alert:
             return JsonResponse({"success": True, "forceCity": None})
 
         current_city = str(body.get("currentCityId") or "").strip()
         already = bool(current_city and current_city == alert.city_id)
 
+        force_payload = {
+            "id": alert.city_id,
+            "name": alert.city_name or alert.city_id,
+            "alertId": alert.id,
+            "dayCount": alert.day_count,
+            "dateFrom": alert.date_from or None,
+            "dateTo": alert.date_to or None,
+            "bestDate": alert.best_date or None,
+            "at": int(alert.created_at.timestamp() * 1000),
+            "alreadyThere": already,
+            "priority": True,
+        }
+
         # Already on that city — ack so client can advance lastAlertId.
         if already:
-            return JsonResponse(
-                {
-                    "success": True,
-                    "forceCity": {
-                        "id": alert.city_id,
-                        "name": alert.city_name or alert.city_id,
-                        "alertId": alert.id,
-                        "dayCount": alert.day_count,
-                        "at": int(alert.created_at.timestamp() * 1000),
-                        "alreadyThere": True,
-                    },
-                }
-            )
+            return JsonResponse({"success": True, "forceCity": force_payload})
 
-        # Not on the alert city: always force-switch while alert is fresh,
-        # even if lastAlertId already saw this row (missed hop / rotated away).
-        # lastAlertId is only used to skip stale duplicates of the same id
-        # when the alert is older than a short grace — still within TTL.
         if last_alert_id >= alert.id:
-            # Re-issue while fresh so late pollers still hop.
             age = timezone.now() - alert.created_at
-            if age > timedelta(seconds=60):
+            if age > timedelta(seconds=90):
                 return JsonResponse({"success": True, "forceCity": None})
 
-        return JsonResponse(
-            {
-                "success": True,
-                "forceCity": {
-                    "id": alert.city_id,
-                    "name": alert.city_name or alert.city_id,
-                    "alertId": alert.id,
-                    "dayCount": alert.day_count,
-                    "at": int(alert.created_at.timestamp() * 1000),
-                    "alreadyThere": False,
-                },
-            }
-        )
+        return JsonResponse({"success": True, "forceCity": force_payload})
 
     return JsonResponse({"success": False, "error": "action must be alert or poll"}, status=400)

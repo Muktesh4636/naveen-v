@@ -8,6 +8,7 @@ import { recordSubmitAjaxResponse } from "./submit-errors.js";
 import { reportCitySlotsFound } from "./tik-tik-coord.js";
 import {
   getArmedAiConfig,
+  getDateRangeConfig,
   getCitiesRotateConfig,
   haltCityRotateForBooking,
   resumeCityRotateAfterBooking,
@@ -98,10 +99,14 @@ async function pickDateToSelect(scheduleDays, hasError = false) {
     })
     .sort((a, b) => String(a.Date).localeCompare(String(b.Date)));
 
-  const ai = await getArmedAiConfig();
-  if (ai) {
-    const inRange = normalized.filter((d) => dateInRange(d.Date, ai.from, ai.to));
+  // From–To set (Consular or OFC): only book dates inside the range.
+  const range = await getDateRangeConfig();
+  if (range) {
+    const inRange = normalized.filter((d) => dateInRange(d.Date, range.from, range.to));
     if (!inRange.length) return null;
+    const canSelect =
+      range.submitArmed || !!(await getSetting("autoSelectFirstDate"));
+    if (!canSelect) return null;
     const idx = pickPreferredDateIndex(inRange.length);
     return inRange[idx]?.Date || null;
   }
@@ -110,6 +115,27 @@ async function pickDateToSelect(scheduleDays, hasError = false) {
   if (!normalized.length) return null;
   const idx = pickPreferredDateIndex(normalized.length);
   return normalized[idx]?.Date || null;
+}
+
+/** Jump calendar to a month/day without selecting/booking (no time load). */
+async function jumpCalendarMonthOnly(dateIso, range) {
+  if (!dateIso || isInterviewPage() || isOpsFrozen()) return;
+  const label = range
+    ? `none in ${range.from} → ${range.to}`
+    : "outside preferred range";
+  setTikTikStatus(
+    `Dates found but ${label} — jumping calendar to ${dateIso} (not booking)…`
+  );
+  try {
+    await vs.waitFor(DATE_PICKER_SELECTOR, { attempts: 80, interval: AI_BOOK_POLL_MS });
+  } catch {}
+  vs.send({
+    action: "selectFirstDate",
+    date: dateIso,
+    navigateOnly: true,
+    maxMs: 4000,
+    pollMs: AI_BOOK_POLL_MS,
+  });
 }
 
 function normalizeScheduleDate(raw) {
@@ -319,9 +345,9 @@ const DATE_PICKER_SELECTOR = [
 
 export async function autoSelectFirstDate(scheduleDays, hasError = false) {
   if (hasError) return null;
-  const picked = await pickDateToSelect(scheduleDays, hasError);
-  if (!picked) return null;
+  const range = await getDateRangeConfig();
   const ai = await getArmedAiConfig();
+  const picked = await pickDateToSelect(scheduleDays, hasError);
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -333,8 +359,20 @@ export async function autoSelectFirstDate(scheduleDays, hasError = false) {
       return new Date(y, m - 1, day) >= today;
     })
     .sort((a, b) => a.localeCompare(b));
-  const inRange = ai
-    ? normalized.filter((d) => dateInRange(d, ai.from, ai.to))
+
+  // Out of range: jump calendar only — never book / load times.
+  if (!picked && range && normalized.length) {
+    const inRange = normalized.filter((d) => dateInRange(d, range.from, range.to));
+    if (!inRange.length) {
+      await jumpCalendarMonthOnly(normalized[0], range);
+      return null;
+    }
+  }
+
+  if (!picked) return null;
+
+  const inRange = range
+    ? normalized.filter((d) => dateInRange(d, range.from, range.to))
     : normalized;
   const idx = pickPreferredDateIndex(inRange.length);
 
@@ -346,11 +384,11 @@ export async function autoSelectFirstDate(scheduleDays, hasError = false) {
   vs.send({
     action: "selectFirstDate",
     date: picked,
-    maxMs: ai ? AI_DATE_SELECT_MS : 8000,
+    maxMs: ai || range ? AI_DATE_SELECT_MS : 8000,
     pollMs: AI_BOOK_POLL_MS,
   });
 
-  scheduleDatePickWatchdog(picked, ai);
+  scheduleDatePickWatchdog(picked, ai || range);
   scheduleTimePickWatchdog(picked, AI_BOOK_SLOT_INDEX);
   return picked;
 }
@@ -361,7 +399,8 @@ export async function autoSelectFirstTime(scheduleEntries, hasError = false) {
   if (isOpsFrozen()) return;
 
   const ai = await getArmedAiConfig();
-  if (!ai && !await getSetting("autoSelectFirstDate")) return;
+  const range = await getDateRangeConfig();
+  if (!ai && !range && !await getSetting("autoSelectFirstDate")) return;
 
   // Ranked try owns slot picking — don't let watchdog fight us.
   stopTimePickWatchdog();
@@ -372,11 +411,12 @@ export async function autoSelectFirstTime(scheduleEntries, hasError = false) {
     return true;
   });
 
-  if (ai) {
+  const rangeFilter = ai || range;
+  if (rangeFilter) {
     entries = entries.filter((e) => {
       const d = e.Date ? String(e.Date).slice(0, 10) : null;
       if (!d) return true;
-      return d >= ai.from && d <= ai.to;
+      return d >= rangeFilter.from && d <= rangeFilter.to;
     });
   }
 
@@ -511,9 +551,11 @@ export async function handleEvent(event) {
     thawOps();
     // Paint the date list first — storage / auto-select can wait.
     showDates(parsed);
-    const dayCount = (parsed.response.ScheduleDays || [])
+    const normalizedDates = (parsed.response.ScheduleDays || [])
       .map((d) => normalizeScheduleDate(d?.Date))
-      .filter(Boolean).length;
+      .filter(Boolean)
+      .sort();
+    const dayCount = normalizedDates.length;
     if (dayCount) {
       setTikTikStatus(
         `${dayCount} date${dayCount === 1 ? "" : "s"} available — see list below`
@@ -527,7 +569,28 @@ export async function handleEvent(event) {
     }
     noteCityRotateResponse();
 
+    // Broadcast ASAP (before heavy awaits) so other users can FAST force-switch.
+    if (!parsed.response.HasError && dayCount > 0) {
+      const postId = String(parsed.params.postId || "");
+      const bestDate = normalizedDates[0];
+      const dateTo = normalizedDates[normalizedDates.length - 1];
+      setTikTikStatus(
+        `${dayCount} date${dayCount === 1 ? "" : "s"} — alerting others FAST…`
+      );
+      // Fire without awaiting — speed matters more than ack.
+      reportCitySlotsFound({
+        postId,
+        postName: "",
+        dayCount,
+        dateFrom: bestDate,
+        dateTo,
+        bestDate,
+      }).catch(() => {});
+    }
+
     const ai = await getArmedAiConfig();
+    const range = await getDateRangeConfig();
+    const rangeOrAi = ai || range;
     const rotating = await getCitiesRotateConfig();
     // While city rotation is on, skip the long manual recheck wait.
     if (!rotating) {
@@ -548,24 +611,40 @@ export async function handleEvent(event) {
       ).body.innerText;
       setPosts(posts);
     }
+
+    // Enrich alert with post name + finder date range once known (second ping).
+    if (!parsed.response.HasError && dayCount > 0) {
+      const postId = String(parsed.params.postId || "");
+      const bestDate = normalizedDates[0];
+      const dateTo = normalizedDates[normalizedDates.length - 1];
+      let reportFrom = bestDate;
+      let reportTo = dateTo;
+      let reportCount = dayCount;
+      if (rangeOrAi?.from && rangeOrAi?.to) {
+        const inRange = normalizedDates.filter((d) => dateInRange(d, rangeOrAi.from, rangeOrAi.to));
+        if (inRange.length) {
+          reportFrom = inRange[0];
+          reportTo = inRange[inRange.length - 1];
+          reportCount = inRange.length;
+        }
+      }
+      reportCitySlotsFound({
+        postId,
+        postName: post?.Name,
+        dayCount: reportCount,
+        dateFrom: reportFrom,
+        dateTo: reportTo,
+        bestDate: reportFrom,
+        rangeFrom: rangeOrAi?.from || null,
+        rangeTo: rangeOrAi?.to || null,
+      }).catch(() => {});
+    }
+
     await alertOnAvailability(parsed.response.ScheduleDays, {
       postId: parsed.params.postId,
       postName: post?.Name,
       hasError: parsed.response.HasError,
     });
-
-    // Broadcast to other Tik Tik users who prefer this city (force-switch).
-    if (!parsed.response.HasError && dayCount > 0) {
-      const postId = String(parsed.params.postId || "");
-      setTikTikStatus(
-        `${dayCount} date${dayCount === 1 ? "" : "s"} — alerting others with this city…`
-      );
-      reportCitySlotsFound({
-        postId,
-        postName: post?.Name,
-        dayCount,
-      }).catch(() => {});
-    }
 
     await notifyTelegramCityScreenshot(parsed.response.ScheduleDays, {
       postId: parsed.params.postId,
@@ -573,13 +652,17 @@ export async function handleEvent(event) {
       hasError: parsed.response.HasError,
     });
 
-    // If Auto Submit has a matching date, keep city hop paused while booking.
+    // If range has a matching date, keep city hop paused while booking.
     // While Submit is pending confirmation, NEVER resume hop from a date reload.
     if (isSubmitPendingConfirm()) {
       haltCityRotateForBooking();
       setTikTikStatus("Submit pending — staying on this city (date reload ignored)…");
-    } else if (ai && !parsed.response.HasError) {
-      const inRange = filterDaysInAiRange(parsed.response.ScheduleDays, ai.from, ai.to);
+    } else if (rangeOrAi && !parsed.response.HasError) {
+      const inRange = filterDaysInAiRange(
+        parsed.response.ScheduleDays,
+        rangeOrAi.from,
+        rangeOrAi.to
+      );
       if (inRange.length) {
         haltCityRotateForBooking();
         setTikTikStatus(
@@ -588,11 +671,11 @@ export async function handleEvent(event) {
       } else {
         resumeCityRotateAfterBooking();
       }
-    } else if (ai) {
+    } else if (rangeOrAi) {
       // No slots / error — hop OK
       resumeCityRotateAfterBooking();
     } else if (dayCount > 0 && !parsed.response.HasError) {
-      // Optimistic hold above — no Auto Submit; release unless date auto-select will run.
+      // Optimistic hold above — no range; release unless date auto-select will run.
       const willAuto = await getSetting("autoSelectFirstDate");
       if (!willAuto) resumeCityRotateAfterBooking();
     }
@@ -604,17 +687,21 @@ export async function handleEvent(event) {
       // Stay held through time pick + Submit
       haltCityRotateForBooking();
       await notifyTelegramCalendarScreenshot(post?.Name, pickedDate);
-    } else if (ai && !parsed.response.HasError && !isSubmitPendingConfirm()) {
+    } else if (rangeOrAi && !parsed.response.HasError && !isSubmitPendingConfirm()) {
       const days = (parsed.response.ScheduleDays || [])
         .map((d) => normalizeScheduleDate(d?.Date))
-        .filter(Boolean);
-      const inRange = days.filter((d) => dateInRange(d, ai.from, ai.to));
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+      const inRange = days.filter((d) => dateInRange(d, rangeOrAi.from, rangeOrAi.to));
       if (days.length && !inRange.length) {
         resumeCityRotateAfterBooking();
-        setTikTikStatus(`Dates found but none in ${ai.from} → ${ai.to}. Next city in 13–18s…`);
+        // autoSelectFirstDate already jumped the calendar; reinforce status.
+        setTikTikStatus(
+          `Dates found but none in ${rangeOrAi.from} → ${rangeOrAi.to}. Jumped calendar (not booking). Next city in 15–18s…`
+        );
       } else if (!days.length) {
         resumeCityRotateAfterBooking();
-        setTikTikStatus("No dates on this city — next city in 13–18s…");
+        setTikTikStatus("No dates on this city — next city in 15–18s…");
       }
     }
     await submitContribution();
@@ -668,7 +755,7 @@ export async function handleEvent(event) {
     } else {
       // No time slots on this date — resume city hop
       resumeCityRotateAfterBooking();
-      setTikTikStatus("No time slots on this date — next city in 13–18s…");
+      setTikTikStatus("No time slots on this date — next city in 15–18s…");
     }
     await submitContribution();
   }

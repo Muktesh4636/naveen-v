@@ -492,6 +492,98 @@ export var CSS = `
 #${ID.aiWinReset} { background: #eef0f3; color: #374151; }
 #${ID.aiLoginToggle} { background: #eef0f3; color: #111827; }
 
+#${ID.aiPanel} .${CLS.aiQl} {
+  margin-top: 4px;
+  padding: 14px 14px 12px;
+  border: 1px solid #111827;
+  border-radius: 10px;
+  background: #fff;
+}
+#${ID.aiPanel} .${CLS.aiQlTitle} {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+}
+#${ID.aiPanel} .${CLS.aiQlSub} {
+  margin: 4px 0 12px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.35;
+}
+#${ID.aiPanel} .${CLS.aiQlCard} {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid #e2e8f0;
+}
+#${ID.aiPanel} .${CLS.aiQlCard}:first-child {
+  border-top: none;
+  padding-top: 2px;
+}
+#${ID.aiPanel} .${CLS.aiQlMeta} {
+  min-width: 0;
+  flex: 1;
+}
+#${ID.aiPanel} .${CLS.aiQlMeta} strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  word-break: break-word;
+}
+#${ID.aiPanel} .${CLS.aiQlMeta} span {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: #64748b;
+}
+#${ID.aiPanel} .${CLS.aiQlBadge} {
+  flex-shrink: 0;
+  margin-top: 2px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: #16a34a;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+#${ID.aiPanel} .${CLS.aiQlEdit} {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+#${ID.aiPanel} .${CLS.aiQlEdit}:hover { color: #1d4ed8; }
+#${ID.aiPanel} .${CLS.aiQlAdd} {
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid #111827;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+#${ID.aiPanel} .${CLS.aiQlAdd}:hover { background: #f8fafc; }
+#${ID.aiPanel} .${CLS.aiQlEmpty} {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: #64748b;
+}
+
 #${ID.aiPanel} .${CLS.aiSwitch} {
   position: relative;
   width: 48px;
