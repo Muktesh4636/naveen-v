@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<!--
+============================================================================
+FILE
+- content/popup/popup.html
+
+PURPOSE
+- Defines the FindVisaSlots Chrome extension popup layout and popup-owned UI mounts.
+
+STORAGE CONTRACT
+- None directly. Storage reads/writes are owned by popup scripts.
+
+SERVER API
+- None directly.
+
+SELECTOR EVIDENCE
+- #vsaIdentityBar, #tierBadge, #displayEmail, #btnSyncAccount, and #btnLogout
+  are defined in this file and consumed by content/popup/popup.js.
+- #mobileOnlyPremiumNote is defined here and consumed by
+  content/popup/popup.js.
+
+RUNTIME INVARIANTS
+- popup.js runs after this popup-owned markup is loaded.
+- Account tier and Chrome extension tier are supplied by popup.js.
+============================================================================
+-->
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Visa Slot Assistant</title>
+  <style>
+    :root {
+      --bg: #F8FAFC; --card: #FFFFFF; --text: #1E293B; --muted: #64748B;
+      --border: #E2E8F0; --accent: #2563EB;
+      --good: #111827; --bad: #E2E8F0; --err: #DC2626;
+      --prof-blue: #1E3A8A;
+      --header-bg: #111827;
+    }
+
+
+    /*
+    // [AUDIT]
+    // Goal:
+    // - Keep the Chrome popup root viewport aligned with the intended 405px body width.
+    // Invariant:
+    // - html and body use the same explicit popup width.
+    // Handles:
+    // - Observed Chrome-profile case where the popup root becomes wider than the body.
+    // Does NOT handle:
+    // - Internal component sizing or responsive layout changes.
+    // Failure mode if wrong:
+    // - The popup may show unused blank space to the right of the 405px body.
+    */
+    html {
+      width: 405px;
+    }
+
+    body {
+      width: 405px;
+      height: 600px;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, sans-serif;
+      margin: 0;
+      padding: 0;
+      font-size: 14px;
+      overflow: hidden;
+    }
+
+    .main-content {
+      padding: 18px;
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    #vsaIdentityBar {
+      display: none;
+      background: var(--header-bg);
+      color: #FFFFFF;
+      padding: 8px 12px 6px;
+      border-bottom: 1px solid #374151;
+      flex-shrink: 0;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+
+    .sub-label {
+      font-size: 10px;
+      font-weight: 700;
+      color: #9CA3AF;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 2px;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .spinning {
+      display: inline-block;
+      animation: spin 1s linear infinite;
+    }
+
+    .sync-btn-small {
+      cursor: pointer;
+      font-size: 10px;
+      color: #9CA3AF;
+      margin-left: 6px;
+      display: inline-block;
+      vertical-align: middle;
+    }
+    .sync-btn-small:hover { color: #FFFFFF; }
+
+    #displayEmail {
+      font-size: 12px;
+      font-weight: 600;
+      color: #D1D5DB;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 150px;
+      display: inline-block;
+      vertical-align: middle;
+    }
+
+    #tierBadge {
+      padding: 2px 8px;
+      border-radius: 0;
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      border: 1px solid rgba(255,255,255,0.2);
+      line-height: 1.2;
+      flex-shrink: 0;
+    }
+
+    #btnLogout {
+      background: none;
+      border: none;
+      color: #FCA5A5;
+      font-weight: 800;
+      font-size: 12px;
+      cursor: pointer;
+      padding: 6px 10px;
+      line-height: 1;
+      border-radius: 8px;
+    }
+
+    #btnLogout:hover {
+      background: rgba(252, 165, 165, 0.12);
+    }
+
+    .identity-shell {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .identity-logo {
+      width: 44px;
+      height: 44px;
+      object-fit: contain;
+      flex-shrink: 0;
+      align-self: center;
+    }
+
+    .identity-content {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .identity-top-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .identity-app-name {
+      font-size: 15px;
+      font-weight: 800;
+      color: #FFFFFF;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .identity-bottom-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 4px;
+      min-width: 0;
+    }
+
+    .identity-email-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    h1 { font-size: 20px; font-weight: 800; margin: 0 0 18px; color: var(--text); }
+
+    .card { background: var(--card); border: 1px solid #0F172A; border-radius: 12px; padding: 18px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    .card.test-config { border: 2px dashed #3B82F6; background: #EFF6FF; }
+
+    .card.active-profile {
+      border: 2px solid #0F172A;
+      position: relative;
+    }
+
+    .section-title {
+      font-size: 16px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: #0F172A;
+    }
+
+    .sub { font-size: 13px; color: #64748b; margin: 4px 0 14px; line-height: 1.5; }
+
+    .form-group-title { font-size: 15px; font-weight: 700; color: #0F172A; text-transform: none; letter-spacing: 0; margin: 22px 0 10px; border-bottom: 1.5px solid #0F172A; padding-bottom: 4px; }
+    label { display: block; font-size: 13px; font-weight: 500; color: var(--text); text-transform: none; margin: 14px 0 6px; }
+    input, select { width: 100%; border: 1.5px solid #0F172A; border-radius: 8px; padding: 10px; font-size: 14px; outline: none; background: #fff; color: var(--text); box-sizing: border-box; }
+
+    input:focus, select:focus {
+      border-color: #2563EB;
+      box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.25);
+    }
+
+    input[type="date"] { min-width: 0; max-width: 100%; }
+
+    .profile-view-text {
+      font-size: 17px;
+      font-weight: 800;
+      color: #000;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 240px;
+      line-height: 1.2;
+    }
+
+    .profile-sub-text {
+      font-size: 13px;
+      font-weight: 600;
+      color: #334155;
+      margin-top: 2px;
+      line-height: 1.25;
+    }
+
+    .remove-btn { color: var(--err); background: none; border: none; font-weight: 700; cursor: pointer; padding: 6px; font-size: 15px; }
+    .error-msg { color: var(--err); font-size: 11px; font-weight: 700; margin-top: 6px; display: none; }
+
+    .action-row { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; align-items: center; }
+    .btn-save-sm { background: var(--accent); color: white; border: none; padding: 8px 18px; border-radius: 20px; font-weight: 600; cursor: pointer; font-size: 13px; }
+    .btn-cancel-link { background: none; border: none; color: #334155; font-size: 13px; font-weight: 600; cursor: pointer; padding: 0; }
+
+    .secondary-btn { 
+      background: #F8FAFC;
+      border: 1.5px solid #0F172A;
+      padding: 6px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      color: #0F172A;
+    }
+
+    .secondary-btn:hover {
+      background: #EFF6FF;
+      border-color: #2563EB;
+      color: #2563EB;
+    }
+
+    #status { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #2563EB; color: #FFF; padding: 8px 20px; border-radius: 20px; font-size: 13px; font-weight: 700; box-shadow: 0 6px 16px rgba(37,99,235,0.28); display: none; z-index: 100; }
+
+    input.invalid, select.invalid { border-color: var(--err); }
+
+
+
+    .date-range-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .date-box {
+      flex: 1;
+      position: relative;
+      cursor: pointer;
+    }
+
+    .date-box-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: none;
+      letter-spacing: 0;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .date-box-inner {
+
+      background: #F1F5F9;
+      border: 2px solid #0F172A;
+      border-radius: 10px;
+      padding: 0 12px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      user-select: none;
+      height: 32px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .date-box-inner:hover {
+      border-color: var(--accent);
+      background: #EFF6FF;
+    }
+
+    .date-box-inner.has-date {
+      border-color: var(--accent);
+      background: #EFF6FF;
+    }
+
+    .date-box-value {
+
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--text);
+      line-height: 1.15;
+    }
+
+    .date-box-value.placeholder {
+
+      font-size: 12px;
+      font-weight: 500;
+      color: #94A3B8;
+    }
+
+    .date-box input[type="date"] {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #loggedOutOverlay {
+      display: none;
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(15, 23, 42, 0.95);
+      backdrop-filter: blur(6px);
+      z-index: 2000;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+      text-align: center;
+    }
+
+  #testTierStrip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+
+    padding: 8px 10px;
+    margin-bottom: 12px;
+
+    background: #F8FAFC;
+    border: 1px dashed #CBD5E1;
+    border-radius: 8px;
+  }
+
+  /* left side (label) = 50% */
+  #testTierStrip span {
+    flex: 1;
+    font-size: 11px;
+    font-weight: 700;
+    color: #64748B;
+    white-space: nowrap; /* prevents wrapping */
+  }
+
+  /* right side (select) = 50% */
+  #testTierStrip select {
+    flex: 1;
+    width: auto;            /* overrides global width:100% */
+    font-size: 12px;
+    padding: 4px 8px;
+    height: 28px;
+    border-radius: 6px;
+  }
+  #btnGoToPortalGhost:hover {
+    background: #A7F3D0;
+    border-color: #047857;
+    color: #047857;
+  }
+
+
+  #portalAssistCard summary.form-group-title::-webkit-details-marker {
+    display: none;
+  }
+
+  #portalAssistCard summary.form-group-title::marker {
+    content: "";
+  }
+  </style>
+</head>
+<body>
+  <div id="vsaIdentityBar">
+    <div class="identity-shell">
+      <img
+        src="../icons/icon-128x128.png"
+        alt="FindVisaSlots"
+        class="identity-logo"
+      />
+
+      <div class="identity-content">
+        <div class="identity-top-row">
+          <div style="display:flex; align-items:baseline; gap:6px; min-width:0; flex:1;">
+            <div class="identity-app-name">FindVisaSlots</div>
+              <span id="popupVersionLabel" style="font-size:10px; font-weight:700; color:#9CA3AF; flex-shrink:0;"></span>
+          </div>
+          <button id="btnLogout" type="button" title="Log out">Log out</button>
+        </div>
+
+        <!--
+        [AUDIT]
+        Goal:
+        - Explain the otherwise ambiguous Free Chrome badge for users who have
+          Mobile Premium but do not have Chrome Premium entitlement.
+        Reason:
+        - The legacy account tier represents the mobile purchase, while Chrome
+          entitlement is independently represented by extension_tier.
+        Invariant:
+        - Existing Premium/Agent Chrome users keep the current compact header.
+        - Normal Free users do not see an additional message.
+        Handles:
+        - Mobile Premium + Chrome Free.
+        Does NOT handle:
+        - Purchasing or changing entitlement.
+        - Feature gating.
+        Failure mode if wrong:
+        - Mobile Premium users may continue to interpret the Chrome Free badge
+          as contradicting their mobile purchase.
+        -->
+        <div class="identity-bottom-row">
+          <div id="tierBadge">FREE</div>
+
+          <div class="identity-email-row">
+            <span id="displayEmail">...</span>
+
+            <span id="btnSyncAccount" class="sync-btn-small">
+              <span id="syncIcon" style="display:inline-block;">↻</span>
+              <span id="syncText">refresh</span>
+            </span>
+          </div>
+        </div>
+
+        <div
+          id="mobileOnlyPremiumNote"
+          style="
+            display:none;
+            margin-top:4px;
+            font-size:9px;
+            font-weight:600;
+            color:#FCA5A5;
+            line-height:1.2;
+          "
+        >
+          Mobile Premium does not include Chrome Premium
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="supportTopMount"></div>
+
+  <!--
+  [AUDIT]
+  Goal:
+  - Provide a dedicated mount for one-time post-registration instructions.
+
+  Reason:
+  - #supportTopMount is already owned by other popup support UI and can be
+    rewritten after popup initialization.
+
+  Invariant:
+  - Post-registration onboarding does not share a DOM mount with support UI.
+  - Normal popup layout remains unchanged when onboarding is not shown.
+
+  Handles:
+  - New provisional user opened from the login-page registration overlay.
+
+  Does NOT handle:
+  - Existing verified-user code entry.
+  - Support-card rendering.
+
+  Failure mode if wrong:
+  - New-user instructions may be overwritten shortly after popup initialization.
+  -->
+  <div id="realtimeFeedOnboardingMount"></div>
+
+  <div class="main-content">
+
+
+
+    <div id="authCardMount"></div>
+    <div id="portalAssistCardMount"></div>
+
+    <div id="profileCardMount"></div>
+
+    <div id="supportCardMount"></div>
+
+    <div id="portalCtaContainer" style="display:none; margin-top:12px;">
+      <button id="btnGoToPortalGhost"
+        style="
+          width:100%;
+          height:44px;
+          border-radius:10px;
+          font-size:14px;
+          font-weight:800;
+          background:#D1FAE5;
+          border:1.5px solid #059669;
+          color:#065F46;
+          cursor:pointer;
+        ">
+        Go To Visa Portal Now →
+      </button>
+    </div>
+
+    <div id="status">Updated!</div>
+
+    <script src="popup.js"></script>
+
+
+
+
+  </div>
+
+</body>

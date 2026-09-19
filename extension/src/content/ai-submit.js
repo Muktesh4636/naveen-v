@@ -714,6 +714,10 @@ var _holdSafetyTimer = null;
 var _rotateWatchdog = null;
 var _lastRotateTickAt = 0;
 var _postSelectRotateBound = false;
+var _lastSeenPostId = "";
+/** Set when we programmatically hop — change handler still restarts wait the same way. */
+var _systemHopPostId = "";
+var _systemHopAt = 0;
 var _citiesOptionsKey = "";
 var _aiSubmitMounted = false;
 var _lastProbeAt = 0;
@@ -1204,6 +1208,25 @@ function _normCityName(s) {
 }
 
 /**
+ * Map one preferred city onto a live #post_select option (id, then exact name, then loose name).
+ */
+function _resolvePreferredCity(c, byId, byName) {
+  if (!c) return null;
+  let hit = byId.get(String(c.id));
+  if (hit) return hit;
+  const n = _normCityName(c.name);
+  if (!n) return null;
+  hit = byName.get(n) || null;
+  if (hit) return hit;
+  // Loose: "New Delhi" ↔ "Delhi" / "Mumbai VAC" ↔ "Mumbai"
+  for (const [kn, o] of byName) {
+    if (kn === n) continue;
+    if (kn.includes(n) || n.includes(kn)) return o;
+  }
+  return null;
+}
+
+/**
  * Map saved preferred cities onto live #post_select options.
  * Match by id first, then by name — so a stale id does not drop a city from rotation.
  */
@@ -1219,16 +1242,59 @@ function _preferredCitiesInDropdown(preferred) {
   const out = [];
   const seen = new Set();
   for (const c of preferred) {
-    if (!c) continue;
-    let hit = byId.get(String(c.id));
-    if (!hit) {
-      const n = _normCityName(c.name);
-      if (n) hit = byName.get(n) || null;
-    }
+    const hit = _resolvePreferredCity(c, byId, byName);
     if (!hit) continue;
     if (seen.has(hit.id)) continue;
     seen.add(hit.id);
     out.push({ id: hit.id, name: hit.name });
+  }
+  return out;
+}
+
+/**
+ * Merge UI/patch selection with previously saved preferred cities.
+ * Never forget a saved city unless its checkbox is on screen and left unchecked.
+ * Cities that can't be remapped yet are kept as-is so the 3rd city isn't wiped.
+ */
+function _mergePreferredCities(prevCities, selected) {
+  const prev = Array.isArray(prevCities) ? prevCities.filter(Boolean) : [];
+  const sel = Array.isArray(selected) ? selected.filter(Boolean) : [];
+  if (!sel.length) return prev.map((c) => ({ id: String(c.id), name: c.name || c.id }));
+
+  const box = document.querySelector(idSel(ID.aiCities));
+  const renderedIds = new Set(
+    box
+      ? [...box.querySelectorAll('input[type="checkbox"]')].map((cb) => String(cb.value))
+      : []
+  );
+  const opts = _postOptions();
+  const byId = new Map(opts.map((o) => [String(o.id), o]));
+  const byName = new Map();
+  for (const o of opts) {
+    const n = _normCityName(o.name);
+    if (n && !byName.has(n)) byName.set(n, o);
+  }
+
+  const out = [];
+  const seen = new Set();
+  const pushCity = (c) => {
+    if (!c) return;
+    const hit = opts.length ? _resolvePreferredCity(c, byId, byName) : null;
+    const id = String(hit?.id || c.id);
+    if (seen.has(id)) return;
+    seen.add(id);
+    out.push({ id, name: hit?.name || c.name || c.id });
+  };
+
+  for (const c of sel) pushCity(c);
+
+  for (const c of prev) {
+    const hit = opts.length ? _resolvePreferredCity(c, byId, byName) : null;
+    const liveId = hit ? String(hit.id) : String(c.id);
+    if (seen.has(liveId) || seen.has(String(c.id))) continue;
+    // Explicitly unchecked only when that option was rendered in the checklist.
+    if (renderedIds.has(liveId) && !sel.some((s) => String(s.id) === liveId)) continue;
+    pushCity(hit || c);
   }
   return out;
 }
@@ -1302,24 +1368,16 @@ function _cityNames(cfg) {
 
 async function _persistForm(accountId, patch = {}) {
   const prev = (await getAiConfig(accountId)) || {};
+  const { cities: patchCities, ...restPatch } = patch;
   const { from, to } = _readFormDates();
   const fromUi = _readSelectedCities();
-  const optsIds = new Set(_postOptions().map((o) => String(o.id)));
   const prevCities = Array.isArray(prev.cities) ? prev.cities : [];
   let cities;
-  if (fromUi.length) {
-    // Keep previously saved cities that are not in the dropdown yet (can't be checked).
-    // Also re-resolve by name so stale ids are rewritten to live dropdown ids.
-    const merged = [...fromUi];
-    const uiIds = new Set(fromUi.map((c) => String(c.id)));
-    for (const c of prevCities) {
-      if (!c) continue;
-      if (optsIds.has(String(c.id))) continue; // visible — user choice is fromUi only
-      if (uiIds.has(String(c.id))) continue;
-      merged.push({ id: String(c.id), name: c.name || c.id });
-    }
-    cities = _preferredCitiesInDropdown(merged);
-    if (!cities.length) cities = fromUi;
+  if (patchCities !== undefined) {
+    // Callers often pass a partial UI read — merge so a missing 3rd city is not wiped.
+    cities = _mergePreferredCities(prevCities, Array.isArray(patchCities) ? patchCities : []);
+  } else if (fromUi.length) {
+    cities = _mergePreferredCities(prevCities, fromUi);
   } else {
     cities = prevCities;
   }
@@ -1339,7 +1397,7 @@ async function _persistForm(accountId, patch = {}) {
         set: i + 1,
       };
     }),
-    ...patch,
+    ...restPatch,
   };
   // Keep legacy `enabled` in sync with submitEnabled
   if (typeof next.submitEnabled === "boolean") next.enabled = next.submitEnabled;
@@ -1388,7 +1446,11 @@ async function _switchToCity(cityId, label) {
   if (String(select.value) === nextId) {
     return false;
   }
+  _systemHopPostId = nextId;
+  _systemHopAt = Date.now();
   _armRotateBusy();
+  _lastSwitchAt = Date.now();
+  _armNextRotate(_lastSwitchAt);
   updateAiStatus(`Switching city → ${label || cityId}…`);
   _clearFailedSubmitDates();
   vs.send({ action: "selectPost", postId: nextId });
@@ -1428,6 +1490,8 @@ export async function forceSwitchToCity(cityId, label, { alertId, dayCount } = {
   _nextRotateAt = Date.now();
   _lastSwitchAt = 0;
 
+  _systemHopPostId = nextId;
+  _systemHopAt = Date.now();
   _armRotateBusy();
   _lastSwitchAt = Date.now();
   _clearFailedSubmitDates();
@@ -1523,8 +1587,72 @@ function _bindPostSelectRotateWatch() {
   const select = document.querySelector("#post_select");
   if (!select) return;
   _postSelectRotateBound = true;
-  // Do NOT clear busy on change — that fired before Loading appeared and
-  // cancelled the Loading wait. Unlock only via CGI or Loading/calendar timeouts.
+  _lastSeenPostId = String(select.value || "");
+
+  const onValueMaybeChanged = () => {
+    const el = document.querySelector("#post_select");
+    if (!el) return;
+    const next = String(el.value || "");
+    if (!next || next === _lastSeenPostId) return;
+    _lastSeenPostId = next;
+    _onPostSelectCityChanged(next, el);
+  };
+
+  vs.on(select, "change", onValueMaybeChanged);
+  // Some portal UI paths update value without a reliable change event.
+  vs.setInterval(onValueMaybeChanged, 400);
+}
+
+/**
+ * Any city change on #post_select (system or man) restarts the hop wait.
+ * If the man changes city a few seconds after a system hop, man's city wins
+ * and the Loading / dates / 13–18s clocks restart from that moment.
+ */
+function _onPostSelectCityChanged(cityId, selectEl) {
+  if (!_rotateActive || _opsFrozen || !vs.alive) return;
+  // Don't interrupt Submit confirmation wait.
+  if (_submitPending) return;
+
+  const id = String(cityId || "");
+  if (!id) return;
+
+  const fromSystem =
+    _systemHopPostId &&
+    id === _systemHopPostId &&
+    Date.now() - _systemHopAt < 2500;
+  if (fromSystem) _systemHopPostId = "";
+
+  // Man wins over any in-flight system wait / booking hold on the old city.
+  _clearHoldSafety();
+  _bookingHold = false;
+  _holdStartedAt = 0;
+  clearPendingSubmit();
+  _clearFailedSubmitDates();
+
+  _lastSwitchAt = Date.now();
+  _armRotateBusy();
+  _armNextRotate(_lastSwitchAt);
+
+  // Keep A→B→C index aligned with wherever we landed.
+  getCitiesRotateConfig()
+    .then((cfg) => {
+      if (!cfg?.cities?.length) return;
+      const cities = _preferredCitiesInDropdown(cfg.cities);
+      const idx = cities.findIndex((c) => String(c.id) === id);
+      if (idx >= 0) _rotateIndex = idx;
+    })
+    .catch(() => {});
+
+  const name =
+    (selectEl?.selectedOptions && selectEl.selectedOptions[0]?.textContent?.trim()) ||
+    selectEl?.options?.[selectEl.selectedIndex]?.textContent?.trim() ||
+    id;
+  updateAiStatus(
+    fromSystem
+      ? `City Change — on ${name}; waiting for dates…`
+      : `City Change — you switched → ${name}; waiting (same as system hop)…`
+  );
+  _scheduleCityRotate();
 }
 
 async function _rotateTick() {
@@ -2299,17 +2427,12 @@ export async function refreshAiSubmitUi() {
   if (to) to.value = cfg?.to || "";
   _paintDateButtons();
   const savedIds = (cfg?.cities || []).map((c) => c.id);
-  const panel = document.querySelector(idSel(ID.aiPanel));
-  const panelOpen = panel && !panel.classList.contains(CLS.hidden);
   const citiesBody = document.querySelector(idSel(ID.aiCitiesBody));
   const citiesVisible = citiesBody && !citiesBody.classList.contains(CLS.hidden);
-  const current = _readCheckedCityIds();
+  // Always restore from saved prefs (with names). Preferring a partial UI check
+  // set was wiping the 3rd preferred city on refresh.
   if (citiesVisible || isCitiesEnabled(cfg) || _citiesFieldsOpen) {
-    if (panelOpen && current.length) {
-      _fillCitiesChecklist(current);
-    } else {
-      _fillCitiesChecklist(savedIds, { selectedCities: cfg?.cities || [] });
-    }
+    _fillCitiesChecklist(savedIds, { selectedCities: cfg?.cities || [] });
   }
   _fillTimingEditor(cfg);
   const login = document.querySelector(idSel(ID.aiLogin));

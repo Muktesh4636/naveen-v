@@ -1,0 +1,1 @@
+(()=>{(()=>{const e="#continue",o="VSA_TRIGGER_B2C_CONTINUE_CLICK";function t(){const n=document.querySelector(e);if(n){try{n.focus()}catch{}n.dispatchEvent(new MouseEvent("mousedown",{bubbles:!0})),n.dispatchEvent(new MouseEvent("mouseup",{bubbles:!0})),n.click()}}window.addEventListener(o,()=>{t()})})();})();
