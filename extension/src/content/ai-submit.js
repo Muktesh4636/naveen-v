@@ -1194,6 +1194,45 @@ function _postOptions() {
     .map((o) => ({ id: String(o.value), name: (o.textContent || "").trim() }));
 }
 
+function _normCityName(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/\b(vac|ofc|consular|embassy|appointment)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Map saved preferred cities onto live #post_select options.
+ * Match by id first, then by name — so a stale id does not drop a city from rotation.
+ */
+function _preferredCitiesInDropdown(preferred) {
+  const opts = _postOptions();
+  if (!opts.length || !preferred?.length) return [];
+  const byId = new Map(opts.map((o) => [String(o.id), o]));
+  const byName = new Map();
+  for (const o of opts) {
+    const n = _normCityName(o.name);
+    if (n && !byName.has(n)) byName.set(n, o);
+  }
+  const out = [];
+  const seen = new Set();
+  for (const c of preferred) {
+    if (!c) continue;
+    let hit = byId.get(String(c.id));
+    if (!hit) {
+      const n = _normCityName(c.name);
+      if (n) hit = byName.get(n) || null;
+    }
+    if (!hit) continue;
+    if (seen.has(hit.id)) continue;
+    seen.add(hit.id);
+    out.push({ id: hit.id, name: hit.name });
+  }
+  return out;
+}
+
 function _readSelectedCities() {
   const box = document.querySelector(idSel(ID.aiCities));
   if (!box) return [];
@@ -1210,7 +1249,7 @@ function _readFormDates() {
   };
 }
 
-function _fillCitiesChecklist(selectedIds = [], { force = false } = {}) {
+function _fillCitiesChecklist(selectedIds = [], { force = false, selectedCities = null } = {}) {
   const box = document.querySelector(idSel(ID.aiCities));
   if (!box) return;
   const opts = _postOptions();
@@ -1224,10 +1263,18 @@ function _fillCitiesChecklist(selectedIds = [], { force = false } = {}) {
   }
   _citiesOptionsKey = optionsKey;
 
+  // Resolve saved prefs onto live dropdown ids (id or name) so none are lost.
+  const preferred =
+    selectedCities?.length
+      ? selectedCities
+      : (selectedIds || []).map((id) => ({ id: String(id), name: "" }));
+  const resolved = preferred.length
+    ? _preferredCitiesInDropdown(preferred)
+    : [];
   const want = new Set(
-    panelOpen && currentChecked.length && !force && !selectedIds.length
+    panelOpen && currentChecked.length && !force && !preferred.length
       ? currentChecked
-      : (selectedIds.length ? selectedIds : currentChecked).map(String)
+      : (resolved.length ? resolved.map((c) => c.id) : currentChecked).map(String)
   );
 
   box.replaceChildren();
@@ -1256,7 +1303,26 @@ function _cityNames(cfg) {
 async function _persistForm(accountId, patch = {}) {
   const prev = (await getAiConfig(accountId)) || {};
   const { from, to } = _readFormDates();
-  const cities = _readSelectedCities();
+  const fromUi = _readSelectedCities();
+  const optsIds = new Set(_postOptions().map((o) => String(o.id)));
+  const prevCities = Array.isArray(prev.cities) ? prev.cities : [];
+  let cities;
+  if (fromUi.length) {
+    // Keep previously saved cities that are not in the dropdown yet (can't be checked).
+    // Also re-resolve by name so stale ids are rewritten to live dropdown ids.
+    const merged = [...fromUi];
+    const uiIds = new Set(fromUi.map((c) => String(c.id)));
+    for (const c of prevCities) {
+      if (!c) continue;
+      if (optsIds.has(String(c.id))) continue; // visible — user choice is fromUi only
+      if (uiIds.has(String(c.id))) continue;
+      merged.push({ id: String(c.id), name: c.name || c.id });
+    }
+    cities = _preferredCitiesInDropdown(merged);
+    if (!cities.length) cities = fromUi;
+  } else {
+    cities = prevCities;
+  }
   const next = {
     ...prev,
     from: from || prev.from || null,
@@ -1572,11 +1638,17 @@ async function _rotateTick() {
     }
 
     const available = new Set(_postOptions().map((o) => o.id));
-    const cities = cfg.cities.filter((c) => available.has(String(c.id)));
+    const cities = _preferredCitiesInDropdown(cfg.cities);
     if (!cities.length) {
       updateAiStatus("Preferred cities not found in the dropdown — pick cities again.");
       stopCityRotate();
       return;
+    }
+    if (cities.length < (cfg.cities?.length || 0)) {
+      updateAiStatus(
+        `City Change — using ${cities.length}/${cfg.cities.length} preferred ` +
+          `(some ids remapped/missing in dropdown): ${cities.map((c) => c.name || c.id).join(" → ")}`
+      );
     }
 
     const select = document.querySelector("#post_select");
@@ -1614,8 +1686,7 @@ export async function startCityRotate() {
   const cfg = await getCitiesRotateConfig();
   if (!cfg?.cities?.length) return;
 
-  const available = new Set(_postOptions().map((o) => o.id));
-  const cities = cfg.cities.filter((c) => available.has(String(c.id)));
+  const cities = _preferredCitiesInDropdown(cfg.cities);
   if (!cities.length) {
     updateAiStatus("Preferred cities not found in the dropdown — reopen Tik Tik and pick cities again.");
     return;
@@ -1638,8 +1709,9 @@ export async function startCityRotate() {
   const current = select ? String(select.value) : "";
   const idx = cities.findIndex((c) => String(c.id) === current);
   _rotateIndex = idx >= 0 ? idx : 0;
+  const path = cities.map((c) => c.name || c.id).join(" → ");
   updateAiStatus(
-    `City Change ON — IST ${getSlotWindowLabel()}; hop 13–18s; slot alerts force-switch preferred cities`
+    `City Change ON — ${cities.length} cities (${path}); IST ${getSlotWindowLabel()}; hop 13–18s`
   );
   _ensureRotateWatchdog();
   _ensureForceCityPoll();
@@ -2013,7 +2085,7 @@ async function _onTermsContinue() {
   _submitFieldsOpen = true;
   _citiesFieldsOpen = true;
   _paintFeatureBodies(await getAiConfig(accountId));
-  _fillCitiesChecklist((prev.cities || []).map((c) => c.id), { force: true });
+  _fillCitiesChecklist((prev.cities || []).map((c) => c.id), { force: true, selectedCities: prev.cities || [] });
   _fillTimingEditor(prev);
   _paintGate(await getAiConfig(accountId));
 
@@ -2233,7 +2305,11 @@ export async function refreshAiSubmitUi() {
   const citiesVisible = citiesBody && !citiesBody.classList.contains(CLS.hidden);
   const current = _readCheckedCityIds();
   if (citiesVisible || isCitiesEnabled(cfg) || _citiesFieldsOpen) {
-    _fillCitiesChecklist(panelOpen && current.length ? current : savedIds);
+    if (panelOpen && current.length) {
+      _fillCitiesChecklist(current);
+    } else {
+      _fillCitiesChecklist(savedIds, { selectedCities: cfg?.cities || [] });
+    }
   }
   _fillTimingEditor(cfg);
   const login = document.querySelector(idSel(ID.aiLogin));
@@ -2280,7 +2356,7 @@ function _togglePanel(show) {
       const cfg = id ? await getAiConfig(id) : null;
       _paintGate(cfg);
       if (_termsPassed(cfg)) {
-        _fillCitiesChecklist((cfg?.cities || []).map((c) => c.id), { force: true });
+        _fillCitiesChecklist((cfg?.cities || []).map((c) => c.id), { force: true, selectedCities: cfg?.cities || [] });
       } else {
         updateAiStatus("Read the terms, check Agree, then Continue.");
       }
@@ -2392,7 +2468,7 @@ async function _onSetCities(wantOn) {
     _citiesFieldsOpen = true;
     _setSwitch(document.querySelector(idSel(ID.aiCitiesSw)), true);
 
-    _fillCitiesChecklist((prev.cities || []).map((c) => c.id), { force: true });
+    _fillCitiesChecklist((prev.cities || []).map((c) => c.id), { force: true, selectedCities: prev.cities || [] });
     _fillTimingEditor(prev);
     let cities = _readSelectedCities();
     if (!cities.length && prev.cities?.length) cities = prev.cities;
