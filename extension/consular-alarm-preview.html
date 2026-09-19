@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Consular OFC alarm preview</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 420px;
+      margin: 48px auto;
+      padding: 24px;
+      text-align: center;
+    }
+    button {
+      font-size: 18px;
+      padding: 14px 28px;
+      margin: 8px;
+      cursor: pointer;
+    }
+    p { color: #444; line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <h1>OFC booked alarm</h1>
+  <p>Same loud consular alarm as the extension (up to 1 minute). Click Play, then click Stop when done.</p>
+  <button id="play" type="button">Play alarm</button>
+  <button id="stop" type="button">Stop</button>
+  <p id="status"></p>
+  <script>
+    let ctx, nodes = [], timers = [], titleTimer = null, stopTimer = null;
+    const status = document.getElementById("status");
+    const origTitle = document.title;
+
+    function clearAll() {
+      for (const t of timers) clearTimeout(t);
+      timers = [];
+      if (stopTimer) clearTimeout(stopTimer);
+      stopTimer = null;
+      if (titleTimer) clearTimeout(titleTimer);
+      titleTimer = null;
+      document.title = origTitle;
+      for (const n of nodes) {
+        try { n.stop(); } catch (e) {}
+      }
+      nodes = [];
+      status.textContent = "Stopped.";
+    }
+
+    async function play() {
+      clearAll();
+      ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+      if (ctx.state === "suspended") await ctx.resume();
+
+      const master = ctx.createGain();
+      master.gain.value = 1;
+      master.connect(ctx.destination);
+
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gain1 = ctx.createGain();
+      const gain2 = ctx.createGain();
+      osc1.type = "square";
+      osc2.type = "sawtooth";
+      osc1.frequency.value = 980;
+      osc2.frequency.value = 1470;
+      gain1.gain.value = 0.95;
+      gain2.gain.value = 0.8;
+      osc1.connect(gain1).connect(master);
+      osc2.connect(gain2).connect(master);
+
+      const lfo = ctx.createOscillator();
+      const lfoGain = ctx.createGain();
+      lfo.type = "square";
+      lfo.frequency.value = 4;
+      lfoGain.gain.value = 320;
+      lfo.connect(lfoGain);
+      lfoGain.connect(osc1.frequency);
+      lfoGain.connect(osc2.frequency);
+
+      const t = ctx.currentTime;
+      osc1.start(t);
+      osc2.start(t);
+      lfo.start(t);
+      nodes = [osc1, osc2, lfo];
+
+      const beep = (ms = 650) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = "sine";
+        o.frequency.value = 880;
+        o.connect(g).connect(ctx.destination);
+        const now = ctx.currentTime;
+        const dur = ms / 1000;
+        g.gain.setValueAtTime(0, now);
+        g.gain.linearRampToValueAtTime(0.35, now + 0.01);
+        g.gain.setValueAtTime(0.35, now + Math.max(0.01, dur - 0.02));
+        g.gain.linearRampToValueAtTime(0, now + dur);
+        o.start(now);
+        o.stop(now + dur);
+      };
+
+      const burst = () => {
+        if (!nodes.length) return;
+        beep(650);
+        timers.push(setTimeout(burst, 900));
+      };
+      burst();
+
+      let flash = false;
+      const flashTitle = () => {
+        if (!nodes.length) return;
+        document.title = flash ? origTitle : "!!! OFC BOOKED — CONSULAR PAGE !!!";
+        flash = !flash;
+        titleTimer = setTimeout(flashTitle, 400);
+      };
+      flashTitle();
+
+      status.textContent = "Playing for up to 1 minute… click Stop anytime.";
+      stopTimer = setTimeout(clearAll, 60_000);
+    }
+
+    document.getElementById("play").onclick = play;
+    document.getElementById("stop").onclick = clearAll;
+  </script>
+</body>
+</html>
