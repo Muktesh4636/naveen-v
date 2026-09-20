@@ -10,7 +10,14 @@ import { getPosts, getProfile, SCHEDULE_UI_WAIT_ATTEMPTS } from "../shared/confi
 import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
 import {
-  formatSlotWait,
+  bindTikTikAuth,
+  isTikTikUnlocked,
+  onTikTikAuthChange,
+  refreshTikTikAuth,
+  requireTikTikAccess,
+  setTikTikRevokeHandler,
+} from "./tik-tik-auth.js";
+import {
   isInSlotWindow,
   msUntilSlotWindow,
   getSlotWindowLabel,
@@ -927,11 +934,6 @@ function _ensureRotateWatchdog() {
       }
       _lastRotateTickAt = now;
       _scheduleCityRotate();
-    } else if (!inWindow && timerArmed) {
-      const wait = msUntilSlotWindow(new Date(now));
-      updateAiStatus(
-        `City Change — waiting for slot window (IST ${getSlotWindowLabel()}, next in ${formatSlotWait(wait)})`
-      );
     }
 
     if (_rotateActive) {
@@ -1118,6 +1120,8 @@ export function releaseCityRotateHold() {
 
 /** Re-check current city when Auto Submit turns on (once — not on a loop). */
 export async function probeAutoSubmitForCurrentCity() {
+  const access = await requireTikTikAccess();
+  if (!access.ok) return;
   const ai = await getArmedAiConfig();
   if (!ai) return;
 
@@ -1872,11 +1876,7 @@ async function _rotateTick() {
     }
 
     const slot = isInSlotWindow(new Date(now));
-    const slotWait = msUntilSlotWindow(new Date(now));
     if (!slot) {
-      updateAiStatus(
-        `City Change — waiting for slot window (IST ${getSlotWindowLabel()}, next in ${formatSlotWait(slotWait)})`
-      );
       _scheduleCityRotate();
       return;
     }
@@ -1981,9 +1981,20 @@ async function _rotateTick() {
   }
 }
 
+function _openTikTikForLogin() {
+  const panel = document.querySelector(idSel(ID.aiPanel));
+  if (panel && panel.classList.contains(CLS.hidden)) _togglePanel(true);
+  else refreshTikTikAuth();
+}
+
 export async function startCityRotate() {
   if (_opsFrozen) return;
   if (isInterviewPage() || !isOfcSchedulePage()) return;
+  const access = await requireTikTikAccess();
+  if (!access.ok) {
+    _openTikTikForLogin();
+    return;
+  }
 
   const cfg = await getCitiesRotateConfig();
   if (!cfg?.cities?.length) return;
@@ -2306,7 +2317,12 @@ export async function scheduleAiSubmitClick(accountId) {
 
 function updateAiStatus(text) {
   const el = document.querySelector(idSel(ID.aiStatus));
-  if (el) el.textContent = text;
+  if (!el) return;
+  if (!text) {
+    el.textContent = "";
+    return;
+  }
+  el.textContent = text;
 }
 
 export function setTikTikStatus(text) {
@@ -2328,6 +2344,11 @@ function _readTermsAgreed() {
 function _paintGate(cfg) {
   const gate = document.querySelector(idSel(ID.aiTermsGate));
   const main = document.querySelector(idSel(ID.aiMain));
+  if (!isTikTikUnlocked()) {
+    if (gate) gate.classList.add(CLS.hidden);
+    if (main) main.classList.add(CLS.hidden);
+    return;
+  }
   const cb = document.querySelector(idSel(ID.aiTermsAgree));
   const cont = document.querySelector(idSel(ID.aiTermsContinue));
   const passed = _termsPassed(cfg);
@@ -2541,7 +2562,7 @@ function _paintFeatureBodies(cfg) {
 function _paintStatus(cfg, accountId) {
   const status = document.querySelector(idSel(ID.aiStatus));
   const btn = document.querySelector(idSel(ID.aiBtn));
-  if (!status || !btn) return;
+  if (!btn) return;
 
   _paintToggleButtons(cfg);
   _paintFeatureBodies(cfg);
@@ -2558,25 +2579,11 @@ function _paintStatus(cfg, accountId) {
     btn.textContent = "Tik Tik";
   }
 
-  const parts = [];
-  if (submitOn && cfg.from && cfg.to) {
-    parts.push(
-      `Auto Submit ON (${_pretty(cfg.from)} – ${_pretty(cfg.to)}, clicks Submit as soon as time slot is ready)`
-    );
-  } else if (_submitFieldsOpen && !submitOn) {
-    parts.push("Auto Submit — set From / To dates, then Enable again");
-  } else {
-    parts.push("Auto Submit OFF");
+  // Do not show the long Account / Auto Submit / City Change summary.
+  if (status) {
+    status.textContent = "";
+    status.classList.remove(CLS.aiOk);
   }
-  if (citiesOn) {
-    parts.push(`City Change ON (${_cityNames(cfg)}, ${getSlotWindowLabel()})`);
-  } else if (_citiesFieldsOpen && !citiesOn) {
-    parts.push("City Change — pick preferred cities, then Enable again");
-  } else {
-    parts.push("City Change OFF");
-  }
-  status.textContent = `Account ${accountId || "—"}: ${parts.join(" · ")}`;
-  status.classList.toggle(CLS.aiOk, anyOn);
 }
 
 export async function refreshAiSubmitUi() {
@@ -2636,12 +2643,15 @@ function _isPanelOpen() {
   return !!(panel && !panel.classList.contains(CLS.hidden));
 }
 
+var _panelOpenedAt = 0;
+
 function _togglePanel(show) {
   const panel = document.querySelector(idSel(ID.aiPanel));
   if (!panel) return;
   if (!show) _closeCal();
   panel.classList.toggle(CLS.hidden, !show);
   if (show) {
+    _panelOpenedAt = Date.now();
     getAccountId().then(async (id) => {
       if (id) {
         try {
@@ -2658,6 +2668,7 @@ function _togglePanel(show) {
       } else {
         updateAiStatus("Read the terms, check Agree, then Continue.");
       }
+      refreshTikTikAuth();
     });
   }
 }
@@ -2667,30 +2678,46 @@ function _bindOutsideClose() {
   _bindOutsideClose._done = true;
   const closeIfOutside = (e) => {
     if (!_isPanelOpen()) return;
+    // Fresh open — same click / layout shift must not close Tik Tik.
+    if (Date.now() - _panelOpenedAt < 900) return;
+    // During email / OTP login, only Close ends the panel.
+    if (!isTikTikUnlocked()) return;
     const panel = document.querySelector(idSel(ID.aiPanel));
     const btn = document.querySelector(idSel(ID.aiBtn));
     const cal = document.querySelector(idSel(ID.aiCal));
     const t = _calEventTarget(e);
+    const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+    const inNode = (node) =>
+      !!(node && (
+        (t && (node === t || node.contains?.(t))) ||
+        path.some((n) => n === node)
+      ));
     // Calendar is portaled on body — treat it as inside Tik Tik UI.
-    if (cal && !cal.classList.contains(CLS.hidden) && t && cal.contains(t)) return;
+    if (cal && !cal.classList.contains(CLS.hidden) && inNode(cal)) return;
     if (cal && !cal.classList.contains(CLS.hidden)) {
       const fromBtn = document.querySelector(idSel(ID.aiFromBtn));
       const toBtn = document.querySelector(idSel(ID.aiToBtn));
-      if (!(fromBtn && t && (fromBtn === t || fromBtn.contains(t))) &&
-          !(toBtn && t && (toBtn === t || toBtn.contains(t)))) {
+      if (!inNode(fromBtn) && !inNode(toBtn)) {
         _closeCal();
       }
     }
-    if (panel && t && (panel === t || panel.contains(t))) return;
-    if (btn && t && (btn === t || btn.contains(t))) return;
+    if (inNode(panel) || inNode(btn)) return;
+    const active = document.activeElement;
+    if (panel && active && panel.contains(active)) return;
     _closeCal();
     _togglePanel(false);
   };
-  // Only pointerdown — click also fired before and closed the cal mid-tap.
   vs.on(document, "pointerdown", closeIfOutside, { capture: true });
 }
 
 async function _onSetSubmit(wantOn) {
+  if (wantOn) {
+    const access = await requireTikTikAccess();
+    if (!access.ok) {
+      _openTikTikForLogin();
+      return;
+    }
+  }
   const accountId = await getAccountId();
   if (!accountId) {
     updateAiStatus("Open a logged-in schedule page so we can bind this to your account.");
@@ -2754,6 +2781,13 @@ async function _onSetSubmit(wantOn) {
 }
 
 async function _onSetCities(wantOn) {
+  if (wantOn) {
+    const access = await requireTikTikAccess();
+    if (!access.ok) {
+      _openTikTikForLogin();
+      return;
+    }
+  }
   const accountId = await getAccountId();
   if (!accountId) {
     updateAiStatus("Open a logged-in schedule page so we can bind this to your account.");
@@ -3222,10 +3256,14 @@ export function ensureAiSubmitUi() {
   btn.textContent = "Tik Tik";
   btn.dataset[DAT.mark] = "";
   vs.on(btn, "click", (e) => {
+    e.preventDefault();
     e.stopPropagation();
     const panel = document.querySelector(idSel(ID.aiPanel));
     const open = panel && panel.classList.contains(CLS.hidden);
     _togglePanel(!!open);
+  });
+  vs.on(btn, "pointerdown", (e) => {
+    e.stopPropagation();
   });
   row.appendChild(btn);
 
@@ -3235,6 +3273,9 @@ export function ensureAiSubmitUi() {
   panel.dataset[DAT.mark] = "";
 
   panel.innerHTML = `
+    <div id="${ID.authGate}">
+      <div id="${ID.authBody}"></div>
+    </div>
     <div id="${ID.aiTermsGate}">
       <div id="${ID.aiTerms}" class="${CLS.aiTerms}">
         <div class="${CLS.aiHead}">Terms &amp; Conditions</div>
@@ -3376,6 +3417,7 @@ export function ensureAiSubmitUi() {
   vs.on(panel.querySelector(idSel(ID.aiAddProfile)), "click", _onAddLoginProfile);
   vs.on(panel.querySelector(idSel(ID.aiProfilesList)), "click", _onProfilesListClick);
   vs.on(panel.querySelector(idSel(ID.aiClose)), "click", () => _togglePanel(false));
+  vs.on(panel, "pointerdown", (e) => e.stopPropagation());
   vs.on(panel.querySelector(idSel(ID.aiCitiesAll)), "click", () => {
     _setAllCitiesChecked(true);
     _onCitiesChecklistChanged();
@@ -3410,6 +3452,14 @@ export function ensureAiSubmitUi() {
   });
 
   _bindOutsideClose();
+  onTikTikAuthChange(() => {
+    getAccountId().then((id) => getAiConfig(id).then((cfg) => _paintGate(cfg)));
+  });
+  setTikTikRevokeHandler((msg) => {
+    stopCityRotate();
+    updateAiStatus(msg);
+  });
+  bindTikTikAuth();
   refreshAiSubmitUi();
 }
 

@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.utils import timezone
 from django.utils.html import format_html
-from .models import Applicant, Contribution, DashboardSnapshot, HumanClickSample
+from .models import Applicant, Contribution, DashboardSnapshot, HumanClickSample, TikTikLogin
 
 
 def _ist(dt):
@@ -191,3 +191,10 @@ class HumanClickSampleAdmin(admin.ModelAdmin):
     def path_len(self, obj):
         path = (obj.sample or {}).get("path") if isinstance(obj.sample, dict) else None
         return len(path) if isinstance(path, list) else 0
+
+
+@admin.register(TikTikLogin)
+class TikTikLoginAdmin(admin.ModelAdmin):
+    list_display = ("email", "plan", "amount_inr", "applicant_id", "trial_used", "plan_ends", "device_id")
+    search_fields = ("email", "applicant_id")
+    readonly_fields = ("otp_hash", "session_hash", "created_at", "updated_at")

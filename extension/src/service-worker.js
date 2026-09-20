@@ -270,7 +270,7 @@ function selectFirstDate(dateStr, maxMs, pollMs, navigateOnly) {
           }
         }
       } catch (e) {}
-    } catch (e) {
+  } catch (e) {
       return false;
     }
 

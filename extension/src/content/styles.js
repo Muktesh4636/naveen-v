@@ -806,6 +806,249 @@ export var CSS = `
   background: #2563eb;
 }
 
+/* Sample D — Tik Tik email / OTP login */
+#${ID.authBody} .${CLS.authCard} {
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 14px;
+  padding: 16px 16px 14px;
+  box-sizing: border-box;
+}
+#${ID.authBody} .${CLS.authClose} {
+  float: right;
+  background: none;
+  border: 0;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+  margin: 0 0 8px;
+}
+#${ID.authBody} .${CLS.authSteps} {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 14px;
+  clear: both;
+  font-size: 13px;
+  color: #94a3b8;
+}
+#${ID.authBody} .${CLS.authStep} {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+#${ID.authBody} .${CLS.authStep} span {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1.5px solid #cbd5e1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #94a3b8;
+}
+#${ID.authBody} .${CLS.authStep}.${CLS.authStepOn} {
+  color: #0f172a;
+  font-weight: 600;
+}
+#${ID.authBody} .${CLS.authStep}.${CLS.authStepOn} span {
+  border-color: #0f172a;
+  background: #0f172a;
+  color: #fff;
+}
+#${ID.authBody} .${CLS.authEmailBox} {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  background: #f8fafc;
+  font-size: 14px;
+  color: #0f172a;
+  word-break: break-all;
+}
+#${ID.authBody} .${CLS.authEmailBox} button {
+  background: none;
+  border: 0;
+  color: #1d4ed8;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+  padding: 0;
+}
+#${ID.authBody} .${CLS.authTitle} {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+}
+#${ID.authBody} .${CLS.authOtpRow} {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin: 14px 0 16px;
+}
+#${ID.authBody} .${CLS.authOtpBox} {
+  width: 52px;
+  height: 56px;
+  text-align: center;
+  font-size: 22px;
+  font-weight: 700;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 12px;
+  box-sizing: border-box;
+  background: #fff;
+  color: #0f172a;
+}
+#${ID.authBody} .${CLS.authOtpBox}:focus {
+  outline: none;
+  border-color: #0f172a;
+}
+#${ID.authBody} .${CLS.authBtn} {
+  width: 100%;
+  padding: 13px 16px;
+  background: #0f172a;
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  font-size: 15.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+#${ID.authBody} .${CLS.authBtn}:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+#${ID.authBody} .${CLS.authLinks} {
+  display: flex;
+  gap: 18px;
+  justify-content: center;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+#${ID.authBody} .${CLS.authLink} {
+  background: none;
+  border: 0;
+  color: #1d4ed8;
+  cursor: pointer;
+  font-size: 13.5px;
+  font-weight: 600;
+  padding: 0;
+}
+#${ID.authBody} .${CLS.authSecure} {
+  margin: 16px 0 0;
+  text-align: center;
+  font-size: 12px;
+  color: #94a3b8;
+}
+#${ID.authBody} input[type="email"] {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 10px 0 12px;
+  padding: 12px 14px;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 12px;
+  font-size: 15px;
+  background: #fff;
+}
+
+/* Sample B — payment plans (radio list + Continue) */
+#${ID.authBody} .${CLS.authBrand} {
+  margin: 0 0 2px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+#${ID.authBody} .${CLS.authEmailChip} {
+  display: inline-block;
+  margin: 0 0 14px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  font-size: 12.5px;
+  color: #334155;
+  word-break: break-all;
+}
+#${ID.authBody} .${CLS.authPlanList} {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+#${ID.authBody} .${CLS.authPlanRow} {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+  padding: 12px 14px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  cursor: pointer;
+  color: #0f172a;
+  font: inherit;
+}
+#${ID.authBody} .${CLS.authPlanRow}:hover:not(:disabled) {
+  border-color: #94a3b8;
+}
+#${ID.authBody} .${CLS.authPlanRow}.${CLS.authPlanOn} {
+  border-color: #0f172a;
+  background: #f8fafc;
+  box-shadow: 0 0 0 1px #0f172a;
+}
+#${ID.authBody} .${CLS.authPlanRow}.${CLS.authPlanOff},
+#${ID.authBody} .${CLS.authPlanRow}:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+#${ID.authBody} .${CLS.authPlanRadio} {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 2px solid #cbd5e1;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  background: #fff;
+}
+#${ID.authBody} .${CLS.authPlanRow}.${CLS.authPlanOn} .${CLS.authPlanRadio} {
+  border-color: #0f172a;
+  background: radial-gradient(circle, #0f172a 0 45%, #fff 48% 100%);
+}
+#${ID.authBody} .${CLS.authPlanMeta} {
+  flex: 1;
+  min-width: 0;
+}
+#${ID.authBody} .${CLS.authPlanName} {
+  font-size: 14.5px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+#${ID.authBody} .${CLS.authPlanDesc} {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: #64748b;
+  line-height: 1.3;
+}
+#${ID.authBody} .${CLS.authPlanPrice} {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  flex-shrink: 0;
+}
+
 #${ID.cfHud} {
   position: fixed;
   top: 14px;

@@ -213,3 +213,25 @@ class TikTikCityAlert(models.Model):
 
     def __str__(self):
         return f"TikTik alert {self.city_name or self.city_id} ({self.day_count} days)"
+
+
+class TikTikLogin(models.Model):
+    """Email login for Tik Tik. One active laptop. One chosen plan."""
+
+    email = models.EmailField(unique=True)
+    otp_hash = models.CharField(max_length=64, blank=True, default="")
+    otp_expires = models.DateTimeField(null=True, blank=True)
+    otp_sent_at = models.DateTimeField(null=True, blank=True)
+    device_id = models.CharField(max_length=64, blank=True, default="")
+    session_hash = models.CharField(max_length=64, blank=True, default="")
+    plan = models.CharField(max_length=16, blank=True, default="")
+    amount_inr = models.PositiveIntegerField(default=0)
+    plan_started = models.DateTimeField(null=True, blank=True)
+    plan_ends = models.DateTimeField(null=True, blank=True)
+    trial_used = models.BooleanField(default=False)
+    applicant_id = models.CharField(max_length=64, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.email

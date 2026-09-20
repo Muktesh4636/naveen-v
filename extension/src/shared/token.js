@@ -93,6 +93,8 @@ export const ID = {
   hudHist:       T + '72',
   hudCities:     T + '73',
   hudSecs:       T + '74',
+  authGate:      T + '75',
+  authBody:      T + '76',
 };
 
 // CSS class names
@@ -178,6 +180,30 @@ export const CLS = {
   hudCities: T + 'by',
   hudCitiesTitle: T + 'bz',
   hudCityLabel: T + 'ca',
+  authCard: T + 'cb',
+  authSteps: T + 'cc',
+  authStep: T + 'cd',
+  authStepOn: T + 'ce',
+  authEmailBox: T + 'cf',
+  authTitle: T + 'cg',
+  authOtpRow: T + 'ch',
+  authOtpBox: T + 'ci',
+  authBtn: T + 'cj',
+  authLinks: T + 'ck',
+  authLink: T + 'cl',
+  authSecure: T + 'cm',
+  authClose: T + 'cn',
+  authBrand: T + 'co',
+  authEmailChip: T + 'cp',
+  authPlanList: T + 'cq',
+  authPlanRow: T + 'cr',
+  authPlanOn: T + 'cs',
+  authPlanRadio: T + 'ct',
+  authPlanMeta: T + 'cu',
+  authPlanName: T + 'cv',
+  authPlanDesc: T + 'cw',
+  authPlanPrice: T + 'cx',
+  authPlanOff: T + 'cy',
 };
 
 // dataset property names (translate to data-* attributes)
