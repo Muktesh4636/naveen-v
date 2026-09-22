@@ -149,8 +149,10 @@
   <aside class="nav">
     <div class="brand">VisaBook <span>Ops</span></div>
     <a href="{% url 'panel_home' %}" class="{% if section == 'home' %}active{% endif %}">Overview</a>
+    <a href="{% url 'panel_accounts' %}" class="{% if section == 'accounts' %}active{% endif %}">Tik Tik accounts</a>
+    <a href="{% url 'panel_plans' %}" class="{% if section == 'plans' %}active{% endif %}">Plans & prices</a>
     <a href="{% url 'panel_history' %}" class="{% if section == 'history' %}active{% endif %}">City history</a>
-    <a href="{% url 'panel_users' %}" class="{% if section == 'users' %}active{% endif %}">Users</a>
+    <a href="{% url 'panel_users' %}" class="{% if section == 'users' %}active{% endif %}">Portal users</a>
     <a href="{% url 'panel_timings' %}" class="{% if section == 'timings' %}active{% endif %}">Timings</a>
     <a href="/admin/" target="_blank" rel="noopener">Django admin</a>
     <a href="{% url 'panel_logout' %}">Log out</a>

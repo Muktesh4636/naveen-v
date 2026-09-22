@@ -17,12 +17,11 @@ var _fetching = null;
 export const cfg = {
   slotWindowLabel: ":14–:21, :24–:31, :54–:02",
   slotWindows: [
-    { slot: 1, fromMin: 0, toMin: 2 },
-    { slot: 2, fromMin: 14, toMin: 21 },
-    { slot: 3, fromMin: 24, toMin: 31 },
-    { slot: 4, fromMin: 54, toMin: 59 },
+    { slot: 1, fromMin: 14, toMin: 21 },
+    { slot: 2, fromMin: 24, toMin: 31 },
+    { slot: 3, fromMin: 54, toMin: 2 },
   ],
-  windowStartsMin: [0, 14, 24, 54],
+  windowStartsMin: [14, 24, 54],
   cityLoadingMaxMs: 120_000,
   cityCalendarNoDatesMs: 20_000,
   cityRotateMinGapMs: 15_000,
@@ -49,7 +48,9 @@ function _normalizeWindows(raw) {
   for (const w of raw) {
     const fromMin = _clamp(w?.fromMin, 0, 59, NaN);
     const toMin = _clamp(w?.toMin, 0, 59, NaN);
-    if (!Number.isFinite(fromMin) || !Number.isFinite(toMin) || fromMin > toMin) return null;
+    if (!Number.isFinite(fromMin) || !Number.isFinite(toMin)) return null;
+    // Allow wrap windows (e.g. :54–:02 where fromMin > toMin).
+    if (fromMin === toMin) return null;
     const slot = _clamp(w?.slot, 1, 12, 1);
     out.push({ slot, fromMin, toMin });
   }

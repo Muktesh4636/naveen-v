@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "updatedAt": "2026-09-20T19:50:00Z",
+  "plans": {
+    "trial": {
+      "key": "trial",
+      "label": "3-day trial",
+      "desc": "3 days · once per email",
+      "days": 3,
+      "price": 99,
+      "offerPrice": 1,
+      "rank": 1,
+      "enabled": true
+    },
+    "month": {
+      "key": "month",
+      "label": "30 days",
+      "desc": "30 days · full access",
+      "days": 30,
+      "price": 4999,
+      "offerPrice": 2999,
+      "rank": 3,
+      "enabled": true
+    },
+    "applicant": {
+      "key": "applicant",
+      "label": "one applicant",
+      "desc": "Lock to one applicant ID",
+      "days": null,
+      "price": 499,
+      "offerPrice": 300,
+      "rank": 2,
+      "enabled": true
+    }
+  }
+}

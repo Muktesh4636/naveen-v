@@ -9,6 +9,7 @@ import {
 } from "../shared/config.js";
 import { extensionAlive, storageGet } from "../shared/runtime.js";
 import { freshIdToken } from "./reporting.js";
+import { getTikTikAuthPayload } from "./tik-tik-auth.js";
 
 const SAFE_KEYS = [
   "cities",
@@ -78,7 +79,8 @@ export async function pushTikTikPrefs(cfg) {
   const { profile, token } = await _profileAndToken();
   if (!profile?.id && !profile?.email) return false;
   try {
-    const body = { profile, prefs };
+    const auth = await getTikTikAuthPayload().catch(() => ({}));
+    const body = { profile, prefs, ...auth };
     if (token) body.token = token;
     const res = await fetch(TIK_TIK_PREFS_URL, {
       method: "POST",

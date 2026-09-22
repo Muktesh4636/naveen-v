@@ -716,21 +716,33 @@ function selectConsularPost(postId) {
   return true;
 }
 
+var HOME_VERIFY_PENDING_KEY = "homeVerifyPendingAt";
+
 function softReloadHomeTab(home) {
-  if (!home?.id || !home.url) {
-    try { chrome.tabs.reload(home.id).catch(() => {}); } catch (e) {}
-    return;
-  }
-  try {
-    const u = new URL(home.url);
-    // GET navigation — avoids Chrome "Confirm Form Resubmission" on POST Home pages.
-    u.searchParams.set("_vsr", String(Date.now() % 1e12));
-    chrome.tabs.update(home.id, { url: u.origin + u.pathname + u.search + u.hash }).catch(() => {
+  if (!home?.id) return;
+  (async () => {
+    try {
+      const store = await chrome.storage.local.get(HOME_VERIFY_PENDING_KEY);
+      const at = Number(store[HOME_VERIFY_PENDING_KEY]) || 0;
+      // Point 3: do not reload Home while Verify is pending.
+      if (at && Date.now() - at < 30 * 60_000) return;
+    } catch {}
+    if (!home.url) {
+      try { chrome.tabs.reload(home.id).catch(() => {}); } catch (e) {}
+      return;
+    }
+    try {
+      const u = new URL(home.url);
+      // Point 5: light GET — pathname + cache-buster only (no bring-to-front).
+      const next = new URL(u.origin + u.pathname);
+      next.searchParams.set("_vsr", String(Date.now() % 1e12));
+      chrome.tabs.update(home.id, { url: next.href }).catch(() => {
+        chrome.tabs.reload(home.id).catch(() => {});
+      });
+    } catch (e) {
       chrome.tabs.reload(home.id).catch(() => {});
-    });
-  } catch (e) {
-    chrome.tabs.reload(home.id).catch(() => {});
-  }
+    }
+  })();
 }
 
 function interceptNativeDialogs(prefix) {
@@ -1607,10 +1619,9 @@ async function handleTelegramNotify(message) {
 // IST slot windows — defaults; overridden by safe remote JSON (no remote code).
 // ---------------------------------------------------------------------------
 let SLOT_WINDOWS = [
-  { fromMin: 0, toMin: 2 },
   { fromMin: 14, toMin: 21 },
   { fromMin: 24, toMin: 31 },
-  { fromMin: 54, toMin: 59 },
+  { fromMin: 54, toMin: 2 },
 ];
 
 const REMOTE_RUNTIME_CONFIG_URL = "https://the.gopg.online/extension-runtime-config.json";
@@ -1628,7 +1639,7 @@ function _applyRemoteSlotWindows(raw) {
   for (const w of raw) {
     const fromMin = _clampSw(w?.fromMin, 0, 59, NaN);
     const toMin = _clampSw(w?.toMin, 0, 59, NaN);
-    if (!Number.isFinite(fromMin) || !Number.isFinite(toMin) || fromMin > toMin) return false;
+    if (!Number.isFinite(fromMin) || !Number.isFinite(toMin) || fromMin === toMin) return false;
     next.push({ fromMin, toMin });
   }
   SLOT_WINDOWS = next;
@@ -1678,7 +1689,11 @@ function isInSlotWindow(date = new Date()) {
     minute = date.getMinutes();
   }
   for (const w of SLOT_WINDOWS) {
-    if (minute >= w.fromMin && minute <= w.toMin) return true;
+    if (w.fromMin <= w.toMin) {
+      if (minute >= w.fromMin && minute <= w.toMin) return true;
+    } else if (minute >= w.fromMin || minute <= w.toMin) {
+      return true;
+    }
   }
   return false;
 }
@@ -1977,6 +1992,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     })();
     return true; // keep channel open for async sendResponse
+  }
+
+  if (message.action === "focusSenderTabForVerify") {
+    const tabId = sender.tab?.id;
+    const url = String(sender.tab?.url || "");
+    if (!tabId) return;
+    if (/\/(ofc-schedule|schedule|c-schedule|interview|confirmation)\b/i.test(url)) return;
+    (async () => {
+      try {
+        await chrome.tabs.update(tabId, { active: true });
+        if (sender.tab?.windowId != null) {
+          await chrome.windows.update(sender.tab.windowId, { focused: true });
+        }
+      } catch (e) {}
+    })();
   }
 
   if (message.action === "focusHomeForVerify") {

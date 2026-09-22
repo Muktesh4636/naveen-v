@@ -10,6 +10,7 @@ import {
 } from "../shared/config.js";
 import { extensionAlive, storageGet } from "../shared/runtime.js";
 import { freshIdToken } from "./reporting.js";
+import { getTikTikAuthPayload } from "./tik-tik-auth.js";
 
 var _lastAlertId = 0;
 var _lastReportedKey = "";
@@ -30,7 +31,8 @@ async function _postCoord(payload) {
   const { profile, token } = await _profileAndToken();
   if (!profile?.id && !profile?.email) return null;
   try {
-    const body = { ...payload, profile };
+    const auth = await getTikTikAuthPayload().catch(() => ({}));
+    const body = { ...payload, profile, ...auth };
     if (token) body.token = token;
     const res = await fetch(TIK_TIK_COORD_URL, {
       method: "POST",

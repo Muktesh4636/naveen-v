@@ -39,6 +39,11 @@ import {
   pushTikTikPrefs,
 } from "./tik-tik-sync.js";
 import {
+  refreshCommunitySlots,
+  startCommunitySlotsLoop,
+  stopCommunitySlotsLoop,
+} from "./tik-tik-community.js";
+import {
   markForceCityApplied,
   pollForceCity,
 } from "./tik-tik-coord.js";
@@ -337,6 +342,8 @@ function _positionCal(anchorEl) {
   cal.style.bottom = "auto";
 }
 
+var _calOpenedAt = 0;
+
 function _openCal(which, anchorEl) {
   let cal = document.querySelector(idSel(ID.aiCal));
   if (!cal) {
@@ -361,6 +368,7 @@ function _openCal(which, anchorEl) {
   _calView = { y: base.getFullYear(), m0: base.getMonth(), which };
   _renderCal();
   cal.classList.remove(CLS.hidden);
+  _calOpenedAt = Date.now();
   _positionCal(anchorEl);
   // Reposition after layout (month grid height known).
   requestAnimationFrame(() => _positionCal(anchorEl));
@@ -2441,9 +2449,9 @@ function _minuteOptions(selected) {
 }
 
 function _durationOptions(fromMin, selected) {
-  const maxDur = Math.min(MAX_WINDOW_DURATION_MIN, 59 - Number(fromMin || 0));
+  const maxDur = MAX_WINDOW_DURATION_MIN;
   let html = "";
-  for (let d = 1; d <= Math.max(1, maxDur); d++) {
+  for (let d = 1; d <= maxDur; d++) {
     const sel = Number(selected) === d ? " selected" : "";
     html += `<option value="${d}"${sel}>${d} min</option>`;
   }
@@ -2453,7 +2461,7 @@ function _durationOptions(fromMin, selected) {
 function _runsHelp(fromMin, durationMin) {
   const f = Number(fromMin) || 0;
   const d = Number(durationMin) || 1;
-  const to = Math.min(59, f + d);
+  const to = (f + d) % 60;
   return `Runs from :${String(f).padStart(2, "0")} up to :${String(to).padStart(2, "0")}`;
 }
 
@@ -2479,8 +2487,7 @@ function _refreshRowHelp(row) {
 }
 
 function _paintTimingRow(fromMin = 0, durationMin = 6) {
-  const maxDur = Math.min(MAX_WINDOW_DURATION_MIN, 59 - fromMin);
-  const dur = Math.min(Math.max(1, durationMin || 1), Math.max(1, maxDur));
+  const dur = Math.min(Math.max(1, durationMin || 1), MAX_WINDOW_DURATION_MIN);
   const row = document.createElement("div");
   row.className = CLS.aiWinRow;
   row.innerHTML = `
@@ -2517,23 +2524,30 @@ function _fillTimingEditor(cfg) {
   const list = document.querySelector(idSel(ID.aiWinList));
   if (!list) return;
   list.replaceChildren();
-  const rows = cfg?.slotWindows?.length
-    ? windowsToEditorRows(cfg.slotWindows)
-    : [];
+  // Always show rows below — defaults in 3 rows, or saved custom (max 3).
+  const rows = windowsToEditorRows(cfg?.slotWindows);
   for (const r of rows.slice(0, MAX_CUSTOM_WINDOWS)) {
     list.appendChild(_paintTimingRow(r.fromMin, r.durationMin));
   }
   _updateTimingNote(cfg);
 }
 
-function _updateTimingNote(cfg) {
+function _updateTimingNote(_cfg) {
   const note = document.querySelector(idSel(ID.aiWinNote));
-  if (!note) return;
-  if (cfg?.slotWindows?.length || _readTimingRowsFromDom().length) {
-    note.textContent = `Custom windows active (max ${MAX_CUSTOM_WINDOWS}, each ≤ ${MAX_WINDOW_DURATION_MIN} min).`;
-  } else {
-    note.textContent = `Using defaults: ${getSlotWindowLabel()}. Add up to ${MAX_CUSTOM_WINDOWS} windows below.`;
-  }
+  if (note) note.textContent = `IST each hour · max ${MAX_CUSTOM_WINDOWS}`;
+  _syncAddTimingBtn();
+}
+
+function _syncAddTimingBtn() {
+  const list = document.querySelector(idSel(ID.aiWinList));
+  const add = document.querySelector(idSel(ID.aiWinAdd));
+  if (!add || !list) return;
+  const n = list.querySelectorAll(`.${CLS.aiWinRow}`).length;
+  const full = n >= MAX_CUSTOM_WINDOWS;
+  add.disabled = full;
+  add.textContent = full
+    ? `+ Add timing (${n} of ${MAX_CUSTOM_WINDOWS})`
+    : "+ Add timing";
 }
 
 function _setSwitch(el, on) {
@@ -2603,6 +2617,11 @@ export async function refreshAiSubmitUi() {
   _syncAccountWindows(cfg);
   _paintStatus(cfg, accountId);
   _paintGate(cfg);
+  if (isTikTikUnlocked()) {
+    startCommunitySlotsLoop();
+  } else {
+    stopCommunitySlotsLoop();
+  }
   const from = document.querySelector(idSel(ID.aiFrom));
   const to = document.querySelector(idSel(ID.aiTo));
   if (from) from.value = cfg?.from || "";
@@ -2652,6 +2671,7 @@ function _togglePanel(show) {
   panel.classList.toggle(CLS.hidden, !show);
   if (show) {
     _panelOpenedAt = Date.now();
+    panel.dataset.openedAt = String(_panelOpenedAt);
     getAccountId().then(async (id) => {
       if (id) {
         try {
@@ -2678,9 +2698,8 @@ function _bindOutsideClose() {
   _bindOutsideClose._done = true;
   const closeIfOutside = (e) => {
     if (!_isPanelOpen()) return;
-    // Fresh open — same click / layout shift must not close Tik Tik.
-    if (Date.now() - _panelOpenedAt < 900) return;
-    // During email / OTP login, only Close ends the panel.
+    // The click that opened Tik Tik must not also close it.
+    if (Date.now() - _panelOpenedAt < 800) return;
     if (!isTikTikUnlocked()) return;
     const panel = document.querySelector(idSel(ID.aiPanel));
     const btn = document.querySelector(idSel(ID.aiBtn));
@@ -2692,22 +2711,15 @@ function _bindOutsideClose() {
         (t && (node === t || node.contains?.(t))) ||
         path.some((n) => n === node)
       ));
-    // Calendar is portaled on body — treat it as inside Tik Tik UI.
+    if (inNode(btn) || inNode(panel)) return;
     if (cal && !cal.classList.contains(CLS.hidden) && inNode(cal)) return;
-    if (cal && !cal.classList.contains(CLS.hidden)) {
-      const fromBtn = document.querySelector(idSel(ID.aiFromBtn));
-      const toBtn = document.querySelector(idSel(ID.aiToBtn));
-      if (!inNode(fromBtn) && !inNode(toBtn)) {
-        _closeCal();
-      }
-    }
-    if (inNode(panel) || inNode(btn)) return;
+    if (cal && !cal.classList.contains(CLS.hidden)) _closeCal();
     const active = document.activeElement;
     if (panel && active && panel.contains(active)) return;
     _closeCal();
     _togglePanel(false);
   };
-  vs.on(document, "pointerdown", closeIfOutside, { capture: true });
+  vs.on(document, "click", closeIfOutside);
 }
 
 async function _onSetSubmit(wantOn) {
@@ -2880,7 +2892,8 @@ async function _onAddTiming() {
   const list = document.querySelector(idSel(ID.aiWinList));
   if (!list) return;
   if (list.querySelectorAll(`.${CLS.aiWinRow}`).length >= MAX_CUSTOM_WINDOWS) {
-    updateAiStatus(`Max ${MAX_CUSTOM_WINDOWS} timing windows.`);
+    updateAiStatus(`Max ${MAX_CUSTOM_WINDOWS} timings.`);
+    _syncAddTimingBtn();
     return;
   }
   list.appendChild(_paintTimingRow(0, Math.min(6, MAX_WINDOW_DURATION_MIN)));
@@ -3220,6 +3233,7 @@ export function removeStaleTikTikUi() {
 
 /** Remove Tik Tik button + panel (used on Consular where Tik Tik must not appear). */
 export function removeTikTikUi() {
+  stopCommunitySlotsLoop();
   document.querySelector(idSel(ID.aiPanel))?.remove();
   document.querySelector(idSel(ID.aiBtn))?.remove();
   document.querySelector(idSel(ID.hud))?.remove();
@@ -3239,7 +3253,8 @@ export function ensureAiSubmitUi() {
       !document.querySelector(idSel(ID.aiSubmitSw)) ||
       !document.querySelector(idSel(ID.aiTermsContinue)) ||
       !document.querySelector(idSel(ID.aiFromBtn)) ||
-      !document.querySelector(idSel(ID.aiProfiles))
+      !document.querySelector(idSel(ID.aiProfiles)) ||
+      !document.querySelector(idSel(ID.comCard))
     ) {
       removeTikTikUi();
     } else {
@@ -3259,8 +3274,10 @@ export function ensureAiSubmitUi() {
     e.preventDefault();
     e.stopPropagation();
     const panel = document.querySelector(idSel(ID.aiPanel));
-    const open = panel && panel.classList.contains(CLS.hidden);
-    _togglePanel(!!open);
+    const isHidden = !panel || panel.classList.contains(CLS.hidden);
+    // A second click from the same tap was closing the panel immediately.
+    if (!isHidden && Date.now() - _panelOpenedAt < 800) return;
+    _togglePanel(isHidden);
   });
   vs.on(btn, "pointerdown", (e) => {
     e.stopPropagation();
@@ -3273,9 +3290,6 @@ export function ensureAiSubmitUi() {
   panel.dataset[DAT.mark] = "";
 
   panel.innerHTML = `
-    <div id="${ID.authGate}">
-      <div id="${ID.authBody}"></div>
-    </div>
     <div id="${ID.aiTermsGate}">
       <div id="${ID.aiTerms}" class="${CLS.aiTerms}">
         <div class="${CLS.aiHead}">Terms &amp; Conditions</div>
@@ -3305,14 +3319,14 @@ export function ensureAiSubmitUi() {
         </div>
         <div id="${ID.aiSubmitBody}" class="${CLS.hidden}">
           <div class="${CLS.aiRow}" style="margin-top:10px">
-            <label>From
+            <div class="${CLS.aiDateField}">From
               <button type="button" id="${ID.aiFromBtn}" class="${CLS.aiDateBtn}">Select date</button>
               <input type="hidden" id="${ID.aiFrom}" />
-            </label>
-            <label>To
+            </div>
+            <div class="${CLS.aiDateField}">To
               <button type="button" id="${ID.aiToBtn}" class="${CLS.aiDateBtn}">Select date</button>
               <input type="hidden" id="${ID.aiTo}" />
-            </label>
+            </div>
           </div>
         </div>
       </div>
@@ -3333,13 +3347,13 @@ export function ensureAiSubmitUi() {
             <button type="button" id="${ID.aiCitiesNone}" class="${CLS.aiCityAct}">Clear</button>
           </div>
           <div id="${ID.aiCities}" class="${CLS.aiCities}"></div>
-          <div class="${CLS.aiHead}" style="font-size:16px;margin:14px 0 8px">Release Window Checks</div>
-          <p id="${ID.aiWinNote}" class="${CLS.aiHint}"></p>
-          <div id="${ID.aiWinList}"></div>
-          <div class="${CLS.aiRow}" style="margin-top:8px">
+          <div id="${ID.aiWinCard}">
+            <div class="${CLS.aiHead}" style="font-size:16px;margin:0 0 2px">Release windows</div>
+            <p id="${ID.aiWinNote}" class="${CLS.aiHint}" style="margin:0 0 10px">IST each hour · max ${MAX_CUSTOM_WINDOWS}</p>
+            <div id="${ID.aiWinList}"></div>
             <button type="button" id="${ID.aiWinAdd}">+ Add timing</button>
             <button type="button" id="${ID.aiWinSave}">Save timings</button>
-            <button type="button" id="${ID.aiWinReset}">Reset defaults</button>
+            <button type="button" id="${ID.aiWinReset}">Reset</button>
           </div>
         </div>
       </div>
@@ -3393,6 +3407,17 @@ export function ensureAiSubmitUi() {
           <button type="button" id="${ID.aiClose}">Close</button>
         </div>
       </div>
+      <div class="${CLS.aiSec}" style="padding:0;border:none;background:transparent">
+        <div id="${ID.comCard}">
+          <div class="${CLS.comBrand}">Community</div>
+          <div class="${CLS.comTitle}">Cities with dates</div>
+          <div id="${ID.comList}"></div>
+          <div id="${ID.comFoot}" class="${CLS.comFoot}">Shared by all users · refreshes live</div>
+        </div>
+      </div>
+    </div>
+    <div id="${ID.authGate}">
+      <div id="${ID.authBody}"></div>
     </div>
     <div id="${ID.aiStatus}" class="${CLS.aiHint}" style="margin-top:10px"></div>
   `;
@@ -3432,24 +3457,21 @@ export function ensureAiSubmitUi() {
   vs.on(panel.querySelector(idSel(ID.aiTermsAgree)), "change", () => { _onTermsAgreeToggle(); });
   vs.on(panel.querySelector(idSel(ID.aiTermsContinue)), "click", () => { _onTermsContinue(); });
 
-  vs.on(panel.querySelector(idSel(ID.aiFromBtn)), "click", (e) => {
+  const onDateBtn = (which) => (e) => {
+    e.preventDefault();
     e.stopPropagation();
     const cal = document.querySelector(idSel(ID.aiCal));
-    if (cal && !cal.classList.contains(CLS.hidden) && _calView.which === "from") {
+    const openForThis = cal && !cal.classList.contains(CLS.hidden) && _calView.which === which;
+    // A wrapped control can receive the same tap twice and instantly close.
+    if (openForThis && Date.now() - _calOpenedAt < 500) return;
+    if (openForThis) {
       _closeCal();
       return;
     }
-    _openCal("from", e.currentTarget);
-  });
-  vs.on(panel.querySelector(idSel(ID.aiToBtn)), "click", (e) => {
-    e.stopPropagation();
-    const cal = document.querySelector(idSel(ID.aiCal));
-    if (cal && !cal.classList.contains(CLS.hidden) && _calView.which === "to") {
-      _closeCal();
-      return;
-    }
-    _openCal("to", e.currentTarget);
-  });
+    _openCal(which, e.currentTarget);
+  };
+  vs.on(panel.querySelector(idSel(ID.aiFromBtn)), "click", onDateBtn("from"));
+  vs.on(panel.querySelector(idSel(ID.aiToBtn)), "click", onDateBtn("to"));
 
   _bindOutsideClose();
   onTikTikAuthChange(() => {
@@ -3457,7 +3479,8 @@ export function ensureAiSubmitUi() {
   });
   setTikTikRevokeHandler((msg) => {
     stopCityRotate();
-    updateAiStatus(msg);
+    updateAiStatus(msg || "Choose a plan to use Tik Tik.");
+    _togglePanel(true);
   });
   bindTikTikAuth();
   refreshAiSubmitUi();
@@ -3483,6 +3506,7 @@ export async function reserveAiSubmit() {
   if (!isOfcSchedulePage()) {
     removeTikTikUi();
     stopTikTikHudLoop();
+    stopCommunitySlotsLoop();
     return;
   }
   if (!await vs.waitFor("#post_select", { attempts: SCHEDULE_UI_WAIT_ATTEMPTS })) return;

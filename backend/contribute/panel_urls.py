@@ -9,4 +9,6 @@ urlpatterns = [
     path("timings/", panel_views.panel_timings, name="panel_timings"),
     path("history/", panel_views.panel_history, name="panel_history"),
     path("users/", panel_views.panel_users, name="panel_users"),
+    path("accounts/", panel_views.panel_accounts, name="panel_accounts"),
+    path("plans/", panel_views.panel_plans, name="panel_plans"),
 ]

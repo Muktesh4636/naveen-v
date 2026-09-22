@@ -19,7 +19,13 @@ from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
-from .models import Applicant, Contribution, HumanClickSample
+from .models import Applicant, Contribution, HumanClickSample, TikTikLogin
+from .plan_catalog import (
+    PLAN_ORDER,
+    load_plan_catalog,
+    save_plan_catalog,
+)
+from .tik_tik_auth import admin_apply_plan
 
 DEFAULT_CONFIG = {
     "version": 1,
@@ -565,4 +571,257 @@ def panel_users(request):
         request,
         "panel/users.html",
         {"user_rows": user_rows[:200], "section": "users"},
+    )
+
+
+def _ist_str(dt):
+    if not dt:
+        return "—"
+    return timezone.localtime(dt).strftime("%Y-%m-%d %H:%M:%S IST")
+
+
+def _plan_label(plan: str) -> str:
+    cat = load_plan_catalog()
+    p = cat.get((plan or "").strip())
+    if not p:
+        return (plan or "").strip() or "No plan"
+    offer = int(p.get("offerPrice") or 0)
+    price = int(p.get("price") or 0)
+    label = p.get("label") or plan
+    if price > offer:
+        return f"₹{offer} (was ₹{price}) · {label}"
+    return f"₹{offer} · {label}"
+
+
+def _plan_status(row: TikTikLogin) -> str:
+    now = timezone.now()
+    plan = (row.plan or "").strip()
+    if not plan:
+        return "Choose plan"
+    if plan == "applicant":
+        return "Active" if row.applicant_id else "Needs applicant"
+    if row.plan_ends and now >= row.plan_ends:
+        return "Expired"
+    return "Active"
+
+
+def _applicants_for_login(row: TikTikLogin) -> list[dict]:
+    ids = []
+    seen = set()
+    for raw in list(row.seen_applicant_ids or []) + [row.applicant_id]:
+        aid = str(raw or "").strip()
+        if aid and aid not in seen:
+            seen.add(aid)
+            ids.append(aid)
+    email = (row.email or "").strip()
+    by_id = {}
+    if ids:
+        for a in Applicant.objects.filter(applicant_id__in=ids):
+            by_id[str(a.applicant_id or "").strip()] = a
+    if email:
+        for a in Applicant.objects.filter(email__iexact=email):
+            aid = str(a.applicant_id or "").strip()
+            if aid and aid not in seen:
+                seen.add(aid)
+                ids.append(aid)
+            if aid:
+                by_id[aid] = a
+
+    out = []
+    for aid in ids:
+        a = by_id.get(aid)
+        out.append(
+            {
+                "applicant_id": aid,
+                "name": (a.name if a else "") or "—",
+                "portal_email": (a.email if a else "") or "—",
+                "visa": (a.visa_class if a else "") or "—",
+                "updated": _ist_str(a.updated_at) if a else "—",
+            }
+        )
+    return out
+
+
+@staff_member_required(login_url="/panel/login/")
+@require_http_methods(["GET", "POST"])
+def panel_accounts(request):
+    """List Tik Tik login emails (basic). Click email for full control + applicants."""
+    q = (request.GET.get("q") or "").strip()
+    email = (request.GET.get("email") or "").strip().lower()
+
+    if request.method == "POST":
+        target = (request.POST.get("email") or email or "").strip().lower()
+        action = (request.POST.get("action") or "").strip().lower()
+        row = TikTikLogin.objects.filter(email__iexact=target).first() if target else None
+        if not row:
+            messages.error(request, "Account not found.")
+            return redirect("panel_accounts")
+
+        try:
+            if action == "set_plan":
+                plan = (request.POST.get("plan") or "").strip().lower()
+                days_raw = (request.POST.get("days") or "").strip()
+                days = int(days_raw) if days_raw else None
+                amount_raw = (request.POST.get("amount") or "").strip()
+                amount = int(amount_raw) if amount_raw else None
+                applicant_id = (request.POST.get("applicant_id") or "").strip()
+                label = admin_apply_plan(
+                    row,
+                    plan=plan,
+                    days=days,
+                    amount=amount,
+                    applicant_id=applicant_id,
+                )
+                messages.success(request, f"Updated {row.email}: {label}")
+            elif action == "grant_full":
+                days_raw = (request.POST.get("days") or "30").strip() or "30"
+                days = max(1, min(3650, int(days_raw)))
+                label = admin_apply_plan(row, plan="month", days=days)
+                messages.success(request, f"Full access for {row.email}: {label}")
+            elif action == "kick":
+                row.session_hash = ""
+                row.device_id = ""
+                row.save(update_fields=["session_hash", "device_id", "updated_at"])
+                messages.success(request, f"Logged out {row.email} on their device.")
+            elif action == "reset_trial":
+                row.trial_used = False
+                row.save(update_fields=["trial_used", "updated_at"])
+                messages.success(request, f"Trial reset for {row.email}.")
+            elif action == "clear_plan":
+                label = admin_apply_plan(row, plan="clear")
+                messages.success(request, f"Cleared plan for {row.email}.")
+            else:
+                messages.error(request, "Unknown action.")
+        except (TypeError, ValueError) as exc:
+            messages.error(request, str(exc) or "Could not update account.")
+
+        return redirect(f"{request.path}?email={row.email}")
+
+    if email:
+        row = TikTikLogin.objects.filter(email__iexact=email).first()
+        if not row:
+            return render(
+                request,
+                "panel/accounts.html",
+                {
+                    "section": "accounts",
+                    "mode": "missing",
+                    "email": email,
+                    "q": q,
+                },
+            )
+        applicants = _applicants_for_login(row)
+        detail = {
+            "email": row.email,
+            "plan": _plan_label(row.plan),
+            "plan_raw": (row.plan or "").strip(),
+            "amount": row.amount_inr or 0,
+            "status": _plan_status(row),
+            "trial_used": bool(row.trial_used),
+            "plan_started": _ist_str(row.plan_started),
+            "plan_ends": _ist_str(row.plan_ends),
+            "logged_in": bool(row.session_hash and row.device_id),
+            "device": row.device_id or "—",
+            "applicant_id": row.applicant_id or "",
+            "updated": _ist_str(row.updated_at),
+            "created": _ist_str(row.created_at),
+            "applicant_count": len(applicants),
+            "applicants": applicants,
+        }
+        return render(
+            request,
+            "panel/accounts.html",
+            {
+                "section": "accounts",
+                "mode": "detail",
+                "account": detail,
+                "plans": load_plan_catalog(),
+                "q": q,
+            },
+        )
+
+    rows = []
+    qs = TikTikLogin.objects.all().order_by("email")
+    if q:
+        qs = qs.filter(
+            Q(email__icontains=q)
+            | Q(applicant_id__icontains=q)
+            | Q(seen_applicant_ids__icontains=q)
+        )
+    for row in qs[:300]:
+        applicants = _applicants_for_login(row)
+        rows.append(
+            {
+                "email": row.email,
+                "plan": _plan_label(row.plan),
+                "status": _plan_status(row),
+                "logged_in": bool(row.session_hash and row.device_id),
+                "updated": _ist_str(row.updated_at),
+                "applicant_count": len(applicants),
+            }
+        )
+
+    return render(
+        request,
+        "panel/accounts.html",
+        {
+            "section": "accounts",
+            "mode": "list",
+            "account_rows": rows,
+            "q": q,
+            "total_accounts": len(rows),
+            "total_applicants": sum(r["applicant_count"] for r in rows),
+        },
+    )
+
+
+@staff_member_required(login_url="/panel/login/")
+@require_http_methods(["GET", "POST"])
+def panel_plans(request):
+    """Edit list price + offer price for each Tik Tik plan (shown in extension)."""
+    if request.method == "POST":
+        plans = {}
+        for key in PLAN_ORDER:
+            days_raw = (request.POST.get(f"{key}_days") or "").strip()
+            days = None
+            if days_raw and days_raw.lower() not in ("", "none", "open"):
+                try:
+                    days = int(days_raw)
+                except ValueError:
+                    days = None
+            try:
+                price = int(request.POST.get(f"{key}_price") or 0)
+            except ValueError:
+                price = 0
+            try:
+                offer = int(request.POST.get(f"{key}_offer") or 0)
+            except ValueError:
+                offer = 0
+            plans[key] = {
+                "label": (request.POST.get(f"{key}_label") or "").strip(),
+                "desc": (request.POST.get(f"{key}_desc") or "").strip(),
+                "days": days,
+                "price": max(0, price),
+                "offerPrice": max(0, offer),
+                "enabled": request.POST.get(f"{key}_enabled") == "1",
+            }
+        written = save_plan_catalog(plans)
+        if written:
+            messages.success(
+                request,
+                "Plan prices saved. Extension picks them up on the next status check.",
+            )
+        else:
+            messages.error(request, "Could not write plan file — check server permissions.")
+        return redirect("panel_plans")
+
+    catalog = load_plan_catalog()
+    rows = [catalog[k] for k in PLAN_ORDER if k in catalog]
+    return render(
+        request,
+        "panel/plans.html",
+        {
+            "section": "plans",
+            "plan_rows": rows,
+        },
     )

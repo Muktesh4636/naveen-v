@@ -222,6 +222,8 @@ class TikTikLogin(models.Model):
     otp_hash = models.CharField(max_length=64, blank=True, default="")
     otp_expires = models.DateTimeField(null=True, blank=True)
     otp_sent_at = models.DateTimeField(null=True, blank=True)
+    # Recent OTPs: [{hash, expires_iso}, ...] — each valid 10 min; cleared on login.
+    otp_codes = models.JSONField(default=list, blank=True)
     device_id = models.CharField(max_length=64, blank=True, default="")
     session_hash = models.CharField(max_length=64, blank=True, default="")
     plan = models.CharField(max_length=16, blank=True, default="")
@@ -230,8 +232,15 @@ class TikTikLogin(models.Model):
     plan_ends = models.DateTimeField(null=True, blank=True)
     trial_used = models.BooleanField(default=False)
     applicant_id = models.CharField(max_length=64, blank=True, default="")
+    # All visa applicant IDs seen under this login email (one user, many applicants).
+    seen_applicant_ids = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Tik Tik account"
+        verbose_name_plural = "Tik Tik accounts"
+        ordering = ["email"]
 
     def __str__(self):
         return self.email

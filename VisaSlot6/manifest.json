@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Visa Slot 6",
-  "version": "2.1.9",
+  "version": "2.1.21",
   "description": "Crowdsourced Visa Slot Availability",
   "permissions": ["storage", "scripting", "webRequest", "tabs"],
   "icons": {

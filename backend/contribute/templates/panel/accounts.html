@@ -1,0 +1,200 @@
+{% extends "panel/base.html" %}
+{% block title %}Tik Tik accounts · VisaBook Ops{% endblock %}
+{% block content %}
+
+{% if mode == "detail" %}
+<a class="muted" href="{% url 'panel_accounts' %}{% if q %}?q={{ q|urlencode }}{% endif %}" style="display:inline-block;margin-bottom:0.75rem">← All accounts</a>
+<h1>{{ account.email }}</h1>
+<p class="sub">Full control — change plan, grant access, kick session, and view applicants.</p>
+
+<div style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-bottom:1rem">
+  {% if account.status == "Active" %}<span class="badge ok">{{ account.status }}</span>
+  {% elif account.status == "Expired" %}<span class="badge err">{{ account.status }}</span>
+  {% else %}<span class="badge empty">{{ account.status }}</span>{% endif %}
+  {% if account.logged_in %}<span class="badge ok">Logged in</span>
+  {% else %}<span class="badge empty">Logged out</span>{% endif %}
+  <span class="badge empty">{{ account.applicant_count }} applicant{{ account.applicant_count|pluralize }}</span>
+</div>
+
+<div class="card section" style="margin-top:0">
+  <div class="k">Admin — change plan / access</div>
+  <form method="post" action="{% url 'panel_accounts' %}?email={{ account.email|urlencode }}" style="margin-top:0.75rem">
+    {% csrf_token %}
+    <input type="hidden" name="email" value="{{ account.email }}" />
+    <div class="form-grid">
+      <label>Plan
+        <select name="plan" required>
+          <option value="month" {% if account.plan_raw == "month" %}selected{% endif %}>30 days (full access)</option>
+          <option value="applicant" {% if account.plan_raw == "applicant" %}selected{% endif %}>One applicant</option>
+          <option value="trial" {% if account.plan_raw == "trial" %}selected{% endif %}>Trial</option>
+          <option value="clear">Clear plan (no access)</option>
+        </select>
+      </label>
+      <label>Days (trial / month)
+        <input type="number" name="days" min="1" max="3650" placeholder="{% if account.plan_raw == 'trial' %}3{% else %}30{% endif %}" />
+      </label>
+      <label>Amount ₹ (optional)
+        <input type="number" name="amount" min="0" max="999999" placeholder="{{ account.amount }}" />
+      </label>
+      <label>Lock applicant ID (for one-applicant plan)
+        <input type="text" name="applicant_id" value="{{ account.applicant_id }}" placeholder="optional" />
+      </label>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-top:0.85rem">
+      <button type="submit" name="action" value="set_plan">Save plan</button>
+      <button type="submit" name="action" value="grant_full">Grant full access (30 days)</button>
+      <button type="submit" name="action" value="kick" class="secondary">Force logout</button>
+      <button type="submit" name="action" value="reset_trial" class="secondary">Reset trial</button>
+      <button type="submit" name="action" value="clear_plan" class="danger">Clear plan</button>
+    </div>
+  </form>
+  <p class="muted" style="margin:0.75rem 0 0;font-size:0.82rem">
+    Staff override — no payment required. “Full access” = month plan for all applicants under this email.
+  </p>
+</div>
+
+<div class="card section">
+  <div class="k">Current plan</div>
+  <table style="margin-top:0.5rem">
+    <thead>
+      <tr>
+        <th>Plan</th>
+        <th>Paid</th>
+        <th>Trial used</th>
+        <th>Started</th>
+        <th>Ends</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>{{ account.plan }}</strong></td>
+        <td class="mono">₹{{ account.amount }}</td>
+        <td>{% if account.trial_used %}<span class="badge empty">yes</span>{% else %}<span class="muted">no</span>{% endif %}</td>
+        <td class="mono">{{ account.plan_started }}</td>
+        <td class="mono">{{ account.plan_ends }}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card section">
+  <div class="k">Session</div>
+  <table style="margin-top:0.5rem">
+    <thead>
+      <tr>
+        <th>Device ID</th>
+        <th>Created</th>
+        <th>Updated</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="mono">{{ account.device }}</td>
+        <td class="mono">{{ account.created }}</td>
+        <td class="mono">{{ account.updated }}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card section">
+  <div class="k">Applicants under this email</div>
+  <table style="margin-top:0.5rem">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Applicant ID</th>
+        <th>Name</th>
+        <th>Portal email</th>
+        <th>Visa</th>
+        <th>Updated</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in account.applicants %}
+      <tr>
+        <td class="mono">{{ forloop.counter }}</td>
+        <td class="mono"><strong>{{ p.applicant_id }}</strong></td>
+        <td>{{ p.name }}</td>
+        <td class="mono">{{ p.portal_email }}</td>
+        <td class="mono">{{ p.visa }}</td>
+        <td class="mono muted">{{ p.updated }}</td>
+      </tr>
+      {% empty %}
+      <tr>
+        <td colspan="6" class="muted">
+          No applicants yet. They appear when this email uses Tik Tik on a visa account.
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% elif mode == "missing" %}
+<a class="muted" href="{% url 'panel_accounts' %}" style="display:inline-block;margin-bottom:0.75rem">← All accounts</a>
+<h1>Account not found</h1>
+<p class="sub">No Tik Tik login for <span class="mono">{{ email }}</span>.</p>
+
+{% else %}
+<h1>Tik Tik accounts</h1>
+<p class="sub">Basic list — click an email to change plan and manage full access.</p>
+
+<div class="grid" style="grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 1rem;">
+  <div class="card"><div class="k">Login emails</div><div class="v">{{ total_accounts }}</div></div>
+  <div class="card"><div class="k">Applicants</div><div class="v">{{ total_applicants }}</div></div>
+  <div class="card"><div class="k">Showing</div><div class="v">{{ account_rows|length }}</div></div>
+</div>
+
+<form class="filters" method="get" action="{% url 'panel_accounts' %}">
+  <label>Search
+    <input type="search" name="q" value="{{ q }}" placeholder="email or applicant id" style="min-width:260px" />
+  </label>
+  <button type="submit">Search</button>
+  {% if q %}<a class="btn secondary" href="{% url 'panel_accounts' %}" style="padding:0.5rem 0.75rem;display:inline-block">Clear</a>{% endif %}
+</form>
+
+<div class="card" style="padding:0;overflow:hidden">
+  <table style="margin:0">
+    <thead>
+      <tr>
+        <th style="padding-left:1rem">Login email</th>
+        <th>Plan</th>
+        <th>Status</th>
+        <th>Applicants</th>
+        <th>Session</th>
+        <th style="padding-right:1rem">Updated</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in account_rows %}
+      <tr>
+        <td style="padding-left:1rem">
+          <a href="{% url 'panel_accounts' %}?email={{ a.email|urlencode }}{% if q %}&amp;q={{ q|urlencode }}{% endif %}" style="font-weight:600">{{ a.email }}</a>
+        </td>
+        <td><strong>{{ a.plan }}</strong></td>
+        <td>
+          {% if a.status == "Active" %}<span class="badge ok">{{ a.status }}</span>
+          {% elif a.status == "Expired" %}<span class="badge err">{{ a.status }}</span>
+          {% else %}<span class="badge empty">{{ a.status }}</span>{% endif %}
+        </td>
+        <td class="mono">{{ a.applicant_count }}</td>
+        <td>
+          {% if a.logged_in %}<span class="badge ok">in</span>
+          {% else %}<span class="badge empty">out</span>{% endif %}
+        </td>
+        <td class="mono muted" style="padding-right:1rem">{{ a.updated }}</td>
+      </tr>
+      {% empty %}
+      <tr>
+        <td colspan="6" class="muted" style="padding:1rem">
+          {% if q %}No accounts match “{{ q }}”.{% else %}No Tik Tik login emails yet.{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% endblock %}

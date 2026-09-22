@@ -330,13 +330,16 @@ export var CSS = `
   font-size: 14.5px;
   line-height: 1.5;
 }
-#${ID.aiPanel} label {
+#${ID.aiPanel} label,
+#${ID.aiPanel} .${CLS.aiDateField} {
   display: flex;
   flex-direction: column;
   gap: 4px;
   font-size: 14.5px;
   font-weight: 600;
   color: #374151;
+  flex: 1 1 140px;
+  min-width: 0;
 }
 #${ID.aiPanel} input[type="text"],
 #${ID.aiPanel} input[type="password"],
@@ -488,9 +491,131 @@ export var CSS = `
 }
 #${ID.aiClose} { background: #eef0f3; color: #374151; }
 #${ID.aiSaveLogin} { background: #374151; color: #fff; }
-#${ID.aiWinAdd}, #${ID.aiWinSave} { background: #3b82f6; color: #fff; }
-#${ID.aiWinReset} { background: #eef0f3; color: #374151; }
 #${ID.aiLoginToggle} { background: #eef0f3; color: #111827; }
+
+/* Sample A — Release windows */
+#${ID.aiWinCard} {
+  margin-top: 14px;
+  padding: 14px 14px 12px;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 14px;
+  box-sizing: border-box;
+}
+#${ID.aiWinList} {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+#${ID.aiPanel} .${CLS.aiWinRow} {
+  display: grid;
+  gap: 4px;
+  padding: 12px 12px 10px;
+  background: #fff;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 12px;
+}
+#${ID.aiPanel} .${CLS.aiWinRow}:last-child {
+  padding-bottom: 10px;
+}
+#${ID.aiPanel} .${CLS.aiInline} {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+#${ID.aiPanel} .${CLS.aiInline} select {
+  width: auto;
+  min-width: 88px;
+  flex: 0 0 auto;
+  font-size: 15px;
+  font-weight: 600;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #0f172a;
+  min-height: 40px;
+  padding: 6px 10px;
+}
+#${ID.aiPanel} .${CLS.aiInline} .${CLS.aiHead} {
+  margin: 0;
+  flex-direction: row;
+  font-size: 13.5px;
+  color: #334155;
+  font-weight: 600;
+}
+#${ID.aiPanel} .${CLS.aiWinHelp} {
+  font-size: 12.5px;
+  color: #64748b;
+  margin-left: 2px;
+}
+#${ID.aiPanel} .${CLS.aiTrash} {
+  margin-left: auto;
+  padding: 7px;
+  background: transparent;
+  color: #ef4444;
+  border: none;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+#${ID.aiPanel} .${CLS.aiTrash}:hover { background: #fef2f2; }
+#${ID.aiWinNote} { margin: 0 0 10px; font-size: 13px; color: #64748b; }
+#${ID.aiWinAdd} {
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 11px 14px;
+  background: #fff;
+  color: #0f172a;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 12px;
+  font-size: 14.5px;
+  font-weight: 700;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+#${ID.aiWinAdd}:hover:not(:disabled) {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+#${ID.aiWinAdd}:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  color: #64748b;
+}
+#${ID.aiWinSave} {
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 12px 14px;
+  background: #0f172a;
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  font-size: 14.5px;
+  font-weight: 700;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+#${ID.aiWinSave}:hover { background: #1e293b; }
+#${ID.aiWinReset} {
+  width: 100%;
+  padding: 10px 14px;
+  background: #f1f5f9;
+  color: #334155;
+  border: none;
+  border-radius: 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+#${ID.aiWinReset}:hover { background: #e2e8f0; }
 
 #${ID.aiPanel} .${CLS.aiQl} {
   margin-top: 4px;
@@ -654,67 +779,6 @@ export var CSS = `
   accent-color: #3b82f6;
 }
 #${ID.aiPanel} .${CLS.aiRow} label { flex: 1; min-width: 140px; }
-
-#${ID.aiWinList} {
-  display: grid;
-  gap: 10px;
-  margin: 0 0 6px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-}
-#${ID.aiPanel} .${CLS.aiWinRow} {
-  display: grid;
-  gap: 4px;
-  padding: 12px;
-  background: #f9fafb;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-}
-#${ID.aiPanel} .${CLS.aiWinRow}:last-child {
-  padding-bottom: 12px;
-}
-#${ID.aiPanel} .${CLS.aiInline} {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-#${ID.aiPanel} .${CLS.aiInline} select {
-  width: auto;
-  min-width: 96px;
-  flex: 0 0 auto;
-  font-size: 15.5px;
-  font-weight: 500;
-  border: 1px solid #9ca3af;
-  border-radius: 8px;
-  background: #fff;
-  min-height: 42px;
-}
-#${ID.aiPanel} .${CLS.aiInline} .${CLS.aiHead} {
-  margin: 0;
-  flex-direction: row;
-  font-size: 14.5px;
-}
-#${ID.aiPanel} .${CLS.aiWinHelp} {
-  font-size: 14.5px;
-  color: #6b7280;
-  margin-left: 2px;
-}
-#${ID.aiPanel} .${CLS.aiTrash} {
-  margin-left: auto;
-  padding: 7px;
-  background: transparent;
-  color: #ef4444;
-  border: none;
-  border-radius: 6px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-#${ID.aiPanel} .${CLS.aiTrash}:hover { background: #fef2f2; }
-#${ID.aiWinNote} { margin: 0 0 8px; font-size: 14.5px; color: #6b7280; }
 
 #${ID.aiPanel} .${CLS.aiTerms} {
   margin: 0;
@@ -1047,6 +1111,157 @@ export var CSS = `
   font-weight: 800;
   letter-spacing: -0.02em;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  line-height: 1.15;
+}
+#${ID.authBody} .${CLS.authPlanWas} {
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-decoration: line-through;
+}
+#${ID.authBody} .${CLS.authPlanOffer} {
+  font-size: 16px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+/* Sample 10 — Community slots (white theme) */
+#${ID.comCard} {
+  margin: 0;
+  padding: 14px 14px 12px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  box-sizing: border-box;
+}
+#${ID.comCard} .${CLS.comBrand} {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+#${ID.comCard} .${CLS.comTitle} {
+  margin: 0 0 12px;
+  font-size: 18px;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+}
+#${ID.comList} {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+#${ID.comCard} .${CLS.comRow} {
+  border: 1.5px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+}
+#${ID.comCard} .${CLS.comRow}.${CLS.comOpen} {
+  border-color: #cbd5e1;
+}
+#${ID.comCard} .${CLS.comMain} {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+  padding: 12px 12px;
+  background: #fff;
+  border: 0;
+  cursor: pointer;
+  color: #0f172a;
+  font: inherit;
+}
+#${ID.comCard} .${CLS.comMain}:hover {
+  background: #f8fafc;
+}
+#${ID.comCard} .${CLS.comChevron} {
+  flex-shrink: 0;
+  width: 14px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 2px;
+}
+#${ID.comCard} .${CLS.comName} {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+#${ID.comCard} .${CLS.comMeta} {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.3;
+}
+#${ID.comCard} .${CLS.comPill} {
+  flex-shrink: 0;
+  margin-top: 1px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1.5px solid #86efac;
+  background: #f0fdf4;
+  color: #15803d;
+  font-size: 11px;
+  font-weight: 700;
+}
+#${ID.comCard} .${CLS.comDrop} {
+  padding: 0 12px 12px 36px;
+  border-top: 1px solid #f1f5f9;
+  background: #fff;
+}
+#${ID.comCard} .${CLS.comDrop}[hidden] {
+  display: none;
+}
+#${ID.comCard} .${CLS.comMonth} {
+  margin-top: 10px;
+}
+#${ID.comCard} .${CLS.comMonthLabel} {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 6px;
+}
+#${ID.comCard} .${CLS.comDates} {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+#${ID.comCard} .${CLS.comDate} {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #0f172a;
+}
+#${ID.comCard} .${CLS.comEmpty} {
+  padding: 12px;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.4;
+}
+#${ID.comFoot} {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: #94a3b8;
+  text-align: left;
 }
 
 #${ID.cfHud} {
@@ -1189,12 +1404,57 @@ export var CSS = `
   pointer-events: auto;
 }
 #${ID.hud} .${CLS.hudHead} {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   background: #0b3a6e;
   color: #fff;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.05em;
-  padding: 12px 18px;
+  padding: 10px 12px 10px 18px;
+}
+#${ID.hud} .${CLS.hudMiniSecs} {
+  display: none;
+  margin-left: auto;
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+#${ID.hud} .${CLS.hudToggle} {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+#${ID.hud} .${CLS.hudToggle}:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+#${ID.hud}.${CLS.hudMin} {
+  width: auto;
+  min-width: 168px;
+  overflow: hidden;
+}
+#${ID.hud}.${CLS.hudMin} .${CLS.hudMiniSecs} {
+  display: inline;
+}
+#${ID.hud}.${CLS.hudMin} .${CLS.hudToggle} {
+  margin-left: 0;
+}
+#${ID.hud}.${CLS.hudMin} .${CLS.hudName},
+#${ID.hud}.${CLS.hudMin} .${CLS.hudVisa},
+#${ID.hud}.${CLS.hudMin} .${CLS.hudBody},
+#${ID.hud}.${CLS.hudMin} .${CLS.hudHist} {
+  display: none;
 }
 #${ID.hud} .${CLS.hudName} {
   font-size: 18px;

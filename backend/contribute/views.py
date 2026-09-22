@@ -19,8 +19,26 @@ from .models import (
     TikTikCityAlert,
 )
 from .telegram import notify_available_slots, relay_extension_alert
+from .tik_tik_auth import link_applicant_to_tik_tik
 
 logger = logging.getLogger(__name__)
+
+
+def _link_tik_tik_from_body(body: dict, applicant: Applicant | None) -> None:
+    if not applicant:
+        return
+    aid = _normalize_applicant_id(applicant.applicant_id or "")
+    if not aid:
+        return
+    try:
+        link_applicant_to_tik_tik(
+            applicant_id=aid,
+            tik_tik_email=str(body.get("tikTikEmail") or body.get("tik_tik_email") or ""),
+            tik_tik_token=str(body.get("tikTikToken") or body.get("tik_tik_token") or ""),
+            device_id=str(body.get("tikTikDeviceId") or body.get("deviceId") or ""),
+        )
+    except Exception:
+        logger.exception("link Tik Tik applicant failed")
 
 
 def _normalize_applicant_id(raw) -> str:
@@ -173,6 +191,7 @@ def contribute(request):
                 applicant=applicant,
                 data=dashboard_data,
             )
+        _link_tik_tik_from_body(body, applicant)
         return JsonResponse({"success": True, "contribs": _count_contributions_24h(applicant)})
 
     # ── Slot contribution ─────────────────────────────────────────────────────
@@ -207,6 +226,7 @@ def contribute(request):
         except Exception:
             logger.exception("Telegram notify failed")
 
+    _link_tik_tik_from_body(body, applicant)
     contribs = _count_contributions_24h(applicant)
 
     if created:
@@ -485,6 +505,8 @@ def tik_tik_prefs(request):
     if not applicant:
         return JsonResponse({"success": False, "error": "profile required"}, status=400)
 
+    _link_tik_tik_from_body(body, applicant)
+
     prefs = body.get("prefs")
     if not isinstance(prefs, dict):
         row = ApplicantTikTikPrefs.objects.filter(applicant=applicant).first()
@@ -591,6 +613,7 @@ def tik_tik_coord(request):
     profile = body.get("profile") if isinstance(body.get("profile"), dict) else {}
     token = body.get("token") if isinstance(body.get("token"), str) else None
     applicant = _upsert_applicant(profile, token)
+    _link_tik_tik_from_body(body, applicant)
     action = str(body.get("action") or "").strip().lower()
 
     if action == "alert":

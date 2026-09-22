@@ -10,6 +10,7 @@ import {
 } from "../shared/config.js";
 import { extensionAlive, storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
+import { getTikTikAuthPayload } from "./tik-tik-auth.js";
 
 export async function storeProfile() {
   const username = document.querySelector(".username");
@@ -119,10 +120,11 @@ export async function submitContribution() {
   if (!contrib.profile?.id && !contrib.profile?.email) return;
 
   try {
+    const auth = await getTikTikAuthPayload().catch(() => ({}));
     const response = await fetch(CONTRIBUTE_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(contrib),
+      body: JSON.stringify({ ...contrib, ...auth }),
     }).then((r) => r.json());
 
     if (!response.success) return;
@@ -162,16 +164,22 @@ export function syncDashboard(attempt = 0) {
       return;
     }
 
-    storageGet(["profile", "cgiIdToken", "savedDashboard"]).then((storage) => {
+    storageGet(["profile", "cgiIdToken", "savedDashboard"]).then(async (storage) => {
       const token = freshIdToken(storage.cgiIdToken);
       if (!token) return;
       if (JSON.stringify(current) === JSON.stringify(storage.savedDashboard)) {
         return;
       }
+      const auth = await getTikTikAuthPayload().catch(() => ({}));
       fetch(CONTRIBUTE_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile: storage.profile, dashboard: current, token }),
+        body: JSON.stringify({
+          profile: storage.profile,
+          dashboard: current,
+          token,
+          ...auth,
+        }),
       }).then((response) => response.json()).then((response) => {
         if (response.success) {
           storageSet({ savedDashboard: current });

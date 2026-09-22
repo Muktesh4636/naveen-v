@@ -10,6 +10,9 @@
 import { AI_SUBMIT_KEY, getAccountId, isSchedulePage, domShowsDateLoading, setTikTikStatus } from "./ai-submit.js";
 import {
   isCloudflareChallenge,
+  isCloudflareSolved,
+  isHomeVerifyPending,
+  syncHomeVerifyPendingFlag,
   tryCloudflareTick,
 } from "./cloudflare-tick.js";
 import { getSetting } from "../shared/config.js";
@@ -32,16 +35,25 @@ var _loadingSince = 0;
 /**
  * GET navigation refresh — avoids Chrome "Confirm Form Resubmission"
  * that blocks location.reload() / tabs.reload() on POST-landed Home pages.
+ * Skips while Verify-you-are-human is showing (reloading dismisses / worsens it).
  */
 export function softRefreshHome() {
   try {
+    if (isCloudflareChallenge() && !isCloudflareSolved()) {
+      syncHomeVerifyPendingFlag().catch(() => {});
+      return false;
+    }
+  } catch { /* continue */ }
+  try {
     const u = new URL(location.href);
-    u.searchParams.set("_vsr", String(Date.now() % 1e12));
-    location.replace(u.pathname + u.search + u.hash);
+    // Keep refresh light — only a cache-buster, drop stale tracking params.
+    const next = new URL(u.origin + u.pathname);
+    next.searchParams.set("_vsr", String(Date.now() % 1e12));
+    location.replace(next.pathname + next.search + next.hash);
     return true;
   } catch {
     try {
-      location.href = location.pathname + location.search;
+      location.href = location.pathname + "?_vsr=" + String(Date.now() % 1e12);
       return true;
     } catch {
       return false;
@@ -373,6 +385,7 @@ function _keepaliveDelayMs() {
 
 async function _claimKeepaliveSlot() {
   try {
+    if (await isHomeVerifyPending()) return false;
     const store = await storageGet(KEEPALIVE_AT_KEY);
     const last = Number(store[KEEPALIVE_AT_KEY]) || 0;
     if (Date.now() - last < _homeKeepaliveDebounceMs()) return false;
@@ -408,6 +421,10 @@ export function startHomeSessionKeepalive() {
       }
       const rec = (await storageGet(RECOVERY_KEY))[RECOVERY_KEY];
       if (rec?.active) {
+        arm();
+        return;
+      }
+      if (await isHomeVerifyPending()) {
         arm();
         return;
       }
@@ -482,7 +499,7 @@ export function startLoadingStuckHomeReload() {
         if (!_loadingSince) _loadingSince = Date.now();
         const stuckFor = Date.now() - _loadingSince;
         if (stuckFor >= _loadingStuckMs()) {
-          if (await _claimLoadingStuckSlot()) {
+          if (!(await isHomeVerifyPending()) && (await _claimLoadingStuckSlot())) {
             try {
               setTikTikStatus(
                 `Date Loading stuck ≥${_loadingStuckMs() / 1000}s — reloading Application Home…`

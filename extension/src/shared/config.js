@@ -7,6 +7,7 @@ export var HUMAN_CLICK_URL = `${SITE_URL}/contribute/human-click`;
 export var TIK_TIK_PREFS_URL = `${SITE_URL}/contribute/tik-tik-prefs`;
 export var TIK_TIK_COORD_URL = `${SITE_URL}/contribute/tik-tik-coord`;
 export var TIK_TIK_AUTH_URL = `${SITE_URL}/contribute/tik-tik-auth`;
+export var COMMUNITY_SLOTS_URL = `${SITE_URL}/contribute/community-slots`;
 export var TELEGRAM_ADB_URL = "http://127.0.0.1:9333/send";
 export var DASHBOARD_POLL_ATTEMPTS = 20;
 export var MAX_TOKEN_AGE_MS = 72 * 60 * 60 * 1e3;

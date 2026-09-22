@@ -11,6 +11,24 @@ var CITY_LOG_MAX = 3;
 /** @type {{ id: string, name: string, slots: boolean|null }[]} */
 var _cityLog = [];
 var _hudTimer = null;
+var _hudMin = false;
+try {
+  _hudMin = sessionStorage.getItem("tikTikHudMin") === "1";
+} catch { /* ignore */ }
+
+function _setHudMin(root, min) {
+  _hudMin = !!min;
+  try {
+    sessionStorage.setItem("tikTikHudMin", _hudMin ? "1" : "0");
+  } catch { /* ignore */ }
+  if (!root) return;
+  root.classList.toggle(CLS.hudMin, _hudMin);
+  const btn = root.querySelector(idSel(ID.hudToggle));
+  if (btn) {
+    btn.textContent = _hudMin ? "+" : "–";
+    btn.setAttribute("aria-label", _hudMin ? "Expand status" : "Minimise status");
+  }
+}
 
 export function noteHudCityHop(cityId, cityName) {
   const id = String(cityId || "").trim();
@@ -52,13 +70,27 @@ function _ensureDom() {
   root.className = CLS.hud;
   root.dataset[DAT.mark] = "";
   root.innerHTML = `
-    <div class="${CLS.hudHead}">Tik Tik</div>
+    <div class="${CLS.hudHead}">
+      <span>Tik Tik</span>
+      <span class="${CLS.hudMiniSecs}" id="${ID.hudSecs}-mini"></span>
+      <button type="button" id="${ID.hudToggle}" class="${CLS.hudToggle}" aria-label="Minimise status">–</button>
+    </div>
     <div class="${CLS.hudName}" id="${ID.hudName}">—</div>
     <div class="${CLS.hudVisa}" id="${ID.hudVisa}">Visa · —</div>
     <div class="${CLS.hudBody}" id="${ID.hudBody}"></div>
     <div class="${CLS.hudHist}" id="${ID.hudHist}"></div>
   `;
   document.documentElement.appendChild(root);
+  const btn = root.querySelector(idSel(ID.hudToggle));
+  if (btn) {
+    vs.on(btn, "pointerdown", (e) => e.stopPropagation());
+    vs.on(btn, "click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      _setHudMin(root, !_hudMin);
+    });
+  }
+  _setHudMin(root, _hudMin);
   return root;
 }
 
@@ -189,6 +221,16 @@ export async function paintTikTikHud(state = {}) {
 
   _paintBody(root.querySelector(idSel(ID.hudBody)), state);
   _paintHist(root.querySelector(idSel(ID.hudHist)));
+
+  const mini = root.querySelector(idSel(`${ID.hudSecs}-mini`));
+  if (mini) {
+    const secs = _wholeSeconds(state.secondsUntilHop);
+    mini.textContent = state.rotateActive && secs != null ? `${secs}s` : "";
+  }
+  if (!root.querySelector(idSel(ID.hudToggle))) {
+    root.remove();
+    paintTikTikHud(state);
+  }
 }
 
 export function startTikTikHudLoop(getState) {

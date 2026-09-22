@@ -16,6 +16,7 @@ let _onRevoke = null;
 let _poll = null;
 let _pendingEmail = "";
 let _awaitingOtp = false;
+let _showingPlans = false;
 
 export function isTikTikUnlocked() {
   return _unlocked;
@@ -155,6 +156,15 @@ function _esc(s) {
   }[c]));
 }
 
+function _planCatalog(st) {
+  const list = Array.isArray(st?.plans) ? st.plans : [];
+  const byKey = {};
+  list.forEach((p) => {
+    if (p?.key) byKey[p.key] = p;
+  });
+  return { list, byKey };
+}
+
 function _planStillOn(st) {
   if (!st?.plan) return false;
   if (st.plan === "applicant") return !!st.applicantId;
@@ -164,13 +174,20 @@ function _planStillOn(st) {
 
 function _planLine(st) {
   if (!st?.plan) return "";
-  if (st.plan === "trial") return "₹1 · 3-day trial";
-  if (st.plan === "month") return "₹2999 · 30 days";
-  if (st.plan === "applicant") return `₹300 · applicant ${st.applicantId || ""}`;
-  return st.plan;
+  const { byKey } = _planCatalog(st);
+  const p = byKey[st.plan];
+  const offer = p ? Number(p.offerPrice) : Number(st.amount);
+  const label = p?.label || st.plan;
+  if (st.plan === "applicant") {
+    return `₹${offer || 0} · ${label} ${st.applicantId || ""}`.trim();
+  }
+  return `₹${offer || st.amount || 0} · ${label}`;
 }
 
-function _planRank(plan) {
+function _planRank(plan, st) {
+  const { byKey } = _planCatalog(st);
+  const p = byKey[plan];
+  if (p && p.rank != null) return Number(p.rank) || 0;
   if (plan === "trial") return 1;
   if (plan === "applicant") return 2;
   if (plan === "month") return 3;
@@ -179,7 +196,16 @@ function _planRank(plan) {
 
 function _canUpgrade(st) {
   if (!_planStillOn(st)) return false;
-  return _planRank(st.plan) < _planRank("month");
+  return _planRank(st.plan, st) < _planRank("month", st);
+}
+
+function _priceHtml(p) {
+  const offer = Math.max(0, Number(p.offerPrice) || 0);
+  const price = Math.max(0, Number(p.price) || 0);
+  if (price > offer) {
+    return `<span class="${CLS.authPlanPrice}"><span class="${CLS.authPlanWas}">₹${price}</span><span class="${CLS.authPlanOffer}">₹${offer}</span></span>`;
+  }
+  return `<span class="${CLS.authPlanPrice}"><span class="${CLS.authPlanOffer}">₹${offer}</span></span>`;
 }
 
 function _html(inner) {
@@ -408,34 +434,43 @@ function _showCode(email, message) {
 function _showPlans(st, opts = {}) {
   const upgrading = !!opts.upgrade && _planStillOn(st);
   _unlocked = upgrading ? !!st.access : false;
+  _showingPlans = !upgrading;
   const trialUsed = !!st?.trialUsed;
   const cur = upgrading ? String(st.plan || "") : "";
-  const curRank = _planRank(cur);
+  const curRank = _planRank(cur, st);
   const title = upgrading ? "Upgrade plan" : "Pick your plan";
   const goLabel = upgrading ? "Upgrade" : "Continue";
-  const defaultPlan = "month";
+  const { list, byKey } = _planCatalog(st);
+  const plans = list.length
+    ? list
+    : [
+        { key: "trial", label: "Trial", desc: "3 days · once per email", price: 99, offerPrice: 1, rank: 1 },
+        { key: "month", label: "Monthly", desc: "30 days · full access", price: 4999, offerPrice: 2999, rank: 3 },
+        { key: "applicant", label: "One applicant", desc: "Lock to one applicant ID", price: 499, offerPrice: 300, rank: 2 },
+      ];
 
-  const trialDisabled = trialUsed || (upgrading && curRank >= _planRank("trial"));
-  const trialIsCurrent = upgrading && cur === "trial";
-  const applicantDisabled = upgrading && curRank >= _planRank("applicant");
-  const applicantIsCurrent = upgrading && cur === "applicant";
-  const monthIsCurrent = upgrading && cur === "month";
-
-  const trialDesc = trialIsCurrent
-    ? "Current plan"
-    : trialUsed
-      ? "Already used on this email"
-      : upgrading
-        ? "Not available while upgrading"
-        : "3 days · once per email";
-  const applicantDesc = applicantIsCurrent
-    ? "Current plan"
-    : upgrading && applicantDisabled
-      ? "Same or lower than current"
-      : "Lock to one applicant ID";
-  const monthDesc = monthIsCurrent
-    ? "Current plan"
-    : "30 days · full access";
+  const rowsHtml = plans.map((p) => {
+    const key = p.key;
+    const isCurrent = upgrading && cur === key;
+    const lowerOrSame = upgrading && _planRank(key, st) <= curRank;
+    const trialBlock = key === "trial" && (trialUsed || (upgrading && lowerOrSame));
+    const disabled = isCurrent || trialBlock || (upgrading && lowerOrSame && key !== "month");
+    let desc = p.desc || "";
+    if (isCurrent) desc = "Current plan";
+    else if (key === "trial" && trialUsed) desc = "Already used on this email";
+    else if (upgrading && lowerOrSame) desc = "Same or lower than current";
+    const name =
+      key === "trial" ? "Trial" : key === "month" ? "Monthly" : key === "applicant" ? "One applicant" : (p.label || key);
+    return `
+      <button type="button" data-plan="${_esc(key)}" role="radio" class="${CLS.authPlanRow}${disabled ? ` ${CLS.authPlanOff}` : ""}" ${disabled ? "disabled" : ""} aria-checked="false">
+        <span class="${CLS.authPlanRadio}" aria-hidden="true"></span>
+        <span class="${CLS.authPlanMeta}">
+          <span class="${CLS.authPlanName}">${_esc(name)}</span>
+          <span class="${CLS.authPlanDesc}">${_esc(desc)}</span>
+        </span>
+        ${_priceHtml(p)}
+      </button>`;
+  }).join("");
 
   _html(`
     <div class="${CLS.authCard}">
@@ -445,30 +480,7 @@ function _showPlans(st, opts = {}) {
       <div class="${CLS.authEmailChip}">${_esc(st.email || "")}</div>
       ${upgrading ? `<div class="${CLS.aiHint}" style="margin:0 0 10px">Current: ${_esc(_planLine(st))}</div>` : ""}
       <div class="${CLS.authPlanList}" role="radiogroup" aria-label="Plans">
-        <button type="button" data-plan="trial" role="radio" class="${CLS.authPlanRow}${trialDisabled || trialIsCurrent ? ` ${CLS.authPlanOff}` : ""}" ${trialDisabled || trialIsCurrent ? "disabled" : ""} aria-checked="false">
-          <span class="${CLS.authPlanRadio}" aria-hidden="true"></span>
-          <span class="${CLS.authPlanMeta}">
-            <span class="${CLS.authPlanName}">Trial</span>
-            <span class="${CLS.authPlanDesc}">${trialDesc}</span>
-          </span>
-          <span class="${CLS.authPlanPrice}">₹1</span>
-        </button>
-        <button type="button" data-plan="month" role="radio" class="${CLS.authPlanRow}${monthIsCurrent ? ` ${CLS.authPlanOff}` : ""}" ${monthIsCurrent ? "disabled" : ""} aria-checked="false">
-          <span class="${CLS.authPlanRadio}" aria-hidden="true"></span>
-          <span class="${CLS.authPlanMeta}">
-            <span class="${CLS.authPlanName}">Monthly</span>
-            <span class="${CLS.authPlanDesc}">${monthDesc}</span>
-          </span>
-          <span class="${CLS.authPlanPrice}">₹2999</span>
-        </button>
-        <button type="button" data-plan="applicant" role="radio" class="${CLS.authPlanRow}${applicantDisabled || applicantIsCurrent ? ` ${CLS.authPlanOff}` : ""}" ${applicantDisabled || applicantIsCurrent ? "disabled" : ""} aria-checked="false">
-          <span class="${CLS.authPlanRadio}" aria-hidden="true"></span>
-          <span class="${CLS.authPlanMeta}">
-            <span class="${CLS.authPlanName}">One applicant</span>
-            <span class="${CLS.authPlanDesc}">${applicantDesc}</span>
-          </span>
-          <span class="${CLS.authPlanPrice}">₹300</span>
-        </button>
+        ${rowsHtml}
       </div>
       <button type="button" id="${ID.authBody}-go" class="${CLS.authBtn}">${goLabel}</button>
       <div class="${CLS.authLinks}">
@@ -479,8 +491,16 @@ function _showPlans(st, opts = {}) {
       <div data-auth-msg class="${CLS.aiHint}" style="margin-top:8px"></div>
     </div>
   `);
-  let selected = defaultPlan;
-  if (monthIsCurrent) selected = "";
+
+  const monthAvail = plans.some((p) => p.key === "month" && !(upgrading && cur === "month"));
+  let selected = monthAvail ? "month" : (plans.find((p) => {
+    const key = p.key;
+    const isCurrent = upgrading && cur === key;
+    const lowerOrSame = upgrading && _planRank(key, st) <= curRank;
+    const trialBlock = key === "trial" && (trialUsed || (upgrading && lowerOrSame));
+    return !(isCurrent || trialBlock || (upgrading && lowerOrSame && key !== "month"));
+  })?.key || "");
+
   const rows = () =>
     Array.from(document.querySelectorAll(`${idSel(ID.authBody)} [data-plan]`));
   const paint = () => {
@@ -491,8 +511,9 @@ function _showPlans(st, opts = {}) {
     });
   };
   paint();
-  if (!upgrading && trialUsed) _setMsg("The ₹1 trial was already used on this email.", false);
-  if (!upgrading && st?.reason && st.plan) _setMsg(st.reason, false);
+  const trialOffer = byKey.trial ? Number(byKey.trial.offerPrice) : 1;
+  if (!upgrading && trialUsed) _setMsg(`The ₹${trialOffer} trial was already used on this email.`, false);
+  if (!upgrading && st?.reason) _setMsg(st.reason, !st.plan);
   if (upgrading) _setMsg("Select a higher plan, then tap Upgrade.", false);
   _wireClose();
   _wire(idSel(`${ID.authBody}-out`), "click", () => _logout());
@@ -511,10 +532,10 @@ function _showPlans(st, opts = {}) {
       return;
     }
     if (selected === "trial" && trialUsed) {
-      _setMsg("The ₹1 trial was already used on this email.", true);
+      _setMsg(`The ₹${trialOffer} trial was already used on this email.`, true);
       return;
     }
-    if (upgrading && _planRank(selected) <= curRank) {
+    if (upgrading && _planRank(selected, st) <= curRank) {
       _setMsg("Pick a higher plan to upgrade.", true);
       return;
     }
@@ -548,6 +569,7 @@ function _showPlans(st, opts = {}) {
 
 function _showBar(st) {
   _unlocked = !!st.access;
+  _showingPlans = false;
   const until = st.planEnds ? ` until ${String(st.planEnds).slice(0, 10)}` : "";
   const upgrade = _canUpgrade(st) || !!st.canUpgrade;
   _html(`
@@ -559,10 +581,10 @@ function _showBar(st) {
         </div>
         <button type="button" id="${ID.authBody}-out" class="${CLS.authLink}" style="color:#64748b;flex-shrink:0">Logout</button>
       </div>
+      <div data-auth-msg class="${CLS.aiHint}" style="margin-top:8px"></div>
       ${upgrade ? `
         <button type="button" id="${ID.authBody}-upgrade" class="${CLS.authBtn}" style="margin-top:12px;padding:11px 14px;font-size:14px">Upgrade plan</button>
       ` : ""}
-      <div data-auth-msg class="${CLS.aiHint}" style="margin-top:8px"></div>
     </div>
   `);
   if (!st.access && st.reason) _setMsg(st.reason, true);
@@ -576,10 +598,24 @@ function _showBar(st) {
   if (_after) _after();
 }
 
+function _forceChoosePlan(st) {
+  const wasUnlocked = _unlocked;
+  const already = _showingPlans;
+  _unlocked = false;
+  const reason = st?.reason || "Choose a plan to use Tik Tik.";
+  if (wasUnlocked || !already) {
+    if (_onRevoke) _onRevoke(reason);
+  }
+  if (!already) _showPlans(st);
+  else if (st?.reason) _setMsg(st.reason, true);
+  if (_after) _after();
+}
+
 function _apply(st) {
   if (st?.kicked) {
     _clearSession();
     _unlocked = false;
+    _showingPlans = false;
     _stopPoll();
     if (_onRevoke) _onRevoke("");
     _clearPendingOtp().then(() => _showLogin("This email was logged in on another laptop."));
@@ -587,6 +623,7 @@ function _apply(st) {
   }
   if (!st?.loggedIn) {
     _unlocked = false;
+    _showingPlans = false;
     _stopPoll();
     // Keep OTP screen if they already asked for a code (e.g. checked email and came back).
     if (_awaitingOtp && _pendingEmail) {
@@ -600,8 +637,15 @@ function _apply(st) {
     return;
   }
   _clearPendingOtp();
-  if (_planStillOn(st)) _showBar(st);
-  else _showPlans(st);
+  if (_planStillOn(st) && st.access) {
+    _showBar(st);
+    _startPoll();
+    if (_after) _after();
+    return;
+  }
+  // Logged in but no active plan (cleared / expired) → show plans to pick again.
+  _forceChoosePlan(st);
+  _startPoll();
 }
 
 async function _logout() {
@@ -616,6 +660,7 @@ async function _logout() {
   await _clearSession();
   await _clearPendingOtp();
   _unlocked = false;
+  _showingPlans = false;
   _stopPoll();
   if (_onRevoke) _onRevoke("");
   _showLogin("");
@@ -634,22 +679,28 @@ function _startPoll() {
     _poll = null;
     const st = await _status().catch(() => null);
     if (!st) {
-      _poll = vs.setTimeout(beat, 15000);
+      _poll = vs.setTimeout(beat, 5000);
       return;
     }
     if (st.kicked || !st.loggedIn) {
       _apply(st);
       return;
     }
-    if (!st.access && _unlocked) {
-      _unlocked = false;
-      if (_onRevoke) _onRevoke(st.reason || "This plan has ended.");
-      _showPlans(st);
+    const ok = _planStillOn(st) && !!st.access;
+    if (!ok) {
+      // Admin cleared / plan ended → immediately show plan picker.
+      _forceChoosePlan(st);
+      _poll = vs.setTimeout(beat, 4000);
       return;
     }
-    _poll = vs.setTimeout(beat, 15000);
+    // Admin granted access while user was on the picker.
+    if (!_unlocked || _showingPlans) {
+      _showBar(st);
+      if (_after) _after();
+    }
+    _poll = vs.setTimeout(beat, 5000);
   };
-  _poll = vs.setTimeout(beat, 15000);
+  _poll = vs.setTimeout(beat, 5000);
 }
 
 async function _render() {
@@ -669,6 +720,21 @@ async function _render() {
   _apply(st);
 }
 
+export async function getTikTikSession() {
+  return _session();
+}
+
+export async function getTikTikAuthPayload() {
+  const session = await _session();
+  const deviceId = await _deviceId();
+  return {
+    tikTikEmail: session?.email || "",
+    tikTikToken: session?.token || "",
+    tikTikDeviceId: deviceId || "",
+    applicantId: await _applicantId(),
+  };
+}
+
 export function bindTikTikAuth() {
   _render();
 }
@@ -679,7 +745,10 @@ export function refreshTikTikAuth() {
 
 export function requestCloseTikTikPanel() {
   const panel = document.querySelector(idSel(ID.aiPanel));
-  if (panel) panel.classList.add(CLS.hidden);
+  if (!panel) return;
+  const opened = Number(panel.dataset.openedAt || 0);
+  if (opened && Date.now() - opened < 800) return;
+  panel.classList.add(CLS.hidden);
 }
 
 function _wireClose() {

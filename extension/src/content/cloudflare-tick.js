@@ -5,10 +5,12 @@ import {
   updateCloudflareHud,
 } from "./cloudflare-ui.js";
 import { getSetting } from "../shared/config.js";
-import { storageGet } from "../shared/runtime.js";
+import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
 import { isPortalFatalErrorPage } from "./portal-error-reload.js";
 import { vsLog } from "../shared/debugLog.js";
+
+export var HOME_VERIFY_PENDING_KEY = "homeVerifyPendingAt";
 
 var _cfWatchTimer = null;
 var _cfAttemptCount = 0;
@@ -16,6 +18,60 @@ var _cfObserver = null;
 var _challengeSeenAt = 0;
 var _homeForVerifyAt = 0;
 var HOME_FOR_VERIFY_COOLDOWN_MS = 25_000;
+
+function _isBackgroundTab() {
+  try {
+    return document.visibilityState === "hidden" || document.hidden === true;
+  } catch {
+    return false;
+  }
+}
+
+function _isHomeLikeForVerify() {
+  if (_isScheduleLikePath()) return false;
+  if (document.querySelector("#post_select")) return false;
+  const path = location.pathname || "";
+  return (
+    /^\/(en-US)?\/?$/i.test(path) ||
+    /\/en-US\/?$/i.test(path) ||
+    /visa application home/i.test(document.title || "") ||
+    !!document.querySelector(".username, #appointment-card") ||
+    // Full-page Cloudflare on Home URL still counts as Home verify.
+    (!!isCloudflareChallenge() && !/\/(schedule|ofc-schedule|c-schedule)\b/i.test(path))
+  );
+}
+
+/** Pause Home auto-refresh while Verify is showing on Home. */
+export async function syncHomeVerifyPendingFlag() {
+  try {
+    if (!_isHomeLikeForVerify()) return;
+    const pending = isCloudflareChallenge() && !isCloudflareSolved();
+    if (pending) {
+      await storageSet({ [HOME_VERIFY_PENDING_KEY]: Date.now() });
+    } else {
+      const store = await storageGet(HOME_VERIFY_PENDING_KEY);
+      if (store[HOME_VERIFY_PENDING_KEY]) {
+        await storageSet({ [HOME_VERIFY_PENDING_KEY]: 0 });
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+export async function isHomeVerifyPending() {
+  try {
+    if (isCloudflareChallenge() && !isCloudflareSolved() && _isHomeLikeForVerify()) {
+      return true;
+    }
+    const store = await storageGet(HOME_VERIFY_PENDING_KEY);
+    const at = Number(store[HOME_VERIFY_PENDING_KEY]) || 0;
+    // Stale flag older than 30 min — allow refresh again.
+    if (!at) return false;
+    if (Date.now() - at > 30 * 60_000) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Click soon — recorded samples already exist on the server. */
 async function _trainWindowMs() {
@@ -239,36 +295,52 @@ function _isScheduleLikePath() {
 }
 
 /**
- * On OFC / schedule: when "Verify you are human" appears, jump to Application Home
- * so the user can click the checkbox there (more reliable than on the schedule page).
+ * Home tab is showing "Verify you are human" while the user is on another page.
+ * Focus that Home tab. Do not reload it — reloading would dismiss the checkbox.
  */
-function _maybeTakeUserToHomeForVerify() {
-  if (!_isScheduleLikePath()) return;
+function _focusHomeTabIfChallengeThere() {
+  if (_isScheduleLikePath()) return;
+  if (document.querySelector("#post_select")) return;
   if (!isCloudflareChallenge() || isCloudflareSolved()) return;
+  const path = location.pathname || "";
+  const onHome =
+    /^\/(en-US)?\/?$/i.test(path) ||
+    /\/en-US\/?$/i.test(path) ||
+    /visa application home/i.test(document.title || "") ||
+    !!document.querySelector(".username, #appointment-card");
+  if (!onHome) return;
   const now = Date.now();
   if (now - _homeForVerifyAt < HOME_FOR_VERIFY_COOLDOWN_MS) return;
   _homeForVerifyAt = now;
-  vsLog("cf", "verify-human on schedule — focusing Application Home for manual click");
+  vsLog("cf", "verify-human on Home — focusing this tab");
   updateCloudflareHud(
     "manual",
-    "Verify you are human — opening Home tab so you can click it there…"
+    "Verify you are human is on Home — switching you to that tab…"
   ).catch(() => {});
   try {
-    vs.send({
-      action: "focusHomeForVerify",
-      ofcUrl: location.href,
-    });
+    vs.send({ action: "focusSenderTabForVerify" });
   } catch {}
 }
 
 /** Best-effort Cloudflare / Turnstile tick, including debugger clicks into iframe. */
 export async function tryCloudflareTick() {
   if (!await getSetting("autoCloudflareTick")) return false;
+  await syncHomeVerifyPendingFlag();
   if (isCloudflareSolved()) {
     if (_challengeSeenAt) vsLog("cf", "challenge already solved");
     _challengeSeenAt = 0;
     await updateCloudflareHud("success");
     return true;
+  }
+
+  // Background Home refresh: do not auto-click or attach debugger — just mark pending.
+  if (_isBackgroundTab()) {
+    await syncHomeVerifyPendingFlag();
+    await updateCloudflareHud(
+      "manual",
+      "Verify you are human on Home (background) — open that tab and click once."
+    );
+    return false;
   }
 
   // Stay on this tab and auto-click. Do not steal focus to Home
@@ -371,6 +443,14 @@ export async function startCloudflareWatch() {
 
   const tick = async () => {
     if (!vs.alive) return;
+    if (isCloudflareChallenge() && !isCloudflareSolved()) {
+      await syncHomeVerifyPendingFlag();
+      _focusHomeTabIfChallengeThere();
+    } else {
+      await syncHomeVerifyPendingFlag();
+    }
+    // Lighter background Home: never auto-click while this tab is hidden.
+    if (_isBackgroundTab()) return;
     const widgets = _findChallengeWidgets();
     const points = [
       ..._findVerifyTextPoints(),
