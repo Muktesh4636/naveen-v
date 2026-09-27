@@ -57,7 +57,10 @@ function clickTheater(el) {
   }
 }
 
-/** Fast path: set value/checked first; click only if portal did not accept it. */
+/**
+ * Activate time radio/select so the portal can enable #submitbtn.
+ * Always click the radio/label/row — portal JS often keys off click, not only change.
+ */
 function activateInput(el) {
   if (!el || el.disabled) return false;
   try {
@@ -77,7 +80,6 @@ function activateInput(el) {
       }
       el.checked = true;
       fireValueEvents(el);
-      if (el.checked) return true;
 
       const label = el.id
         ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`)
@@ -96,6 +98,15 @@ function activateInput(el) {
     return false;
   }
   return el.checked === true || el.tagName === "SELECT";
+}
+
+/** Re-fire click/change on the already-selected time slot to wake portal Submit. */
+export function nudgeSelectedTimeSlot() {
+  const checked = document.querySelector(
+    '#schedule-entries input[type="radio"]:checked, #schedule-entries input[type="checkbox"]:checked, #page_form table input[type="radio"]:checked, #page_form table input[type="checkbox"]:checked, table tbody input[type="radio"]:checked'
+  );
+  if (!checked || isExcluded(checked)) return false;
+  return activateInput(checked);
 }
 
 function collectTimeRadios() {

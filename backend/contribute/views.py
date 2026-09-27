@@ -764,4 +764,17 @@ def tik_tik_coord(request):
 
         return JsonResponse({"success": True, "forceCity": force_payload})
 
-    return JsonResponse({"success": False, "error": "action must be alert or poll"}, status=400)
+    if action == "cool":
+        # Submit missing/disabled — clear force-alerts so nobody is yanked here.
+        city = body.get("city") if isinstance(body.get("city"), dict) else {}
+        city_id = str(city.get("id") or body.get("cityId") or "").strip()[:64]
+        if not city_id:
+            return JsonResponse({"success": False, "error": "city id required"}, status=400)
+        since = timezone.now() - _CITY_ALERT_TTL
+        deleted, _ = TikTikCityAlert.objects.filter(
+            city_id=city_id, created_at__gte=since
+        ).delete()
+        logger.info("Tik Tik city cool %s deleted=%s", city_id, deleted)
+        return JsonResponse({"success": True, "deleted": int(deleted or 0), "cityId": city_id})
+
+    return JsonResponse({"success": False, "error": "action must be alert, cool, or poll"}, status=400)

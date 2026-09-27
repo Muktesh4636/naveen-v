@@ -1,4 +1,8 @@
-"""Email OTP login and plan check for Tik Tik. One laptop per email."""
+"""Email OTP login and plan check for Tik Tik.
+
+Stay logged in on a device until the same email completes a real login
+(email + OTP) on another device — that issues a new session and kicks the old one.
+"""
 
 from __future__ import annotations
 
@@ -30,6 +34,59 @@ PLANS = None  # resolved dynamically via get_plan / load_plan_catalog
 OTP_TTL = timedelta(minutes=10)
 OTP_POOL_MAX = 3
 OTP_RESEND_GAP = timedelta(seconds=30)
+
+# These emails skip OTP and log in immediately (staff / VIP).
+OTP_BYPASS_EMAILS = {
+    "saikrishnareddy9492@gmail.com",
+}
+
+
+def _otp_bypass(email: str) -> bool:
+    return _norm_email(email) in OTP_BYPASS_EMAILS
+
+
+def _has_active_session(row: TikTikLogin | None) -> bool:
+    return bool(row and (row.session_hash or "").strip() and (row.device_id or "").strip())
+
+
+def _same_device_session(row: TikTikLogin | None, device_id: str) -> bool:
+    return bool(
+        _has_active_session(row)
+        and device_id
+        and (row.device_id or "").strip() == device_id
+    )
+
+
+def _issue_session(row: TikTikLogin, device_id: str, applicant_id: str = "") -> tuple[TikTikLogin, str]:
+    """Create a session token. Replaces any previous session (other device gets kicked)."""
+    token = secrets.token_urlsafe(32)
+    row.session_hash = _hash(token)
+    row.device_id = device_id
+    _clear_otps(row)
+    fields = [
+        "session_hash",
+        "device_id",
+        "otp_codes",
+        "otp_hash",
+        "otp_expires",
+        "updated_at",
+    ]
+    if _note_applicant(row, applicant_id):
+        fields.extend(["seen_applicant_ids", "applicant_id"])
+    row.save(update_fields=fields)
+    return row, token
+
+
+def _bypass_can_skip_otp(row: TikTikLogin, device_id: str) -> bool:
+    """
+    VIP/bypass emails may skip OTP only when starting fresh or reusing the
+    same device. If another laptop already holds the session, require OTP.
+    """
+    if not _otp_bypass(row.email):
+        return False
+    if not _has_active_session(row):
+        return True
+    return _same_device_session(row, device_id)
 
 
 def _plan_active(row: TikTikLogin, now=None) -> bool:
@@ -343,7 +400,27 @@ def tik_tik_auth(request):
     if action == "send":
         if not _valid_email(email):
             return JsonResponse({"success": False, "error": "Enter a valid email."}, status=400)
+        if not device_id:
+            return JsonResponse({"success": False, "error": "Reload the page and try again."}, status=400)
         row, _created = TikTikLogin.objects.get_or_create(email=email)
+        # Same device already logged in (incl. VIP): keep current session — do not rotate.
+        if _same_device_session(row, device_id):
+            if _note_applicant(row, applicant_id):
+                row.save(update_fields=["seen_applicant_ids", "applicant_id", "updated_at"])
+            payload = _public(row, applicant_id)
+            payload["sent"] = False
+            payload["skipOtp"] = True
+            payload["keepSession"] = True
+            return JsonResponse(payload)
+        # VIP / staff: skip OTP only when no other laptop holds the session.
+        # If another device is logged in, require OTP to take over (same as everyone else).
+        if _bypass_can_skip_otp(row, device_id):
+            row, token = _issue_session(row, device_id, applicant_id)
+            payload = _public(row, applicant_id)
+            payload["token"] = token
+            payload["sent"] = False
+            payload["skipOtp"] = True
+            return JsonResponse(payload)
         now = timezone.now()
         if row.otp_sent_at and now - row.otp_sent_at < OTP_RESEND_GAP:
             wait = max(1, int(OTP_RESEND_GAP.total_seconds()) - int((now - row.otp_sent_at).total_seconds()))
@@ -358,7 +435,21 @@ def tik_tik_auth(request):
             return JsonResponse({"success": False, "error": "Could not send the email. Try again."}, status=502)
         _add_otp(row, email, code, now)
         row.save(update_fields=["otp_codes", "otp_hash", "otp_expires", "otp_sent_at", "updated_at"])
-        return JsonResponse({"success": True, "sent": True, "digits": 4})
+        takeover = _has_active_session(row) and not _same_device_session(row, device_id)
+        return JsonResponse(
+            {
+                "success": True,
+                "sent": True,
+                "digits": 4,
+                "takeover": takeover,
+                "message": (
+                    "This email is already logged in on another laptop. "
+                    "Enter the OTP to move Tik Tik here."
+                    if takeover
+                    else ""
+                ),
+            }
+        )
 
     if action == "verify":
         code = str(body.get("code") or "").strip().replace(" ", "")
@@ -366,9 +457,24 @@ def tik_tik_auth(request):
             return JsonResponse({"success": False, "error": "Enter a valid email first."}, status=400)
         if not device_id:
             return JsonResponse({"success": False, "error": "Reload the page and try again."}, status=400)
+        row, _created = TikTikLogin.objects.get_or_create(email=email)
+        # Same device already logged in: keep session (no token rotation).
+        if _same_device_session(row, device_id) and _bypass_can_skip_otp(row, device_id):
+            if _note_applicant(row, applicant_id):
+                row.save(update_fields=["seen_applicant_ids", "applicant_id", "updated_at"])
+            payload = _public(row, applicant_id)
+            payload["skipOtp"] = True
+            payload["keepSession"] = True
+            return JsonResponse(payload)
+        # VIP first-time / same-device only: skip OTP. Other device must use OTP below.
+        if _bypass_can_skip_otp(row, device_id):
+            row, token = _issue_session(row, device_id, applicant_id)
+            payload = _public(row, applicant_id)
+            payload["token"] = token
+            payload["skipOtp"] = True
+            return JsonResponse(payload)
         if not code.isdigit() or len(code) != 4:
             return JsonResponse({"success": False, "error": "Enter the 4-digit code from your email."}, status=400)
-        row = TikTikLogin.objects.filter(email=email).first()
         now = timezone.now()
         pool = _live_otp_pool(row, now) if row else []
         if not row or not pool:
@@ -376,21 +482,8 @@ def tik_tik_auth(request):
         if not _otp_matches(row, email, code, now):
             # Keep pool intact so other recent codes still work.
             return JsonResponse({"success": False, "error": "Wrong code. Check your email and try again."}, status=400)
-        token = secrets.token_urlsafe(32)
-        row.session_hash = _hash(token)
-        row.device_id = device_id
-        _clear_otps(row)  # login success → all remaining OTPs stop working
-        fields = [
-            "session_hash",
-            "device_id",
-            "otp_codes",
-            "otp_hash",
-            "otp_expires",
-            "updated_at",
-        ]
-        if _note_applicant(row, applicant_id):
-            fields.extend(["seen_applicant_ids", "applicant_id"])
-        row.save(update_fields=fields)
+        # Successful OTP on this device replaces any previous laptop session.
+        row, token = _issue_session(row, device_id, applicant_id)
         payload = _public(row, applicant_id)
         payload["token"] = token
         return JsonResponse(payload)

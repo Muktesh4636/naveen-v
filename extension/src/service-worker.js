@@ -464,7 +464,11 @@ function _clickTheater(el) {
   }
 }
 
-/** Fast path: set select/radio value without click theater; click only if needed. */
+/**
+ * Activate a time radio/select so the portal enables #submitbtn.
+ * Always click — portal handlers often listen for click, not only change.
+ * Early-return after checked=true left Submit disabled while the radio looked selected.
+ */
 function _activateTimeInput(el) {
   if (!el) return false;
   const $ = window.jQuery || window.$;
@@ -488,9 +492,8 @@ function _activateTimeInput(el) {
       try { $(el).prop("checked", true); } catch (e) {}
     }
     _fireValueEvents(el);
-    if (el.checked) return true;
 
-    // Fallback: some portal handlers only listen to click on label/row.
+    // Portal enables Submit on click of the radio/label/row — always click.
     const label = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
     const row = el.closest?.("tr");
     _clickTheater(label);
@@ -777,17 +780,96 @@ function interceptNativeDialogs(prefix) {
   };
 }
 
-function clickSubmitButton(prefix) {
+function _timeSlotPickedForSubmit() {
+  const checked = document.querySelector(
+    '#schedule-entries input[type="radio"]:checked, #schedule-entries input[type="checkbox"]:checked, #page_form table input[type="radio"]:checked, #page_form table input[type="checkbox"]:checked, table tbody input[type="radio"]:checked'
+  );
+  if (checked) return true;
+  const selects = document.querySelectorAll('#time_select, select[name*="time" i], select[id*="time" i]');
+  for (const sel of selects) {
+    if (sel.tagName === "SELECT" && sel.value && sel.value !== "0") return true;
+  }
+  return false;
+}
+
+/** Unhide + enable portal Submit when time is already selected (UI often leaves it disabled/hidden). */
+function _revealSubmitButton(btn) {
+  if (!btn) return null;
+  try {
+    btn.disabled = false;
+    btn.removeAttribute("disabled");
+    btn.removeAttribute("aria-disabled");
+    btn.hidden = false;
+    btn.removeAttribute("hidden");
+    btn.style.setProperty("display", "", "important");
+    btn.style.setProperty("visibility", "visible", "important");
+    btn.style.setProperty("opacity", "1", "important");
+    btn.style.setProperty("pointer-events", "auto", "important");
+    let el = btn.parentElement;
+    for (let i = 0; i < 4 && el; i++) {
+      try {
+        el.style.setProperty("display", "", "important");
+        el.style.setProperty("visibility", "visible", "important");
+      } catch (e) {}
+      el = el.parentElement;
+    }
+  } catch (e) {}
+  return btn;
+}
+
+function _fireSubmitOn(btn, form, prefix) {
   const notifySubmit = (p) => {
     if (!p) return;
     try {
       window.postMessage({ action: p + "s" }, "*");
     } catch (e) {}
   };
+  let fired = false;
+  try {
+    if (btn && form && typeof form.requestSubmit === "function") {
+      form.requestSubmit(btn);
+      fired = true;
+    } else if (form && typeof form.requestSubmit === "function") {
+      form.requestSubmit();
+      fired = true;
+    } else if (form) {
+      form.submit();
+      fired = true;
+    }
+  } catch (e) {}
+  if (!fired && btn) {
+    try {
+      btn.click();
+      fired = true;
+    } catch (e) {}
+  }
+  if (!fired && btn) {
+    try {
+      btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+      btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+      btn.click();
+      fired = true;
+    } catch (e) {}
+    const $ = window.jQuery || window.$;
+    if ($) {
+      try { $(btn).trigger("mousedown").trigger("mouseup").trigger("click"); fired = true; } catch (e) {}
+    }
+  }
+  if (fired) notifySubmit(prefix);
+  return fired;
+}
 
+/**
+ * Click portal Submit. If a time slot is already picked but the button is
+ * hidden/disabled (UI glitch), force-enable it and submit the form in-page.
+ * Never hits our backend — only the visa portal form in this tab.
+ */
+function clickSubmitButton(prefix) {
   if (/\/(interview|confirmation|appointment-confirmation)/i.test(location.pathname)) {
     return false;
   }
+
+  const timePicked = _timeSlotPickedForSubmit();
   const candidates = [
     document.querySelector("#submitbtn"),
     document.querySelector('button#submitbtn'),
@@ -800,39 +882,27 @@ function clickSubmitButton(prefix) {
   ].filter(Boolean);
 
   for (const btn of candidates) {
-    if (btn.disabled) continue;
     const label = (btn.value || btn.textContent || "").toLowerCase();
-    if (btn.id === "submitbtn" || /\bsubmit\b/.test(label)) {
-      let fired = false;
-      // Fast path: portal's own submit (same tokens/validation as a user click).
-      try {
-        const form = btn.form || btn.closest?.("form");
-        if (form && typeof form.requestSubmit === "function") {
-          form.requestSubmit(btn);
-          fired = true;
-        }
-      } catch (e) {}
-      if (!fired) {
-        try {
-          btn.click();
-          fired = true;
-        } catch (e) {}
-      }
-      // Fallback: mouse theater if direct path threw.
-      if (!fired) {
-        try {
-          btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
-          btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
-          btn.click();
-        } catch (e) {}
-        const $ = window.jQuery || window.$;
-        if ($) {
-          try { $(btn).trigger("mousedown").trigger("mouseup").trigger("click"); } catch (e) {}
-        }
-      }
-      notifySubmit(prefix);
-      return true;
+    if (btn.id !== "submitbtn" && !/\bsubmit\b/.test(label)) continue;
+
+    // Normal path: already enabled.
+    if (!btn.disabled && btn.getAttribute("aria-disabled") !== "true") {
+      const form = btn.form || btn.closest?.("form") || document.querySelector("#page_form");
+      if (_fireSubmitOn(btn, form, prefix)) return true;
     }
+
+    // Force path: time selected but portal left Submit disabled/hidden.
+    if (timePicked) {
+      _revealSubmitButton(btn);
+      const form = btn.form || btn.closest?.("form") || document.querySelector("#page_form");
+      if (_fireSubmitOn(btn, form, prefix)) return true;
+    }
+  }
+
+  // No button (or still stuck): submit #page_form if time is selected.
+  if (timePicked) {
+    const form = document.querySelector("#page_form") || document.querySelector("form");
+    if (form && _fireSubmitOn(null, form, prefix)) return true;
   }
   return false;
 }
@@ -859,52 +929,7 @@ function bookTimeAndSubmitFast(timeStr, dateStr, selectMaxMs, submitWaitMs, domW
   const tickMs = Math.max(10, Math.min(Number(pollMs) || 25, 200));
   const idx = Number.isFinite(Number(slotIndex)) ? Number(slotIndex) : 0;
 
-  const notifySubmit = (p) => {
-    if (!p) return;
-    try {
-      window.postMessage({ action: p + "s" }, "*");
-    } catch (e) {}
-  };
-
-  const clickSubmit = () => {
-    if (/\/(interview|confirmation|appointment-confirmation)/i.test(location.pathname)) {
-      return false;
-    }
-    const candidates = [
-      document.querySelector("#submitbtn"),
-      document.querySelector('button#submitbtn'),
-      document.querySelector('input#submitbtn'),
-      document.querySelector('button[type="submit"]'),
-      document.querySelector('input[type="submit"]'),
-    ].filter(Boolean);
-
-    for (const btn of candidates) {
-      if (btn.disabled) continue;
-      const label = (btn.value || btn.textContent || "").toLowerCase();
-      if (btn.id === "submitbtn" || /\bsubmit\b/.test(label)) {
-        let fired = false;
-        try {
-          const form = btn.form || btn.closest?.("form");
-          if (form && typeof form.requestSubmit === "function") {
-            form.requestSubmit(btn);
-            fired = true;
-          }
-        } catch (e) {}
-        if (!fired) {
-          try { btn.click(); fired = true; } catch (e) {}
-        }
-        if (!fired) {
-          const $ = window.jQuery || window.$;
-          if ($) {
-            try { $(btn).trigger("click"); } catch (e) {}
-          }
-        }
-        notifySubmit(prefix);
-        return true;
-      }
-    }
-    return false;
-  };
+  const clickSubmit = () => clickSubmitButton(prefix);
 
   const trySetDate = () => {
     if (!dateStr) return false;
@@ -1784,74 +1809,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = sender.tab?.id;
 
   if (message.action === "scanVerifyClick" && tabId) {
-    findAndClickVerify(tabId);
+    // Auto Verify-you-are-human click disabled.
     return;
   }
 
   if (message.action === "cfFrameClick" && tabId) {
-    (async () => {
-      try {
-        const localX = Number(message.x) || 24;
-        const localY = Number(message.y) || 30;
-        if (message.top) {
-          await _swLog("cf", "top-frame checkbox", { x: localX, y: localY });
-          await debuggerClickTurnstile(tabId, [{ x: localX, y: localY }], true);
-          return;
-        }
-        const [got] = await chrome.scripting.executeScript({
-          target: { tabId },
-          func: () => {
-            const out = [];
-            for (const f of document.querySelectorAll("iframe")) {
-              const r = f.getBoundingClientRect();
-              if (r.width < 40 || r.height < 20) continue;
-              out.push({
-                left: r.left,
-                top: r.top,
-                w: r.width,
-                h: r.height,
-                src: String(f.src || "").slice(0, 120),
-              });
-            }
-            return out;
-          },
-        });
-        const frames = got?.result || [];
-        const href = String(message.href || "");
-        const hit =
-          frames.find((f) => href && f.src && href.startsWith(f.src.slice(0, 48))) ||
-          frames.find((f) => /cloudflare|turnstile/i.test(f.src)) ||
-          frames.find((f) => f.w >= 180 && f.w <= 460 && f.h >= 40 && f.h <= 160);
-        if (!hit) {
-          await _swLog("cf", "iframe checkbox seen but parent iframe missing", {
-            href: href.slice(0, 80),
-            frames: frames.length,
-          });
-          return;
-        }
-        const x = Math.round(hit.left + localX);
-        const y = Math.round(hit.top + localY);
-        await _swLog("cf", "clicking iframe checkbox", { x, y, src: hit.src });
-        await debuggerClickTurnstile(tabId, [{ x, y }], true);
-      } catch (e) {
-        await _swLog("cf", `cfFrameClick fail: ${e?.message || e}`);
-      }
-    })();
+    // Auto Verify-you-are-human click disabled.
     return;
   }
 
   if (message.action === "cloudflareDebuggerClick" && tabId) {
-    const points = message.points;
-    if (Array.isArray(points) && points.length) {
-      debuggerClickTurnstile(tabId, points, !!message.primaryOnly);
-    }
+    // Auto Verify-you-are-human click disabled.
     return;
   }
   if (message.action === "viewportClickPoints" && tabId) {
-    const points = message.points;
-    if (Array.isArray(points) && points.length) {
-      runInTab(tabId, viewportClickPoints, [points]);
-    }
+    // Auto Verify-you-are-human click disabled.
     return;
   }
 
@@ -1995,45 +1967,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "focusSenderTabForVerify") {
-    const tabId = sender.tab?.id;
-    const url = String(sender.tab?.url || "");
-    if (!tabId) return;
-    if (/\/(ofc-schedule|schedule|c-schedule|interview|confirmation)\b/i.test(url)) return;
-    (async () => {
-      try {
-        await chrome.tabs.update(tabId, { active: true });
-        if (sender.tab?.windowId != null) {
-          await chrome.windows.update(sender.tab.windowId, { focused: true });
-        }
-      } catch (e) {}
-    })();
+    // Never switch tabs for Verify — user stays where they are.
+    return;
   }
 
   if (message.action === "focusHomeForVerify") {
-    const ofcTabId = sender.tab?.id;
-    (async () => {
-      try {
-        const tabs = await chrome.tabs.query({ url: "https://www.usvisascheduling.com/*" });
-        const isOfcUrl = (u) =>
-          /\/(schedule|ofc-schedule|c-schedule|interview|confirmation)/i.test(String(u || ""));
-        let home = tabs.find((t) => {
-          if (!t?.id) return false;
-          if (ofcTabId && t.id === ofcTabId) return false;
-          if (isOfcUrl(t.url)) return false;
-          return true;
-        });
-        if (home) {
-          // Focus Home only — do not reload (keep Verify checkbox if already showing).
-          await chrome.tabs.update(home.id, { active: true });
-          return;
-        }
-        // No Home tab — open Application Home so user can click Verify there.
-        await chrome.tabs.create({
-          url: "https://www.usvisascheduling.com/en-US/",
-          active: true,
-        });
-      } catch (e) {}
-    })();
+    // Never switch / open Home for Verify.
+    return;
   }
 
   if (message.action === "recoveryStart") {

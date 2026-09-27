@@ -295,119 +295,23 @@ function _isScheduleLikePath() {
 }
 
 /**
- * Home tab is showing "Verify you are human" while the user is on another page.
- * Focus that Home tab. Do not reload it — reloading would dismiss the checkbox.
+ * Never steal focus to Home for Verify — stay on the current page.
  */
 function _focusHomeTabIfChallengeThere() {
-  if (_isScheduleLikePath()) return;
-  if (document.querySelector("#post_select")) return;
-  if (!isCloudflareChallenge() || isCloudflareSolved()) return;
-  const path = location.pathname || "";
-  const onHome =
-    /^\/(en-US)?\/?$/i.test(path) ||
-    /\/en-US\/?$/i.test(path) ||
-    /visa application home/i.test(document.title || "") ||
-    !!document.querySelector(".username, #appointment-card");
-  if (!onHome) return;
-  const now = Date.now();
-  if (now - _homeForVerifyAt < HOME_FOR_VERIFY_COOLDOWN_MS) return;
-  _homeForVerifyAt = now;
-  vsLog("cf", "verify-human on Home — focusing this tab");
-  updateCloudflareHud(
-    "manual",
-    "Verify you are human is on Home — switching you to that tab…"
-  ).catch(() => {});
-  try {
-    vs.send({ action: "focusSenderTabForVerify" });
-  } catch {}
+  return;
 }
 
-/** Best-effort Cloudflare / Turnstile tick, including debugger clicks into iframe. */
+/** Cloudflare / Turnstile: detect only — do not auto-click. */
 export async function tryCloudflareTick() {
-  if (!await getSetting("autoCloudflareTick")) return false;
   await syncHomeVerifyPendingFlag();
-  if (isCloudflareSolved()) {
-    if (_challengeSeenAt) vsLog("cf", "challenge already solved");
-    _challengeSeenAt = 0;
-    await updateCloudflareHud("success");
-    return true;
-  }
-
-  // Background Home refresh: do not auto-click or attach debugger — just mark pending.
-  if (_isBackgroundTab()) {
-    await syncHomeVerifyPendingFlag();
+  if (isCloudflareChallenge() && !isCloudflareSolved()) {
     await updateCloudflareHud(
       "manual",
-      "Verify you are human on Home (background) — open that tab and click once."
+      "Verify you are human — click the checkbox yourself."
     );
-    return false;
-  }
-
-  // Stay on this tab and auto-click. Do not steal focus to Home
-  // (that made the debugger click the wrong page).
-
-  if (!_challengeSeenAt) {
-    _challengeSeenAt = Date.now();
-    vsLog("cf", "challenge seen — train window started");
-  }
-  // Wait for a manual click so we can record your mouse; longer until we have enough samples.
-  const trainMs = await _trainWindowMs();
-  if (Date.now() - _challengeSeenAt < trainMs) {
-    await updateCloudflareHud("scanning", "Verify you are human — clicking in a moment…");
-    return false;
-  }
-
-  await updateCloudflareHud("scanning", "Verify you are human page — preparing click…");
-  let widgets = _findChallengeWidgets();
-  _scrollWidgetsIntoView(widgets);
-  await _sleep(250);
-  widgets = _findChallengeWidgets();
-  const points = _collectTurnstileClickPoints(widgets);
-
-  vsLog("cf", "train window done — attempting auto click", {
-    widgets: widgets.length,
-    points: points.length,
-  });
-
-  if (!points.length) {
-    vsLog("cf", "no checkbox points — widget not found on this page");
-  }
-
-  if (points.length) {
-    await _fireClicks(points);
-    await _sleep(1200);
-    if (isCloudflareSolved() || !isCloudflareChallenge()) {
-      _challengeSeenAt = 0;
-      await updateCloudflareHud("success");
-      return true;
-    }
-  }
-
-  await updateCloudflareHud("dom");
-  _tryDomClicks(widgets);
-  await _sleep(600);
-
-  if (isCloudflareSolved() || !isCloudflareChallenge()) {
+  } else if (isCloudflareSolved()) {
     _challengeSeenAt = 0;
     await updateCloudflareHud("success");
-    return true;
-  }
-
-  if (points.length) {
-    await _fireClicks(points);
-    await _sleep(1000);
-    if (isCloudflareSolved() || !isCloudflareChallenge()) {
-      _challengeSeenAt = 0;
-      await updateCloudflareHud("success");
-      return true;
-    }
-  }
-
-  _cfAttemptCount++;
-  if (_cfAttemptCount >= 8) {
-    await updateCloudflareHud("manual", "Click the checkbox once — we will continue after.");
-  } else {
-    await updateCloudflareHud("retry", `Retry ${_cfAttemptCount}/8…`);
   }
   return false;
 }
@@ -443,32 +347,7 @@ export async function startCloudflareWatch() {
 
   const tick = async () => {
     if (!vs.alive) return;
-    if (isCloudflareChallenge() && !isCloudflareSolved()) {
-      await syncHomeVerifyPendingFlag();
-      _focusHomeTabIfChallengeThere();
-    } else {
-      await syncHomeVerifyPendingFlag();
-    }
-    // Lighter background Home: never auto-click while this tab is hidden.
-    if (_isBackgroundTab()) return;
-    const widgets = _findChallengeWidgets();
-    const points = [
-      ..._findVerifyTextPoints(),
-      ..._collectTurnstileClickPoints(widgets),
-    ].slice(0, 3);
-    if (!points.length) {
-      if (getCloudflareHudState()) {
-        _cfAttemptCount = 0;
-        await updateCloudflareHud("success");
-      }
-      return;
-    }
-    vsLog("cf", "verify widget found — clicking", {
-      widgets: widgets.length,
-      points,
-    });
-    await updateCloudflareHud("scanning", "Clicking Verify you are human…");
-    await _fireClicks(points);
+    await tryCloudflareTick();
   };
   tick();
   _cfWatchTimer = vs.setInterval(tick, 1800);

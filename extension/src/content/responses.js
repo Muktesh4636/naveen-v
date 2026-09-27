@@ -5,7 +5,7 @@ import { notifyTelegramSlots, notifyTelegramCityScreenshot, notifyTelegramCalend
 import { pollAndPickTimeSlot, domShowsEntryTimes, isTimeSlotPicked, pickTimeSlotDual } from "./time-select.js";
 import { submitContribution } from "./reporting.js";
 import { recordSubmitAjaxResponse } from "./submit-errors.js";
-import { reportCitySlotsFound } from "./tik-tik-coord.js";
+import { coolCitySlots } from "./tik-tik-coord.js";
 import {
   getArmedAiConfig,
   getDateRangeConfig,
@@ -30,6 +30,8 @@ import {
   noteDatePicked,
   noteTikTikHudSlots,
   tryNextDateOnThisCity,
+  markCityNoSubmit,
+  isCityNoSubmit,
   AI_DATE_SELECT_MS,
   AI_BOOK_SELECT_MS,
   AI_TIME_DOM_WAIT_MS,
@@ -537,7 +539,14 @@ export async function autoSelectFirstTime(scheduleEntries, hasError = false) {
   setTikTikStatus(
     `Tried all ${ranked.length} time slot(s); Submit never enabled.`
   );
-  if (ai) resumeCityRotateAfterBooking();
+  // Dates/slots were there but Submit never showed — don't treat as hot; hop.
+  const select = document.querySelector("#post_select");
+  const postId = select ? String(select.value || "") : "";
+  const postName =
+    select?.selectedOptions?.[0]?.textContent?.trim() ||
+    select?.options?.[select.selectedIndex]?.textContent?.trim() ||
+    "";
+  markCityNoSubmit(postId, postName);
 }
 
 export async function handleEvent(event) {
@@ -622,15 +631,12 @@ export async function handleEvent(event) {
       setTikTikStatus(
         `${dayCount} date${dayCount === 1 ? "" : "s"} — alerting others FAST…`
       );
-      // Fire without awaiting — speed matters more than ack.
-      reportCitySlotsFound({
-        postId,
-        postName: "",
-        dayCount,
-        dateFrom: bestDate,
-        dateTo,
-        bestDate,
-      }).catch(() => {});
+      if (!isCityNoSubmit(postId)) {
+        // Dates only — local HUD. Do NOT force-alert others until Submit is enabled.
+        noteTikTikHudSlots(postId, true, "");
+      } else {
+        noteTikTikHudSlots(postId, false, "");
+      }
     } else if (!parsed.response.HasError) {
       noteTikTikHudSlots(String(parsed.params.postId || ""), false, "");
     }
@@ -675,17 +681,12 @@ export async function handleEvent(event) {
           reportCount = inRange.length;
         }
       }
-      reportCitySlotsFound({
-        postId,
-        postName: post?.Name,
-        dayCount: reportCount,
-        dateFrom: reportFrom,
-        dateTo: reportTo,
-        bestDate: reportFrom,
-        rangeFrom: rangeOrAi?.from || null,
-        rangeTo: rangeOrAi?.to || null,
-      }).catch(() => {});
-      noteTikTikHudSlots(postId, true, post?.Name || "");
+      if (!isCityNoSubmit(postId)) {
+        // Dates only — show in HUD. Force-switch alert waits until Submit works.
+        noteTikTikHudSlots(postId, true, post?.Name || "");
+      } else {
+        noteTikTikHudSlots(postId, false, post?.Name || "");
+      }
     }
 
     await alertOnAvailability(parsed.response.ScheduleDays, {

@@ -48,6 +48,19 @@ async function _postCoord(payload) {
 }
 
 /**
+ * Tell the server this city is NOT bookable (Submit missing/disabled).
+ * Cool clears force-alerts so others are not yanked to a dead Submit city.
+ */
+export async function coolCitySlots({ postId, postName } = {}) {
+  const cityId = String(postId || "").trim();
+  if (!cityId) return null;
+  return _postCoord({
+    action: "cool",
+    city: { id: cityId, name: String(postName || cityId).trim() },
+  });
+}
+
+/**
  * Tell the server this city has appointment days (others may force-switch).
  * Fire-and-forget friendly — call as soon as dates are known.
  */

@@ -1,5 +1,7 @@
 /**
- * Tik Tik email login. One laptop at a time. Plans after the code is accepted.
+ * Tik Tik email login.
+ * Stays logged in on this laptop until the same email completes email+OTP
+ * on another device (that takeover kicks this session).
  */
 import { SITE_URL, TIK_TIK_AUTH_URL, getProfile } from "../shared/config.js";
 import { storageGet, storageSet } from "../shared/runtime.js";
@@ -116,7 +118,15 @@ async function _status() {
 }
 
 export async function requireTikTikAccess() {
-  const st = await _status();
+  let st;
+  try {
+    st = await _status();
+  } catch {
+    // Network blip after sleep — keep local session; do not force logout.
+    const session = await _session();
+    if (session?.token && _unlocked) return { ok: true, message: "" };
+    return { ok: false, message: "" };
+  }
   if (st.kicked) {
     await _clearSession();
     _unlocked = false;
@@ -249,14 +259,46 @@ async function _showLogin(message) {
       return;
     }
     _pendingEmail = email;
-    _setMsg("Sending OTP…", false);
-    const data = await _post({ action: "send", email, deviceId: await _deviceId() });
+    _setMsg("Signing in…", false);
+    const data = await _post({
+      action: "send",
+      email,
+      deviceId: await _deviceId(),
+      applicantId: await _applicantId(),
+    });
+    if (data.token || data.skipOtp) {
+      if (data.token) {
+        await _saveSession(data.token, data.email || email);
+      } else if (data.keepSession) {
+        const cur = await _session();
+        if (!cur?.token) {
+          _setMsg("Already logged in on this laptop — reopen Tik Tik from the toolbar.", true);
+          return;
+        }
+        await _saveSession(cur.token, data.email || email);
+      }
+      await _clearPendingOtp();
+      _setMsg("Logged in.", false);
+      _apply(data.token || data.keepSession ? { ...data, loggedIn: true } : data);
+      // Re-check status so access/plan fields are fresh when keepSession had no token payload.
+      if (data.keepSession && !data.token) {
+        const st = await _status().catch(() => data);
+        _apply(st || data);
+      }
+      return;
+    }
     if (!data.success && !data.sent) {
       _setMsg(data.error || "Could not send the OTP.", true);
       return;
     }
     await _savePendingOtp(email);
-    _showCode(email, "");
+    _showCode(
+      email,
+      data.takeover
+        ? data.message ||
+            "This email is already logged in on another laptop. Enter the OTP to move Tik Tik here."
+        : ""
+    );
   });
   if (input) {
     vs.on(input, "pointerdown", (e) => e.stopPropagation());
@@ -389,15 +431,36 @@ function _showCode(email, message) {
     const btn = document.querySelector(idSel(`${ID.authBody}-resend`));
     if (btn) btn.disabled = true;
     _setMsg("Sending a new OTP…", false);
-    const data = await _post({ action: "send", email, deviceId: await _deviceId() });
+    const data = await _post({
+      action: "send",
+      email,
+      deviceId: await _deviceId(),
+      applicantId: await _applicantId(),
+    });
     if (btn) btn.disabled = false;
+    if (data.token || data.skipOtp) {
+      if (data.token) await _saveSession(data.token, data.email || email);
+      await _clearPendingOtp();
+      if (data.keepSession && !data.token) {
+        const st = await _status().catch(() => data);
+        _apply(st || data);
+      } else {
+        _apply(data);
+      }
+      return;
+    }
     if (!data.success && !data.sent) {
       _setMsg(data.error || "Could not resend. Try again.", true);
       return;
     }
     await _savePendingOtp(email);
     clearCode();
-    _setMsg("New OTP sent. Check your email.", false);
+    _setMsg(
+      data.takeover
+        ? data.message || "OTP sent. Enter it here to move Tik Tik to this laptop."
+        : "New OTP sent. Check your email.",
+      false
+    );
   });
   _wire(idSel(`${ID.authBody}-go`), "click", async (e) => {
     e?.preventDefault?.();
@@ -415,15 +478,20 @@ function _showCode(email, message) {
       deviceId: await _deviceId(),
       applicantId: await _applicantId(),
     });
-    if (!data.token) {
+    if (!data.token && !(data.skipOtp && data.keepSession)) {
       _setMsg(data.error || "Wrong OTP. Try again or Resend.", true);
       clearCode();
       return;
     }
-    await _saveSession(data.token, data.email || email);
+    if (data.token) await _saveSession(data.token, data.email || email);
     await _clearPendingOtp();
     _setMsg("OTP correct. Logged in.", false);
-    _apply(data);
+    if (data.keepSession && !data.token) {
+      const st = await _status().catch(() => data);
+      _apply(st || data);
+    } else {
+      _apply(data);
+    }
   });
   for (const id of [`${ID.authBody}-go`, `${ID.authBody}-back`, `${ID.authBody}-back2`, `${ID.authBody}-resend`]) {
     const el = document.querySelector(idSel(id));

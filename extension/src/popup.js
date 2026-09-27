@@ -112,8 +112,8 @@ var cfShieldStatus = document.querySelector("#cfShieldStatus");
 async function syncShieldCard() {
   if (!cfShieldCard || !cfShieldStatus) return;
   const storage = await chrome.storage.local.get({
-    autoCloudflareTick: true,
-    cloudflareDebuggerClick: true,
+    autoCloudflareTick: false,
+    cloudflareDebuggerClick: false,
   });
   const active = storage.autoCloudflareTick;
   cfShieldCard.classList.toggle("is-off", !active);

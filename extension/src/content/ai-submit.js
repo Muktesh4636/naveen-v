@@ -32,7 +32,7 @@ import { cfg as rtCfg } from "../shared/remoteConfig.js";
 import { CLS, DAT, ID, MSG, T, idSel } from "../shared/token.js";
 import { ensureSelectorRow, playBeepBurst } from "./scheduling-controls.js";
 import { armSubmitErrorWatch, setSubmitErrorHandler } from "./submit-errors.js";
-import { isTimeSlotPicked } from "./time-select.js";
+import { isTimeSlotPicked, nudgeSelectedTimeSlot } from "./time-select.js";
 import {
   mergeServerTikTikPrefs,
   pullTikTikPrefs,
@@ -44,8 +44,10 @@ import {
   stopCommunitySlotsLoop,
 } from "./tik-tik-community.js";
 import {
+  coolCitySlots,
   markForceCityApplied,
   pollForceCity,
+  reportCitySlotsFound,
 } from "./tik-tik-coord.js";
 import {
   noteHudCityHop,
@@ -452,6 +454,82 @@ var SUBMIT_PENDING_MAX_MS = 20_000;
 var _failedSubmitDates = new Set();
 var _failedSubmitDatesCity = "";
 var _lastPickedDateIso = "";
+
+/** Cities where slots/dates showed but Submit never appeared — skip from hot rotate. */
+var NO_SUBMIT_SKIP_MS = 7 * 60 * 1000;
+/** @type {Map<string, number>} postId → skip-until epoch ms */
+var _noSubmitCities = new Map();
+
+function _currentPostId() {
+  return String(document.querySelector("#post_select")?.value || "").trim();
+}
+
+function _pruneNoSubmitCities(now = Date.now()) {
+  for (const [id, until] of _noSubmitCities) {
+    if (until <= now) _noSubmitCities.delete(id);
+  }
+}
+
+/** True if this city was marked: had slots but no Submit (not hot / not hop target). */
+export function isCityNoSubmit(postId) {
+  const id = String(postId || "").trim();
+  if (!id) return false;
+  _pruneNoSubmitCities();
+  const until = _noSubmitCities.get(id);
+  return !!(until && until > Date.now());
+}
+
+/**
+ * Slots/dates were available but Submit never showed — hop away and keep this
+ * city out of hot rotation / force-city pulls for a while (all users).
+ */
+export function markCityNoSubmit(postId, name = "") {
+  const id = String(postId || _currentPostId() || "").trim();
+  if (!id) return;
+  _noSubmitCities.set(id, Date.now() + NO_SUBMIT_SKIP_MS);
+  try {
+    noteHudCitySlots(id, false, name || undefined);
+  } catch {}
+  // Clear server force-alerts — Submit disabled means not hot for anyone.
+  coolCitySlots({ postId: id, postName: name }).catch(() => {});
+
+  // Always release hold and hop — don't stay stuck on a no-Submit city.
+  _clearHoldSafety();
+  _bookingHold = false;
+  _holdStartedAt = 0;
+  _submitArmed = false;
+  if (_rotateActive && !_opsFrozen && !_submitPending) {
+    _armNextRotate(Date.now());
+    updateAiStatus(
+      `Submit missing — not hot; hopping off ${name || id}…`
+    );
+    _scheduleCityRotate();
+  } else {
+    updateAiStatus(
+      `Submit missing on ${name || id} — not hot (City Change off or pending)`
+    );
+  }
+}
+
+/** Broadcast hot city only when Submit is actually enabled (bookable). */
+export function reportHotCityIfSubmitReady() {
+  if (!isSubmitButtonEnabled() || !isTimeSlotPicked()) return;
+  const select = document.querySelector("#post_select");
+  const postId = select ? String(select.value || "") : "";
+  if (!postId || isCityNoSubmit(postId)) return;
+  const postName =
+    select?.selectedOptions?.[0]?.textContent?.trim() ||
+    select?.options?.[select.selectedIndex]?.textContent?.trim() ||
+    postId;
+  reportCitySlotsFound({
+    postId,
+    postName,
+    dayCount: 1,
+    bestDate: _lastPickedDateIso || null,
+    dateFrom: _lastPickedDateIso || null,
+    dateTo: _lastPickedDateIso || null,
+  }).catch(() => {});
+}
 
 function _clearSubmitPending() {
   _submitPending = false;
@@ -1262,22 +1340,24 @@ function _scheduleCityRotate() {
 
 /**
  * Next preferred city in fixed checklist order (A→B→C→A…).
- * Never random — keeps a clear path through the selected cities.
+ * Skips cities marked no-Submit (slots but button never showed).
  */
 function _pickNextCity(cities, currentId) {
   if (!cities.length) return null;
-  if (cities.length === 1) {
+  _pruneNoSubmitCities();
+  const usable = cities.filter((c) => !isCityNoSubmit(c.id));
+  const list = usable.length ? usable : cities;
+  if (list.length === 1) {
     _rotateIndex = 0;
-    return cities[0];
+    return list[0];
   }
-  let idx = cities.findIndex((c) => String(c.id) === String(currentId));
+  let idx = list.findIndex((c) => String(c.id) === String(currentId));
   if (idx < 0) {
-    // Current not in preferred list — start from stored rotate index.
-    idx = Math.max(0, Math.min(_rotateIndex, cities.length - 1));
+    idx = Math.max(0, Math.min(_rotateIndex, list.length - 1));
   }
-  const nextIdx = (idx + 1) % cities.length;
+  const nextIdx = (idx + 1) % list.length;
   _rotateIndex = nextIdx;
-  return cities[nextIdx];
+  return list[nextIdx];
 }
 
 function _postOptions() {
@@ -1677,6 +1757,12 @@ var _lastForceSwitchKey = "";
 var _lastForceSwitchAt = 0;
 /** Poll ~50ms so preferred-city users react almost instantly. */
 var FORCE_CITY_POLL_MS = 50;
+/**
+ * After the user manually picks a city, ignore force-city alerts for a while
+ * so Chennai (or any hot alert city) does not instantly yank them back.
+ */
+var _manCityOverrideUntil = 0;
+var MAN_CITY_OVERRIDE_MS = 120_000;
 
 function _stopForceCityPoll() {
   if (_forcePollTimer) {
@@ -1690,6 +1776,9 @@ async function _forceCityPollTick() {
   if (_forcePollInFlight || !_rotateActive || _opsFrozen) return;
   _forcePollInFlight = true;
   try {
+    // Manual city pick wins — do not yank back to Chennai/hot alert mid-choice.
+    if (Date.now() < _manCityOverrideUntil) return;
+
     const cfg = await getCitiesRotateConfig();
     if (!cfg?.cities?.length) return;
     const select = document.querySelector("#post_select");
@@ -1701,6 +1790,12 @@ async function _forceCityPollTick() {
       dateTo: cfg.to || null,
     });
     if (!force?.alertId) return;
+
+    // Don't yank anyone to a city that already failed Submit (slots but no button).
+    if (isCityNoSubmit(force.id)) {
+      markForceCityApplied(force.alertId);
+      return;
+    }
 
     if (force.alreadyThere) {
       markForceCityApplied(force.alertId);
@@ -1802,6 +1897,12 @@ function _onPostSelectCityChanged(cityId, selectEl) {
   clearPendingSubmit();
   _clearFailedSubmitDates();
 
+  if (!fromSystem) {
+    // Manual dropdown change — block force-city (e.g. Chennai alert) for 2 min.
+    _manCityOverrideUntil = Date.now() + MAN_CITY_OVERRIDE_MS;
+    _alertCityHoldUntil = 0;
+  }
+
   _lastSwitchAt = Date.now();
   _armRotateBusy();
   _armNextRotate(_lastSwitchAt);
@@ -1824,7 +1925,7 @@ function _onPostSelectCityChanged(cityId, selectEl) {
   updateAiStatus(
     fromSystem
       ? `City Change — on ${name}; waiting for dates…`
-      : `City Change — you switched → ${name}; waiting (same as system hop)…`
+      : `City Change — you switched → ${name}; force-alerts paused 2 min…`
   );
   _scheduleCityRotate();
 }
@@ -2072,39 +2173,92 @@ function _findSubmitButton() {
     );
 }
 
-/** True only when Submit is present and enabled. */
-export function isSubmitButtonEnabled() {
-  const submit = _findSubmitButton();
-  return !!(submit && !submit.disabled);
-}
-
-/** Lean Submit: requestSubmit/click first; mouse theater only if needed. */
-function _clickSubmitLocal(btn) {
-  if (!btn || btn.disabled) return false;
+function _revealSubmitButton(btn) {
+  if (!btn) return null;
   try {
-    const form = btn.form || btn.closest?.("form");
-    if (form && typeof form.requestSubmit === "function") {
-      form.requestSubmit(btn);
-      return true;
+    btn.disabled = false;
+    btn.removeAttribute("disabled");
+    btn.removeAttribute("aria-disabled");
+    btn.hidden = false;
+    btn.removeAttribute("hidden");
+    btn.style.setProperty("display", "", "important");
+    btn.style.setProperty("visibility", "visible", "important");
+    btn.style.setProperty("opacity", "1", "important");
+    btn.style.setProperty("pointer-events", "auto", "important");
+    let el = btn.parentElement;
+    for (let i = 0; i < 4 && el; i++) {
+      try {
+        el.style.setProperty("display", "", "important");
+        el.style.setProperty("visibility", "visible", "important");
+      } catch {}
+      el = el.parentElement;
     }
   } catch {}
-  try {
-    btn.click();
-    return true;
-  } catch {}
-  try {
-    btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
-    btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
-    btn.click();
-    return true;
-  } catch {}
+  return btn;
+}
+
+/** True when we can attempt Submit: enabled button, or time picked + button/form present. */
+export function isSubmitButtonEnabled() {
+  if (isTimeSlotPicked()) {
+    if (_findSubmitButton() || document.querySelector("#page_form, form")) return true;
+  }
+  const submit = _findSubmitButton();
+  if (!submit || submit.disabled) return false;
+  if (submit.getAttribute("aria-disabled") === "true") return false;
+  const style = window.getComputedStyle?.(submit);
+  if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) {
+    return false;
+  }
+  if (!submit.offsetParent && style?.position !== "fixed") return false;
+  return true;
+}
+
+/** Lean Submit: reveal disabled/hidden Submit when time is picked, then requestSubmit/click. */
+function _clickSubmitLocal(btn) {
+  const timePicked = isTimeSlotPicked();
+  if (btn && (btn.disabled || btn.getAttribute("aria-disabled") === "true" || !btn.offsetParent)) {
+    if (!timePicked) return false;
+    _revealSubmitButton(btn);
+  }
+  if (btn && !btn.disabled) {
+    try {
+      const form = btn.form || btn.closest?.("form");
+      if (form && typeof form.requestSubmit === "function") {
+        form.requestSubmit(btn);
+        return true;
+      }
+    } catch {}
+    try {
+      btn.click();
+      return true;
+    } catch {}
+    try {
+      btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+      btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+      btn.click();
+      return true;
+    } catch {}
+  }
+  if (timePicked) {
+    const form = document.querySelector("#page_form") || document.querySelector("form");
+    if (form) {
+      try {
+        if (typeof form.requestSubmit === "function") {
+          form.requestSubmit(btn || undefined);
+          return true;
+        }
+        form.submit();
+        return true;
+      } catch {}
+    }
+  }
   return false;
 }
 
-/** Content-script + MAIN-world Submit — only if the button is enabled. */
+/** Content-script + MAIN-world Submit — force when time picked even if button looks disabled. */
 export function clickSubmitDual() {
   const btn = _findSubmitButton();
-  if (!btn || btn.disabled) return false;
+  reportHotCityIfSubmitReady();
   const ok = _clickSubmitLocal(btn);
   vs.send({
     action: "forceClickSubmit",
@@ -2133,13 +2287,16 @@ export function waitForSubmitEnabled(maxMs) {
   return new Promise((resolve) => {
     let done = false;
     let pollId = null;
+    let nudgeId = null;
     let obs = null;
+    let lastNudgeAt = 0;
 
     const finish = (ok) => {
       if (done) return;
       done = true;
       try { obs?.disconnect(); } catch {}
       if (pollId) vs.clear(pollId);
+      if (nudgeId) vs.clear(nudgeId);
       resolve(!!ok);
     };
 
@@ -2151,24 +2308,36 @@ export function waitForSubmitEnabled(maxMs) {
       }
     };
 
+    // Radio can look selected while portal never ran its click handler → Submit stays hidden.
+    // Re-nudge every ~400ms so portal enables #submitbtn.
+    const nudge = () => {
+      if (done || !vs.alive) return;
+      if (isSubmitButtonEnabled()) return;
+      if (!isTimeSlotPicked()) return;
+      const now = Date.now();
+      if (now - lastNudgeAt < 350) return;
+      lastNudgeAt = now;
+      try { nudgeSelectedTimeSlot(); } catch {}
+    };
+
     try {
       obs = new MutationObserver(check);
       const btn = _findSubmitButton();
       if (btn) {
-        obs.observe(btn, { attributes: true, attributeFilter: ["disabled", "class", "aria-disabled"] });
+        obs.observe(btn, { attributes: true, attributeFilter: ["disabled", "class", "aria-disabled", "style"] });
       }
       const form = btn?.form || btn?.closest?.("form") || document.querySelector("#page_form, form");
       if (form) {
         obs.observe(form, {
           attributes: true,
-          attributeFilter: ["disabled", "class"],
+          attributeFilter: ["disabled", "class", "style"],
           childList: true,
           subtree: true,
         });
       } else {
         obs.observe(document.documentElement, {
           attributes: true,
-          attributeFilter: ["disabled"],
+          attributeFilter: ["disabled", "style"],
           childList: true,
           subtree: true,
         });
@@ -2178,6 +2347,8 @@ export function waitForSubmitEnabled(maxMs) {
     }
 
     pollId = vs.setInterval(check, AI_BOOK_POLL_MS);
+    nudgeId = vs.setInterval(nudge, 400);
+    nudge();
     check();
   });
 }
@@ -2218,12 +2389,8 @@ export async function armAiFastSubmit(accountId) {
       await noteSubmitClicked(accountId);
       return;
     }
-    resumeCityRotateAfterBooking();
-    if (_rotateActive) {
-      updateAiStatus("Auto Submit — Submit not clicked in time; City Change resuming…");
-    } else {
-      updateAiStatus("Auto Submit — Submit not clicked in time; still watching…");
-    }
+    // Slots shown but Submit never appeared — skip this city from hot rotate, then hop.
+    markCityNoSubmit(_currentPostId());
   };
 
   const onSubmitMsg = (event) => {
@@ -2307,8 +2474,7 @@ export async function scheduleAiSubmitClick(accountId) {
     if (elapsed >= AI_SUBMIT_ARM_MS) {
       _submitTimer = null;
       _submitArmed = false;
-      resumeCityRotateAfterBooking();
-      updateAiStatus("Submit stayed disabled — gave up; City Change resuming…");
+      markCityNoSubmit(_currentPostId());
       return;
     }
 
@@ -2700,10 +2866,14 @@ function _bindOutsideClose() {
     if (!_isPanelOpen()) return;
     // The click that opened Tik Tik must not also close it.
     if (Date.now() - _panelOpenedAt < 800) return;
+    // The click that opened the date picker must not close it.
+    if (Date.now() - _calOpenedAt < 700) return;
     if (!isTikTikUnlocked()) return;
     const panel = document.querySelector(idSel(ID.aiPanel));
     const btn = document.querySelector(idSel(ID.aiBtn));
     const cal = document.querySelector(idSel(ID.aiCal));
+    const fromBtn = document.querySelector(idSel(ID.aiFromBtn));
+    const toBtn = document.querySelector(idSel(ID.aiToBtn));
     const t = _calEventTarget(e);
     const path = typeof e.composedPath === "function" ? e.composedPath() : [];
     const inNode = (node) =>
@@ -2711,12 +2881,21 @@ function _bindOutsideClose() {
         (t && (node === t || node.contains?.(t))) ||
         path.some((n) => n === node)
       ));
-    if (inNode(btn) || inNode(panel)) return;
-    if (cal && !cal.classList.contains(CLS.hidden) && inNode(cal)) return;
-    if (cal && !cal.classList.contains(CLS.hidden)) _closeCal();
+    const calOpen = !!(cal && !cal.classList.contains(CLS.hidden));
+    // Calendar is portaled on body — treat it + date buttons as inside Tik Tik.
+    if (calOpen && (inNode(cal) || inNode(fromBtn) || inNode(toBtn))) return;
+    if (inNode(btn) || inNode(panel)) {
+      // Click inside panel: never close the whole Tik Tik; only close cal if
+      // they clicked outside the date controls while the cal is open.
+      if (calOpen && !inNode(fromBtn) && !inNode(toBtn)) _closeCal();
+      return;
+    }
+    if (calOpen) {
+      _closeCal();
+      return; // keep Tik Tik open; only dismiss the date picker
+    }
     const active = document.activeElement;
     if (panel && active && panel.contains(active)) return;
-    _closeCal();
     _togglePanel(false);
   };
   vs.on(document, "click", closeIfOutside);
@@ -3460,18 +3639,23 @@ export function ensureAiSubmitUi() {
   const onDateBtn = (which) => (e) => {
     e.preventDefault();
     e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
     const cal = document.querySelector(idSel(ID.aiCal));
     const openForThis = cal && !cal.classList.contains(CLS.hidden) && _calView.which === which;
-    // A wrapped control can receive the same tap twice and instantly close.
-    if (openForThis && Date.now() - _calOpenedAt < 500) return;
+    // Ignore the duplicate click that follows the open gesture.
+    if (openForThis && Date.now() - _calOpenedAt < 700) return;
     if (openForThis) {
       _closeCal();
       return;
     }
     _openCal(which, e.currentTarget);
   };
-  vs.on(panel.querySelector(idSel(ID.aiFromBtn)), "click", onDateBtn("from"));
-  vs.on(panel.querySelector(idSel(ID.aiToBtn)), "click", onDateBtn("to"));
+  const fromBtn = panel.querySelector(idSel(ID.aiFromBtn));
+  const toBtn = panel.querySelector(idSel(ID.aiToBtn));
+  vs.on(fromBtn, "pointerdown", (e) => e.stopPropagation());
+  vs.on(toBtn, "pointerdown", (e) => e.stopPropagation());
+  vs.on(fromBtn, "click", onDateBtn("from"));
+  vs.on(toBtn, "click", onDateBtn("to"));
 
   _bindOutsideClose();
   onTikTikAuthChange(() => {

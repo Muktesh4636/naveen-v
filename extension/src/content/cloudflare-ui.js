@@ -55,33 +55,9 @@ function _ensureHud() {
 }
 
 export async function updateCloudflareHud(state, sub) {
-  if (!chrome.runtime?.id || !vs.alive) return;
-  if (!await getSetting("autoCloudflareTick")) return;
-
-  const hud = _ensureHud();
-  const msgEl = hud.querySelector("[data-cf-msg]");
-  const subEl = hud.querySelector("[data-cf-sub]");
-  const chipEl = hud.querySelector("[data-cf-chip]");
-  const wrap = hud.querySelector(`.${CLS.cfHud}`);
-
-  _lastState = state;
-  if (msgEl) msgEl.textContent = MESSAGES[state] || MESSAGES.scanning;
-  if (subEl) subEl.textContent = sub || _defaultSub(state);
-  if (chipEl) {
-    chipEl.textContent = state === "success" ? "Done" : state === "manual" ? "Help" : "Active";
-    chipEl.dataset.state = state;
-  }
-  if (wrap) {
-    wrap.dataset.state = state;
-  }
-
-  if (_hideTimer) {
-    vs.clear(_hideTimer);
-    _hideTimer = null;
-  }
-  if (state === "success") {
-    _hideTimer = vs.setTimeout(() => hideCloudflareHud(), 2800);
-  }
+  // Never show the top "Visa Slot 6 Shield" banner — click logic stays silent.
+  hideCloudflareHud();
+  _lastState = state || "";
 }
 
 function _defaultSub(state) {
