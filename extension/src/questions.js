@@ -5,9 +5,19 @@ import {
 } from "./content/cloudflare-tick.js";
 import { retirePrevious, vs } from "./shared/lifecycle.js";
 import { storageGet, storageSet, watchExtensionContext } from "./shared/runtime.js";
+import { logEvent } from "./shared/eventlog.js";
 
 retirePrevious();
 watchExtensionContext(() => vs.destroy());
+
+var _lastNote = "";
+/** loginTick runs every 1.5s — only log when the reason changes. */
+function note(kind, msg, level = "info") {
+  if (msg === _lastNote) return;
+  _lastNote = msg;
+  logEvent(kind, msg, {}, level);
+}
+logEvent("login", `Login page opened (${location.pathname.slice(0, 80)})`);
 
 function currentUsername() {
   const input = document.querySelector(
@@ -112,7 +122,13 @@ function _verifyBlocking() {
 
 async function fillFromTikTik(cfg) {
   if (!cfg || _filling) return;
-  if (!await storageGet({ autofillLogin: true }).then((s) => s.autofillLogin)) return;
+  if (!await storageGet({ autofillLogin: true }).then((s) => s.autofillLogin)) {
+    note("login", "Auto-login setting is OFF — not filling", "warn");
+    return;
+  }
+  if (!cfg.loginId || !cfg.loginPass) {
+    note("login", "No saved login ID/password in extension — cannot auto-login", "error");
+  }
   _filling = true;
   try {
     const user = document.querySelector("#signInName, #signInNameReadOnly");
@@ -135,7 +151,10 @@ async function fillFromTikTik(cfg) {
       const wrap = input.closest(".form-group, li, div") || input.parentElement;
       const text = wrap?.textContent || "";
       const ans = matchAnswer(text, cfg.security);
-      if (!ans) continue;
+      if (!ans) {
+        note("login", `No saved answer matches security question: "${text.replace(/\s+/g, " ").trim().slice(0, 140)}"`, "error");
+        continue;
+      }
       await typeHuman(input, ans);
       filled++;
       await sleep(rand(350, 800));
@@ -143,18 +162,25 @@ async function fillFromTikTik(cfg) {
 
     await sleep(rand(600, 1400));
     // Sign in fails silently while "Verify you are human" is unticked — wait for the user.
-    if (_verifyBlocking()) return;
+    if (_verifyBlocking()) {
+      note("verify", "Login filled — waiting for 'Verify you are human' tick", "warn");
+      return;
+    }
     const now = Date.now();
     if (filled) {
       const cont = document.querySelector("button#continue");
       if (cont && now - _continueClickedAt > CLICK_COOLDOWN_MS) {
         _continueClickedAt = now;
+        _lastNote = "";
+        logEvent("login", `Typed ${filled} security answer(s) — clicked Continue`);
         cont.click();
       }
     } else if (pass && pass.value) {
       const next = document.querySelector("button#next");
       if (next && now - _nextClickedAt > CLICK_COOLDOWN_MS) {
         _nextClickedAt = now;
+        _lastNote = "";
+        logEvent("login", `Clicked Sign in for ${user?.value || cfg.loginId || "?"}`);
         next.click();
       }
     }
@@ -206,6 +232,10 @@ var _storeBound = false;
 // full reload, so keep checking instead of filling once at load.
 function loginTick() {
   if (!chrome.runtime?.id) return;
+  for (const el of document.querySelectorAll(".error.pageLevel, .error.itemLevel, [role='alert']")) {
+    const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+    if (text.length > 3 && el.offsetParent !== null) note("login", `Login page error: ${text.slice(0, 300)}`, "error");
+  }
   const ready = document.querySelector("button#continue, button#next, #password, #kba1_response");
   if (!ready) return;
   fillAnswers();

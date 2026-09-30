@@ -7,6 +7,7 @@
  */
 
 import { getPosts, getProfile, SCHEDULE_UI_WAIT_ATTEMPTS } from "../shared/config.js";
+import { logEvent, logError } from "../shared/eventlog.js";
 import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
 import {
@@ -32,7 +33,7 @@ import { cfg as rtCfg } from "../shared/remoteConfig.js";
 import { CLS, DAT, ID, MSG, T, idSel } from "../shared/token.js";
 import { ensureSelectorRow, playBeepBurst } from "./scheduling-controls.js";
 import { armSubmitErrorWatch, setSubmitErrorHandler } from "./submit-errors.js";
-import { isTimeSlotPicked, nudgeSelectedTimeSlot } from "./time-select.js";
+import { isTimeSlotPicked, selectedTimeSlotKey, clearSelectedTimeSlot } from "./time-select.js";
 import {
   mergeServerTikTikPrefs,
   pullTikTikPrefs,
@@ -45,6 +46,7 @@ import {
 } from "./tik-tik-community.js";
 import {
   coolCitySlots,
+  getLastForceAlertId,
   markForceCityApplied,
   pollForceCity,
   reportCitySlotsFound,
@@ -86,7 +88,8 @@ export function pickPreferredDateIndex(count) {
  */
 function _cityRotateMinGapMs() { return rtCfg.cityRotateMinGapMs; }
 function _cityRotateMaxGapMs() { return rtCfg.cityRotateMaxGapMs; }
-function _cityHoldMaxMs() { return rtCfg.cityHoldMaxMs; }
+// After a Submit click the city is held for the full post-Submit wait, not the normal booking hold.
+function _cityHoldMaxMs() { return _submitPending ? SUBMIT_PENDING_MAX_MS + 5_000 : rtCfg.cityHoldMaxMs; }
 function _cityLoadingMaxMs() { return rtCfg.cityLoadingMaxMs; }
 function _cityCalendarNoDatesMs() { return rtCfg.cityCalendarNoDatesMs; }
 /** Watchdog: if no tick for this long while ON, force reschedule (no OFF→ON needed). */
@@ -448,13 +451,14 @@ export async function disarmAiSubmit(accountId) {
 var _submitPending = false;
 var _submitPendingTimer = null;
 var _submitConfirmWatch = null;
-/** Max wait after Submit for confirmation before resuming city hop (not 1 min). */
-var SUBMIT_PENDING_MAX_MS = 20_000;
+/** After Submit: wait this long (confirmation or not) before continuing dates / city hops. */
+var SUBMIT_PENDING_MAX_MS = 2 * 60_000;
+var _submitPendingSince = 0;
 /**
  * Dates tried and failed (no times / Submit disabled / Submit error), per city.
- * Survives city hops so a bad date is not retried on revisit. "postId|YYYY-MM-DD" → expiry ms.
+ * Skipped for FAILED_DATE_TTL_MS, even across city hops. "postId|YYYY-MM-DD" → expiry ms.
  */
-var FAILED_DATE_TTL_MS = 10 * 60 * 1000;
+var FAILED_DATE_TTL_MS = 20 * 1000;
 var _failedDates = new Map();
 var _lastPickedDateIso = "";
 
@@ -514,6 +518,41 @@ export function markCityNoSubmit(postId, name = "") {
   }
 }
 
+/**
+ * Submit stayed disabled (portal shows no error): no click, no other dates —
+ * change city after a random 15–20s. Still click once if the portal enables Submit meanwhile.
+ */
+export function hopCityAfterSubmitDisabled(postId, name = "") {
+  const id = String(postId || _currentPostId() || "").trim();
+  const label = name || id;
+  const waitMs = 15_000 + Math.floor(Math.random() * 5_001);
+  logEvent("city_hop", `Submit disabled on ${label} — no click; changing city in ${Math.round(waitMs / 1000)}s`);
+  if (id) {
+    _noSubmitCities.set(id, Date.now() + NO_SUBMIT_SKIP_MS);
+    try { noteHudCitySlots(id, false, name || undefined); } catch {}
+    coolCitySlots({ postId: id, postName: name }).catch(() => {});
+  }
+  _clearHoldSafety();
+  _bookingHold = false;
+  _holdStartedAt = 0;
+  _submitArmed = false;
+  if (!_rotateActive || _opsFrozen || _submitPending) {
+    updateAiStatus(`Submit disabled on ${label} — not clicking (City Change off or pending)`);
+    return;
+  }
+  _nextRotateAt = Date.now() + waitMs;
+  updateAiStatus(`Submit disabled on ${label} — not clicking; next city in ${Math.round(waitMs / 1000)}s…`);
+  _scheduleCityRotate();
+
+  waitForSubmitEnabled(waitMs - 500).then((enabled) => {
+    if (!enabled || !vs.alive || _opsFrozen || _submitPending) return;
+    if (String(_currentPostId() || "") !== id) return;
+    if (submitAlreadyClickedHere()) return;
+    updateAiStatus("Submit enabled — clicking once…");
+    clickSubmitDual();
+  });
+}
+
 var _hotReportedAt = new Map();
 
 /**
@@ -531,16 +570,21 @@ export function markCityHotOnSubmit() {
   try {
     noteHudCitySlots(postId, true, postName);
   } catch {}
+  // Broadcast once per city+date (5 min) and only with a real picked date — retries stay local.
+  const date = _lastPickedDateIso || _datepickerToIso();
+  if (!date) return;
+  const hotKey = `${postId}|${date}`;
   const now = Date.now();
-  if (now - (_hotReportedAt.get(postId) || 0) < 30_000) return;
-  _hotReportedAt.set(postId, now);
+  if (now - (_hotReportedAt.get(hotKey) || 0) < 5 * 60_000) return;
+  _hotReportedAt.set(hotKey, now);
+  logEvent("hot_alert", `Announced ${postName} as hot (Submit clicked)`, { postId, date });
   reportCitySlotsFound({
     postId,
     postName,
     dayCount: 1,
-    bestDate: _lastPickedDateIso || null,
-    dateFrom: _lastPickedDateIso || null,
-    dateTo: _lastPickedDateIso || null,
+    bestDate: date,
+    dateFrom: date,
+    dateTo: date,
   }).catch(() => {});
 }
 
@@ -569,11 +613,48 @@ export function markDateFailed(dateIso, postId) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
   const city = String(postId || _currentPostId() || "");
   _failedDates.set(`${city}|${d}`, Date.now() + FAILED_DATE_TTL_MS);
+  if (_dateClicks.postId === city) _dateClicks.done.add(d);
+  logEvent("date_pick", `Date ${d} marked failed — won't retry for 20s`, { postId: city, date: d });
+}
+
+// Dates already clicked during this visit to the city — each date is clicked once only.
+var _dateClicks = { postId: "", dates: new Set(), done: new Set(), last: "" };
+
+function _resetDateClicks(postId = "") {
+  _dateClicks = { postId: String(postId || ""), dates: new Set(), done: new Set(), last: "" };
+}
+
+/** A date was clicked on this city and is still being worked (times / Submit / 2-min wait). */
+export function dateClickInProgress() {
+  const { postId, last, done } = _dateClicks;
+  if (!last || postId !== String(_currentPostId() || "")) return false;
+  return !done.has(last);
+}
+
+function _dateClickedHere(d, postId) {
+  return _dateClicks.postId === String(postId || "") && _dateClicks.dates.has(d);
+}
+
+/** The only booking date-click path: sends the click once per date per city visit. */
+export function sendDateClickOnce(dateIso, maxMs = AI_DATE_SELECT_MS) {
+  const d = String(dateIso || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  const pid = String(_currentPostId() || "");
+  if (_dateClicks.postId !== pid) _resetDateClicks(pid);
+  if (_dateClicks.dates.has(d)) {
+    logEvent("date_pick", `Date ${d} already clicked on this city — not clicking again`);
+    return false;
+  }
+  _dateClicks.dates.add(d);
+  _dateClicks.last = d;
+  vs.send({ action: "selectFirstDate", date: d, maxMs, pollMs: AI_BOOK_POLL_MS });
+  return true;
 }
 
 export function isDateFailed(dateIso, postId) {
   const d = String(dateIso || "").slice(0, 10);
   const city = String(postId || _currentPostId() || "");
+  if (_dateClickedHere(d, city)) return true;
   const until = _failedDates.get(`${city}|${d}`);
   if (!until) return false;
   if (until <= Date.now()) {
@@ -637,6 +718,7 @@ export async function tryNextDateOnThisCity(reason = "No time slots") {
   if (!next?.Date) return null;
 
   const date = String(next.Date).slice(0, 10);
+  clearSelectedTimeSlot();
   noteDatePicked(date);
   // Fresh hold so walking dates does not trip the 45s city timeout.
   _holdStartedAt = 0;
@@ -647,12 +729,7 @@ export async function tryNextDateOnThisCity(reason = "No time slots") {
     ` (${remaining.length} left in range)…`;
   updateAiStatus(msg);
   setTikTikStatus(msg);
-  vs.send({
-    action: "selectFirstDate",
-    date,
-    maxMs: AI_DATE_SELECT_MS,
-    pollMs: AI_BOOK_POLL_MS,
-  });
+  if (!sendDateClickOnce(date)) return null;
   return date;
 }
 
@@ -667,7 +744,9 @@ async function tryNextInRangeDateAfterSubmitFail() {
  * Hold hops briefly; resume on failure, or disarm only on confirmation.
  */
 export async function noteSubmitClicked(accountId) {
+  logEvent("submit", "Submit clicked (portal confirmed click)", { date: _datepickerToIso() });
   if (isInterviewPage() || _isConfirmationPage()) {
+    logEvent("submit_result", "BOOKED — confirmation page shown", { date: _datepickerToIso() });
     if (accountId) await disarmAiSubmit(accountId);
     else freezeAllOps();
     updateAiStatus("Booking confirmed — Tik Tik stopped.");
@@ -675,10 +754,13 @@ export async function noteSubmitClicked(accountId) {
   }
 
   _submitPending = true;
+  _submitPendingSince = Date.now();
   haltCityRotateForBooking();
+  _holdStartedAt = Date.now();
+  _armHoldSafety();
   markCityHotOnSubmit();
   armSubmitErrorWatch();
-  updateAiStatus("Submit clicked — waiting for confirmation (Auto Submit + City Change stay ON)…");
+  updateAiStatus("Submit clicked — waiting 2 min before continuing (Auto Submit + City Change stay ON)…");
 
   if (_submitConfirmWatch) vs.clear(_submitConfirmWatch);
   const started = Date.now();
@@ -692,18 +774,20 @@ export async function noteSubmitClicked(accountId) {
       updateAiStatus("Booking confirmed — Tik Tik stopped.");
       return;
     }
-    if (Date.now() - started >= SUBMIT_PENDING_MAX_MS) {
-      await noteSubmitFailed("no confirmation yet — resuming city checks");
+    const elapsed = Date.now() - started;
+    if (elapsed >= SUBMIT_PENDING_MAX_MS) {
+      await noteSubmitFailed("2 min after Submit, no confirmation — continuing", { timedOut: true });
       return;
     }
-    _submitConfirmWatch = vs.setTimeout(beat, 400);
+    updateAiStatus(`Submit clicked — waiting for confirmation (${Math.ceil((SUBMIT_PENDING_MAX_MS - elapsed) / 1000)}s left)…`);
+    _submitConfirmWatch = vs.setTimeout(beat, 1000);
   };
-  _submitConfirmWatch = vs.setTimeout(beat, 400);
+  _submitConfirmWatch = vs.setTimeout(beat, 1000);
 
   if (_submitPendingTimer) vs.clear(_submitPendingTimer);
   _submitPendingTimer = vs.setTimeout(() => {
     _submitPendingTimer = null;
-    if (_submitPending) noteSubmitFailed("submit wait timed out — resuming city checks");
+    if (_submitPending) noteSubmitFailed("2 min after Submit, no confirmation — continuing", { timedOut: true });
   }, SUBMIT_PENDING_MAX_MS);
 }
 
@@ -719,7 +803,16 @@ function _isConfirmationPage() {
 }
 
 /** Submit failed / rejected — try another in-range date first; hop city only if none left. */
-export async function noteSubmitFailed(reason = "") {
+export async function noteSubmitFailed(reason = "", { timedOut = false } = {}) {
+  // Always wait the full 2 min after a Submit click, even if the portal shows an error.
+  if (_submitPending && !timedOut && Date.now() - _submitPendingSince < SUBMIT_PENDING_MAX_MS) {
+    const left = Math.ceil((SUBMIT_PENDING_MAX_MS - (Date.now() - _submitPendingSince)) / 1000);
+    logEvent("submit_result", `Portal says: ${reason || "error"} — still waiting ${left}s (2 min after Submit)`, {
+      date: _datepickerToIso(),
+    }, "warn");
+    return;
+  }
+  logError("submit_result", `Submit failed${reason ? `: ${reason}` : ""}`, { date: _datepickerToIso() });
   if (!_submitPending && !_bookingHold && !_submitArmed) {
     const tried = await tryNextInRangeDateAfterSubmitFail();
     if (tried) return;
@@ -1268,7 +1361,7 @@ export async function probeAutoSubmitForCurrentCity() {
       const date = inRange[idx].Date;
       updateAiStatus(`Auto Submit: picking date #${idx + 1} (${date.slice(0, 10)})…`);
       noteDatePicked(date);
-      vs.send({ action: "selectFirstDate", date, maxMs: AI_DATE_SELECT_MS, pollMs: AI_BOOK_POLL_MS });
+      sendDateClickOnce(date);
       return;
     }
     const allIso = filterDaysInAiRange(days, "1970-01-01", "2999-12-31");
@@ -1711,6 +1804,7 @@ async function _switchToCity(cityId, label) {
   _lastSwitchAt = Date.now();
   _armNextRotate(_lastSwitchAt);
   noteHudCityHop(nextId, label || nextId);
+  logEvent("city_hop", `City Change → ${label || cityId}`, { from: String(select.value), to: nextId });
   updateAiStatus(`Switching city → ${label || cityId}…`);
   _clearFailedSubmitDates();
   vs.send({ action: "selectPost", postId: nextId });
@@ -1735,7 +1829,10 @@ export async function forceSwitchToCity(cityId, label, { alertId, dayCount, best
   const nextId = String(cityId);
   const name = label || nextId;
 
-  if (String(select.value) === nextId) {
+  // Switch to this city already in flight (page still loading) — treat as already there.
+  const switchingHere = _systemHopPostId === nextId && Date.now() - _systemHopAt < 15_000;
+  if (String(select.value) === nextId || switchingHere) {
+    logEvent("hot_alert", `Hot city ${name} — already here, not re-selecting`, { alertId, bestDate });
     _alertCityHoldUntil = Date.now() + ALERT_CITY_HOLD_MS;
     updateAiStatus(
       `City alert — already on ${name}` +
@@ -1776,6 +1873,9 @@ export async function forceSwitchToCity(cityId, label, { alertId, dayCount, best
       (dayCount ? ")" : "") +
       (alertId ? ` [#${alertId}]` : "")
   );
+  logEvent("hot_alert", `Hot city alert — switching → ${name}`, {
+    from: String(select.value), to: nextId, alertId, bestDate, dayCount,
+  });
   try { playBeepBurst(3, 80, 50); } catch { /* ignore */ }
   try { vs.send({ action: "focusScheduleTab" }); } catch { /* ignore */ }
   // force:true bypasses IST slot gate in the service worker.
@@ -1790,8 +1890,8 @@ var _forcePollTimer = null;
 var _forcePollInFlight = false;
 var _lastForceSwitchKey = "";
 var _lastForceSwitchAt = 0;
-/** Poll ~50ms so preferred-city users react almost instantly. */
-var FORCE_CITY_POLL_MS = 50;
+/** 1s poll: fast enough to follow a hot city, without flooding the laptop/network while booking. */
+var FORCE_CITY_POLL_MS = 1000;
 /**
  * After the user manually picks a city, ignore force-city alerts for a while
  * so Chennai (or any hot alert city) does not instantly yank them back.
@@ -1805,6 +1905,21 @@ function _stopForceCityPoll() {
     _forcePollTimer = null;
   }
   _forcePollInFlight = false;
+}
+
+/**
+ * This tab's own city has fresh, bookable dates (in range, not yet tried)
+ * — it must not be pulled to someone else's hot city.
+ */
+async function _currentCityHasOwnDates(cfg) {
+  const postId = _currentPostId();
+  if (!postId) return false;
+  const post = (await getPosts()).find((p) => String(p.ID) === postId);
+  if (!post?.Days?.length || post.HasError) return false;
+  if (!post.Updated || Date.now() - post.Updated > 2 * 60_000) return false;
+  const from = cfg?.from || "1970-01-01";
+  const to = cfg?.to || "2999-12-31";
+  return filterDaysInAiRange(post.Days, from, to).some((d) => !isDateFailed(d.Date, postId));
 }
 
 async function _forceCityPollTick() {
@@ -1829,10 +1944,13 @@ async function _forceCityPollTick() {
     // Don't yank anyone to a city that already failed Submit (slots but no button).
     if (isCityNoSubmit(force.id)) {
       markForceCityApplied(force.alertId);
+      logEvent("hot_alert", `Hot city ${force.name || force.id} ignored — Submit failed there recently`, { alertId: force.alertId });
       return;
     }
 
     if (force.alreadyThere) {
+      // Already on the hot city: never re-select it; ack once, stay quiet after.
+      if (Number(force.alertId) <= getLastForceAlertId()) return;
       markForceCityApplied(force.alertId);
       _alertCityHoldUntil = Math.max(_alertCityHoldUntil, Date.now() + ALERT_CITY_HOLD_MS);
       haltCityRotateForBooking();
@@ -1846,11 +1964,27 @@ async function _forceCityPollTick() {
       return;
     }
 
-    // Avoid thrashing the same alert every poll while the city change loads.
+    // Own city has bookable dates, or Submit in flight — keep booking here.
+    if (_submitPending || await _currentCityHasOwnDates(cfg)) {
+      markForceCityApplied(force.alertId);
+      logEvent("hot_alert", `Hot city ${force.name || force.id} ignored — ${_submitPending ? "Submit pending" : "own city has dates"}`, { alertId: force.alertId });
+      updateAiStatus(
+        `${force.name || force.id} is hot, but this city has its own dates — staying to book here.`
+      );
+      return;
+    }
+
+    // Each alert switches us once, ever.
     const key = `${force.id}:${force.alertId}`;
     const now = Date.now();
-    if (key === _lastForceSwitchKey && now - _lastForceSwitchAt < 4000) {
+    if (key === _lastForceSwitchKey) {
       markForceCityApplied(force.alertId);
+      return;
+    }
+    // Just switched for an alert — stay and book; don't bounce to another hot city.
+    if (_alertCityHoldUntil > now && now - _lastForceSwitchAt < ALERT_CITY_HOLD_MS) {
+      markForceCityApplied(force.alertId);
+      logEvent("hot_alert", `Hot city ${force.name || force.id} ignored — holding previous alert city`, { alertId: force.alertId });
       return;
     }
 
@@ -1938,6 +2072,7 @@ function _onPostSelectCityChanged(cityId, selectEl) {
     _alertCityHoldUntil = 0;
   }
 
+  _resetDateClicks(id);
   _lastSwitchAt = Date.now();
   _armRotateBusy();
   _armNextRotate(_lastSwitchAt);
@@ -2208,35 +2343,8 @@ function _findSubmitButton() {
     );
 }
 
-function _revealSubmitButton(btn) {
-  if (!btn) return null;
-  try {
-    btn.disabled = false;
-    btn.removeAttribute("disabled");
-    btn.removeAttribute("aria-disabled");
-    btn.hidden = false;
-    btn.removeAttribute("hidden");
-    btn.style.setProperty("display", "", "important");
-    btn.style.setProperty("visibility", "visible", "important");
-    btn.style.setProperty("opacity", "1", "important");
-    btn.style.setProperty("pointer-events", "auto", "important");
-    let el = btn.parentElement;
-    for (let i = 0; i < 4 && el; i++) {
-      try {
-        el.style.setProperty("display", "", "important");
-        el.style.setProperty("visibility", "visible", "important");
-      } catch {}
-      el = el.parentElement;
-    }
-  } catch {}
-  return btn;
-}
-
-/** True when we can attempt Submit: enabled button, or time picked + button/form present. */
+/** True only when the portal itself has Submit enabled and visible — never forced by us. */
 export function isSubmitButtonEnabled() {
-  if (isTimeSlotPicked()) {
-    if (_findSubmitButton() || document.querySelector("#page_form, form")) return true;
-  }
   const submit = _findSubmitButton();
   if (!submit || submit.disabled) return false;
   if (submit.getAttribute("aria-disabled") === "true") return false;
@@ -2248,60 +2356,66 @@ export function isSubmitButtonEnabled() {
   return true;
 }
 
-/** Lean Submit: reveal disabled/hidden Submit when time is picked, then requestSubmit/click. */
+/** One real click on an enabled Submit. Disabled / hidden → no click. */
 function _clickSubmitLocal(btn) {
-  const timePicked = isTimeSlotPicked();
-  if (btn && (btn.disabled || btn.getAttribute("aria-disabled") === "true" || !btn.offsetParent)) {
-    if (!timePicked) return false;
-    _revealSubmitButton(btn);
-  }
-  if (btn && !btn.disabled) {
-    try {
-      const form = btn.form || btn.closest?.("form");
-      if (form && typeof form.requestSubmit === "function") {
-        form.requestSubmit(btn);
-        return true;
-      }
-    } catch {}
-    try {
-      btn.click();
+  if (!btn || !isSubmitButtonEnabled()) return false;
+  try {
+    const form = btn.form || btn.closest?.("form");
+    if (form && typeof form.requestSubmit === "function") {
+      form.requestSubmit(btn);
       return true;
-    } catch {}
-    try {
-      btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
-      btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
-      btn.click();
-      return true;
-    } catch {}
-  }
-  if (timePicked) {
-    const form = document.querySelector("#page_form") || document.querySelector("form");
-    if (form) {
-      try {
-        if (typeof form.requestSubmit === "function") {
-          form.requestSubmit(btn || undefined);
-          return true;
-        }
-        form.submit();
-        return true;
-      } catch {}
     }
-  }
+  } catch {}
+  try {
+    btn.click();
+    return true;
+  } catch {}
   return false;
 }
 
-/** Content-script + MAIN-world Submit — force when time picked even if button looks disabled. */
+// Set after the one Submit click; same city + date + time is never clicked again
+// until fresh dates arrive (resetSubmitClickLock) or the date/time changes.
+var _submitClickKey = "";
+var _autoTimePickBusy = false;
+
+export function setAutoTimePickBusy(busy) {
+  _autoTimePickBusy = !!busy;
+}
+
+function _currentSubmitKey() {
+  return `${_currentPostId()}|${_datepickerToIso()}|${selectedTimeSlotKey()}`;
+}
+
+export function resetSubmitClickLock() {
+  _submitClickKey = "";
+}
+
+export function submitAlreadyClickedHere() {
+  return !!_submitClickKey && _submitClickKey === _currentSubmitKey();
+}
+
+/** The only Submit click path: time picked + portal enabled Submit → click exactly once. */
 export function clickSubmitDual() {
-  const btn = _findSubmitButton();
-  const ok = _clickSubmitLocal(btn);
-  if (isTimeSlotPicked()) markCityHotOnSubmit();
-  vs.send({
-    action: "forceClickSubmit",
-    prefix: T,
-    pollMs: AI_BOOK_POLL_MS,
-    maxMs: Math.min(1500, AI_SUBMIT_ARM_MS),
+  if (!isTimeSlotPicked()) return false;
+  if (!isSubmitButtonEnabled()) {
+    logEvent("submit", "Submit disabled — not clicking", { date: _datepickerToIso() });
+    return false;
+  }
+  const key = _currentSubmitKey();
+  if (key === _submitClickKey) return false;
+  const ok = _clickSubmitLocal(_findSubmitButton());
+  if (!ok) {
+    logError("submit", "Submit enabled but click failed", { date: _datepickerToIso() });
+    return false;
+  }
+  _submitClickKey = key;
+  logEvent("submit", "Submit clicked once (portal had it enabled)", {
+    date: _datepickerToIso(), time: selectedTimeSlotKey().split("|")[1] || "",
   });
-  return ok;
+  try {
+    window.postMessage({ action: MSG.sub }, "*");
+  } catch {}
+  return true;
 }
 
 function _isBookingReadyToSubmit() {
@@ -2322,16 +2436,13 @@ export function waitForSubmitEnabled(maxMs) {
   return new Promise((resolve) => {
     let done = false;
     let pollId = null;
-    let nudgeId = null;
     let obs = null;
-    let lastNudgeAt = 0;
 
     const finish = (ok) => {
       if (done) return;
       done = true;
       try { obs?.disconnect(); } catch {}
       if (pollId) vs.clear(pollId);
-      if (nudgeId) vs.clear(nudgeId);
       resolve(!!ok);
     };
 
@@ -2341,18 +2452,6 @@ export function waitForSubmitEnabled(maxMs) {
       if (Date.now() >= deadline) {
         return finish(isTimeSlotPicked() && isSubmitButtonEnabled());
       }
-    };
-
-    // Radio can look selected while portal never ran its click handler → Submit stays hidden.
-    // Re-nudge every ~400ms so portal enables #submitbtn.
-    const nudge = () => {
-      if (done || !vs.alive) return;
-      if (isSubmitButtonEnabled()) return;
-      if (!isTimeSlotPicked()) return;
-      const now = Date.now();
-      if (now - lastNudgeAt < 350) return;
-      lastNudgeAt = now;
-      try { nudgeSelectedTimeSlot(); } catch {}
     };
 
     try {
@@ -2382,8 +2481,6 @@ export function waitForSubmitEnabled(maxMs) {
     }
 
     pollId = vs.setInterval(check, AI_BOOK_POLL_MS);
-    nudgeId = vs.setInterval(nudge, 400);
-    nudge();
     check();
   });
 }
@@ -2420,12 +2517,21 @@ export async function armAiFastSubmit(accountId) {
       return;
     }
     _submitArmed = false;
-    if (submitted) {
-      await noteSubmitClicked(accountId);
-      return;
+    // Submitted: content.js MSG.sub handler already runs noteSubmitClicked.
+    if (submitted) return;
+    hopCityAfterSubmitDisabled(_currentPostId());
+  };
+
+  const release = () => {
+    if (done) return;
+    done = true;
+    window.removeEventListener("message", onSubmitMsg);
+    if (_submitTimer) {
+      vs.clear(_submitTimer);
+      _submitTimer = null;
     }
-    // Slots shown but Submit never appeared — skip this city from hot rotate, then hop.
-    markCityNoSubmit(_currentPostId());
+    _submitArmed = false;
+    if (!_submitPending) resumeCityRotateAfterBooking();
   };
 
   const onSubmitMsg = (event) => {
@@ -2440,15 +2546,18 @@ export async function armAiFastSubmit(accountId) {
 
     const elapsed = Date.now() - started;
 
-    // Click the instant Submit enables (no artificial post-slot delay).
+    if (submitAlreadyClickedHere()) return release();
+
+    // Click the instant the portal enables Submit (no artificial post-slot delay).
     if (_isBookingReadyToSubmit()) {
       clicked = true;
-      updateAiStatus("Submit enabled — clicking…");
-      clickSubmitDual();
+      updateAiStatus("Submit enabled — clicking once…");
+      if (!clickSubmitDual()) release();
       return;
     }
 
-    if (elapsed >= AI_SUBMIT_ARM_MS) {
+    // Still disabled after the portal had a moment to react → hand off (city change in 15–20s).
+    if (elapsed >= AI_MULTI_SLOT_SUBMIT_WAIT_MS) {
       return finish(false);
     }
 
@@ -2457,7 +2566,7 @@ export async function armAiFastSubmit(accountId) {
   };
 
   // Observer wakes us as soon as disabled flips; poll is backup.
-  waitForSubmitEnabled(AI_SUBMIT_ARM_MS).then((enabled) => {
+  waitForSubmitEnabled(AI_MULTI_SLOT_SUBMIT_WAIT_MS).then((enabled) => {
     if (done || !_submitArmed || !vs.alive || clicked) return;
     if (enabled) tryFinish();
   });
@@ -2468,6 +2577,8 @@ export async function armAiFastSubmit(accountId) {
 /** Call after watcher or manual slot pick when Auto Submit is ON. */
 export async function triggerAutoSubmitIfArmed() {
   if (!isTimeSlotPicked() || _submitArmed || _opsFrozen) return;
+  // Auto time-pick owns the single Submit click while it runs; never re-submit a pending one.
+  if (_autoTimePickBusy || _submitPending || submitAlreadyClickedHere()) return;
   const ai = await getArmedAiConfig();
   if (!ai) return;
   await armAiFastSubmit(ai.accountId);
@@ -2497,19 +2608,18 @@ export async function scheduleAiSubmitClick(accountId) {
         _submitArmed = false;
         return;
       }
-      updateAiStatus("Submit enabled — clicking…");
+      updateAiStatus("Submit enabled — clicking once…");
+      // A successful click posts MSG.sub → content.js runs noteSubmitClicked.
       const ok = clickSubmitDual();
-      if (ok) {
-        await noteSubmitClicked(accountId);
-      }
       _submitArmed = false;
+      if (!ok && !_submitPending) resumeCityRotateAfterBooking();
       return;
     }
 
-    if (elapsed >= AI_SUBMIT_ARM_MS) {
+    if (elapsed >= AI_MULTI_SLOT_SUBMIT_WAIT_MS) {
       _submitTimer = null;
       _submitArmed = false;
-      markCityNoSubmit(_currentPostId());
+      hopCityAfterSubmitDisabled(_currentPostId());
       return;
     }
 
@@ -2525,6 +2635,7 @@ export async function scheduleAiSubmitClick(accountId) {
 }
 
 function updateAiStatus(text) {
+  if (text) logEvent("status", text);
   const el = document.querySelector(idSel(ID.aiStatus));
   if (!el) return;
   if (!text) {

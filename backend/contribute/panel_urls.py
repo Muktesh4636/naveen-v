@@ -11,4 +11,5 @@ urlpatterns = [
     path("users/", panel_views.panel_users, name="panel_users"),
     path("accounts/", panel_views.panel_accounts, name="panel_accounts"),
     path("plans/", panel_views.panel_plans, name="panel_plans"),
+    path("logs/", panel_views.panel_logs, name="panel_logs"),
 ]

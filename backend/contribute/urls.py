@@ -11,4 +11,5 @@ urlpatterns = [
     path("contribute/tik-tik-coord", views.tik_tik_coord, name="tik_tik_coord"),
     path("contribute/tik-tik-auth", tik_tik_auth, name="tik_tik_auth"),
     path("contribute/community-slots", community_slots, name="community_slots"),
+    path("contribute/logs", views.extension_logs, name="extension_logs"),
 ]

@@ -19,7 +19,7 @@ from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
-from .models import Applicant, Contribution, HumanClickSample, TikTikLogin
+from .models import Applicant, Contribution, ExtensionLog, HumanClickSample, TikTikLogin
 from .plan_catalog import (
     PLAN_ORDER,
     load_plan_catalog,
@@ -578,6 +578,85 @@ def _ist_str(dt):
     if not dt:
         return "—"
     return timezone.localtime(dt).strftime("%Y-%m-%d %H:%M:%S IST")
+
+
+_LOG_KINDS = [
+    "status", "dates", "date_pick", "times", "time_pick", "submit", "submit_result",
+    "error", "city_hop", "hot_alert", "login", "verify", "session", "telegram", "event",
+]
+
+
+@staff_member_required(login_url="/panel/login/")
+def panel_logs(request):
+    q_user = (request.GET.get("user") or "").strip()
+    q_kind = (request.GET.get("kind") or "").strip()
+    q_city = (request.GET.get("city") or "").strip()
+    q_text = (request.GET.get("q") or "").strip()
+    only_errors = request.GET.get("errors") == "1"
+    minutes = _clamp_int(request.GET.get("minutes"), 1, 60 * 24 * 14, 60)
+    limit = _clamp_int(request.GET.get("limit"), 50, 3000, 500)
+
+    since = timezone.now() - timedelta(minutes=minutes)
+    qs = ExtensionLog.objects.filter(created_at__gte=since)
+    if q_user:
+        qs = qs.filter(
+            Q(user_label__icontains=q_user)
+            | Q(applicant_key__icontains=q_user)
+            | Q(applicant__name__icontains=q_user)
+            | Q(applicant__email__icontains=q_user)
+        )
+    if q_kind:
+        qs = qs.filter(kind=q_kind)
+    if q_city:
+        qs = qs.filter(city__icontains=q_city)
+    if q_text:
+        qs = qs.filter(message__icontains=q_text)
+    if only_errors:
+        qs = qs.filter(Q(level__in=["error", "warn"]) | Q(kind__in=["error", "submit_result"]))
+
+    rows = []
+    for r in qs.order_by("-id")[:limit]:
+        at = r.client_at or r.created_at
+        rows.append(
+            {
+                "when": timezone.localtime(at).strftime("%H:%M:%S.") + f"{at.microsecond // 1000:03d}",
+                "day": timezone.localtime(at).strftime("%d %b"),
+                "user": r.user_label or r.applicant_key or "—",
+                "key": r.applicant_key,
+                "kind": r.kind,
+                "level": r.level,
+                "city": r.city,
+                "message": r.message,
+                "data": json.dumps(r.data, ensure_ascii=False) if r.data else "",
+                "version": r.version,
+            }
+        )
+
+    users = (
+        ExtensionLog.objects.filter(created_at__gte=timezone.now() - timedelta(days=2))
+        .exclude(user_label="")
+        .values_list("user_label", flat=True)
+        .distinct()
+        .order_by("user_label")[:200]
+    )
+    return render(
+        request,
+        "panel/logs.html",
+        {
+            "rows": rows,
+            "users": users,
+            "kinds": _LOG_KINDS,
+            "q_user": q_user,
+            "q_kind": q_kind,
+            "q_city": q_city,
+            "q_text": q_text,
+            "only_errors": only_errors,
+            "minutes": minutes,
+            "limit": limit,
+            "auto": request.GET.get("auto") == "1",
+            "section": "logs",
+        },
+    )
 
 
 def _plan_label(plan: str) -> str:

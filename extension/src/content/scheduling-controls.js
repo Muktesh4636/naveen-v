@@ -53,7 +53,8 @@ export function pillMarkup(parts, variant) {
 }
 
 export function pillView(state, now = Date.now()) {
-  if (state.kind === "waiting") {
+  // Idle still shows the red IST clock — it must always be visible on the page.
+  if (state.kind === "waiting" || state.kind === "idle") {
     return { variant: WAITING };
   }
   if (state.kind === "running") {
@@ -157,7 +158,7 @@ export var WaitPill = class {
   #syncClockTimer() {
     // IST seconds need a 1s tick while "waiting" (no countdown timer yet).
     // During "running", #timer already repaints every second.
-    const needed = this.#state.kind === "waiting";
+    const needed = this.#state.kind !== "running";
     if (needed && !this.#clockTimer) {
       this.#clockTimer = vs.setInterval(() => this.#paint(), 1e3);
     } else if (!needed && this.#clockTimer) {
@@ -370,11 +371,11 @@ function _watchDatepicker(slot) {
 
 export async function reserveWaitSlot() {
   if (!vs.alive) return;
-  if (!await getSetting("defaultWaitTime")) return;
   if (!await vs.waitFor("#post_select", { attempts: SCHEDULE_UI_WAIT_ATTEMPTS })) return;
   const { waitPillClock } = await chrome.storage.local.get({ waitPillClock: false });
+  // Paints the IST clock immediately; the wait countdown stays gated on defaultWaitTime.
   waitPill.setClockMode(waitPillClock);
-  await waitPill.restore();
+  if (await getSetting("defaultWaitTime")) await waitPill.restore();
 }
 
 export async function showWaiting() {

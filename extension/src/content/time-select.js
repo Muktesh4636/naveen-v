@@ -227,6 +227,30 @@ function tryPickOnce(slotIndex, timeStr) {
   return false;
 }
 
+var CHECKED_TIME_SEL =
+  '#schedule-entries input[type="radio"]:checked, #schedule-entries input[type="checkbox"]:checked, #page_form table input[type="radio"]:checked, #page_form table input[type="checkbox"]:checked, table tbody input[type="radio"]:checked';
+
+/** Identity of the currently selected time (for the one-click-per-date/time lock). */
+export function selectedTimeSlotKey() {
+  for (const el of document.querySelectorAll(CHECKED_TIME_SEL)) {
+    if (isExcluded(el)) continue;
+    const row = el.closest("tr");
+    return `${el.value || ""}|${(row?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60)}`;
+  }
+  for (const sel of document.querySelectorAll('#time_select, select[name*="time" i]')) {
+    if (sel.value && sel.value !== "0") return `sel|${sel.value}`;
+  }
+  return "";
+}
+
+/** Untick the selected time so an old time can't be submitted with a new date. */
+export function clearSelectedTimeSlot() {
+  for (const el of document.querySelectorAll(CHECKED_TIME_SEL)) {
+    if (isExcluded(el)) continue;
+    try { el.checked = false; } catch {}
+  }
+}
+
 export function isTimeSlotPicked() {
   for (const sel of document.querySelectorAll(
     '#schedule-entries input[type="radio"]:checked, #schedule-entries input[type="checkbox"]:checked, #page_form table input[type="radio"]:checked, #page_form table input[type="checkbox"]:checked, table tbody input[type="radio"]:checked'

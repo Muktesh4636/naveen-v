@@ -23,6 +23,7 @@ import {
   noteSubmitFailed,
 } from "./content/ai-submit.js";
 import { getSetting } from "./shared/config.js";
+import { logEvent, logError } from "./shared/eventlog.js";
 import { ensureRemoteConfig } from "./shared/remoteConfig.js";
 import { startTimeSlotWatcher } from "./content/time-select.js";
 import { handleNativeAlert, startHomeRecoveryLoop, startHomeSessionKeepalive, startOfcHomeKeepalive, startLoadingStuckHomeReload, maybeRefreshAfterResubmitContinue } from "./content/session-recovery.js";
@@ -83,6 +84,7 @@ vs.on(window, "message", (event) => {
     case MSG.res: return handleEvent(event);
     case MSG.ofc: return handleOfcMessage(event);
     case MSG.err:
+      logError("error", `Portal pop-up: ${String(event.data?.text || "").slice(0, 500)}`);
       recordSubmitError("native_alert", event.data?.text);
       noteSubmitFailed(String(event.data?.text || "alert").slice(0, 120));
       return handleNativeAlert(event.data?.text);
@@ -127,6 +129,10 @@ vs.on(document, "visibilitychange", () => {
 });
 
 maybeStartConsularOfcBookedAlarm();
+
+logEvent("session", `Page loaded: ${location.pathname}${location.search ? location.search.slice(0, 80) : ""}`, {
+  title: document.title.slice(0, 120),
+});
 
 maybeRefreshAfterResubmitContinue();
 startHomeRecoveryLoop();

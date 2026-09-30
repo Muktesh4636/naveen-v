@@ -1,0 +1,53 @@
+{% extends "panel/base.html" %}
+{% block title %}Extension logs · VisaBook Ops{% endblock %}
+{% block content %}
+<h1>Extension logs</h1>
+<p class="sub">Every event from every extension: status, dates, date/time picks, Submit, errors, city hops, hot-city alerts, login. Times are IST, from the user's laptop. Kept 14 days.</p>
+
+<form class="filters" method="get">
+  <label>User
+    <input name="user" value="{{ q_user }}" list="userlist" placeholder="name / email / applicant id" />
+    <datalist id="userlist">{% for u in users %}<option value="{{ u }}"></option>{% endfor %}</datalist>
+  </label>
+  <label>Type
+    <select name="kind">
+      <option value="">All</option>
+      {% for k in kinds %}<option value="{{ k }}" {% if k == q_kind %}selected{% endif %}>{{ k }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>City <input name="city" value="{{ q_city }}" placeholder="e.g. Hyderabad" /></label>
+  <label>Text <input name="q" value="{{ q_text }}" placeholder="search message" /></label>
+  <label>Last minutes <input name="minutes" type="number" min="1" max="20160" value="{{ minutes }}" style="width:7rem" /></label>
+  <label>Max rows <input name="limit" type="number" min="50" max="3000" value="{{ limit }}" style="width:6rem" /></label>
+  <label style="align-content:end"><span><input type="checkbox" name="errors" value="1" {% if only_errors %}checked{% endif %} /> Errors only</span></label>
+  <label style="align-content:end"><span><input type="checkbox" name="auto" value="1" {% if auto %}checked{% endif %} /> Auto-refresh 5s</span></label>
+  <button type="submit">Filter</button>
+  <a class="btn secondary" href="{% url 'panel_logs' %}" style="padding:0.5rem 0.65rem;display:inline-block">Reset</a>
+</form>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>Time (IST)</th><th>User</th><th>Type</th><th>City</th><th>Message</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="mono" style="white-space:nowrap">{{ r.when }}<div class="muted">{{ r.day }}</div></td>
+        <td>{{ r.user }}<div class="muted mono">{{ r.key }}{% if r.version %} · v{{ r.version }}{% endif %}</div></td>
+        <td>
+          {% if r.level == "error" or r.kind == "error" %}<span class="badge err">{{ r.kind }}</span>
+          {% elif r.kind == "submit" or r.kind == "date_pick" or r.kind == "time_pick" or r.kind == "dates" %}<span class="badge ok">{{ r.kind }}</span>
+          {% else %}<span class="badge empty">{{ r.kind }}</span>{% endif %}
+        </td>
+        <td>{{ r.city }}</td>
+        <td>{{ r.message }}{% if r.data %}<div class="muted mono" style="word-break:break-all">{{ r.data }}</div>{% endif %}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="5" class="muted">No logs for this filter.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% if auto %}<script>setTimeout(function () { location.reload(); }, 5000);</script>{% endif %}
+{% endblock %}

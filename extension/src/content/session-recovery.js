@@ -19,6 +19,15 @@ import { getSetting } from "../shared/config.js";
 import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
 import { cfg as rtCfg } from "../shared/remoteConfig.js";
+import { logEvent } from "../shared/eventlog.js";
+
+var _lastLoginNote = "";
+/** Login loop ticks every 1.2s — only log when the reason changes. */
+function _loginNote(kind, msg, level = "info") {
+  if (msg === _lastLoginNote) return;
+  _lastLoginNote = msg;
+  logEvent(kind, msg, {}, level);
+}
 
 var RECOVERY_KEY = "sessionRecovery";
 var KEEPALIVE_AT_KEY = "homeKeepaliveAt";
@@ -224,10 +233,15 @@ async function _fillLogin(cfg) {
         .find((b) => /sign in|log in|continue/i.test((b.textContent || b.value || "")));
     if (btn && (pass?.value || cfg.loginPass)) {
       // Sign in is rejected while "Verify you are human" is unticked — wait for the user.
-      if (isCloudflareChallenge() && !isCloudflareSolved()) return true;
+      if (isCloudflareChallenge() && !isCloudflareSolved()) {
+        _loginNote("verify", "Login filled — waiting for 'Verify you are human' tick", "warn");
+        return true;
+      }
       if (Date.now() - _loginClickedAt < 15_000) return true;
       await _sleep(_rand(600, 1400));
       _loginClickedAt = Date.now();
+      _lastLoginNote = "";
+      logEvent("login", `Clicked Sign in for ${cfg.loginId || "?"}`);
       _click(btn);
       return true;
     }
@@ -262,10 +276,14 @@ async function _fillSecurity(cfg) {
   for (const { text, input } of pairs) {
     if (input.value) continue;
     const ans = _matchAnswer(text, cfg.security);
-    if (!ans) continue;
+    if (!ans) {
+      _loginNote("login", `No saved answer matches security question: "${text.replace(/\s+/g, " ").trim().slice(0, 140)}"`, "error");
+      continue;
+    }
     todo.push({ input, ans });
   }
   if (!todo.length) return false;
+  logEvent("login", `Typing ${todo.length} security answer(s)`);
 
   _securityTyping = true;
   try {
@@ -277,7 +295,12 @@ async function _fillSecurity(cfg) {
     const cont = document.querySelector("button#continue, #continue")
       || [...document.querySelectorAll("button, input[type='submit']")]
         .find((b) => /continue|submit|verify/i.test((b.textContent || b.value || "")));
-    if (cont) _click(cont);
+    if (cont) {
+      logEvent("login", "Clicked Continue on security questions");
+      _click(cont);
+    } else {
+      logEvent("login", "Security answers typed but no Continue button found", {}, "warn");
+    }
     return true;
   } finally {
     _securityTyping = false;
@@ -345,7 +368,9 @@ async function _runHomeRecovery() {
 
   // Logged-in dashboard: finish PSE0501 recovery, otherwise nothing to do.
   if (_homeLooksLoggedIn()) {
+    _loginNote("login", "Logged in — on Application Home");
     if (recoveryActive) {
+      logEvent("session", "PSE0501 recovery done — returning to schedule page");
       await storageSet({
         [RECOVERY_KEY]: { ...rec, active: false, doneAt: Date.now() },
       });
@@ -356,8 +381,15 @@ async function _runHomeRecovery() {
 
   // Logged out / login or security page — auto-login if details were saved.
   if (!_looksLoggedOut()) return;
-  if (!_hasLoginCreds(cfg)) return;
-  if (!(await getSetting("autofillLogin"))) return;
+  if (!_hasLoginCreds(cfg)) {
+    _loginNote("login", "Logged out — no saved login ID/password in extension, cannot auto-login", "error");
+    return;
+  }
+  if (!(await getSetting("autofillLogin"))) {
+    _loginNote("login", "Logged out — auto-login setting is OFF", "warn");
+    return;
+  }
+  _loginNote("login", `Logged out — auto-login running for ${cfg.loginId}`);
 
   if (await _fillSecurity(cfg)) return;
   if (_isLoginPage() || document.querySelector("#signInName, #signInNameReadOnly, input[type='password']")) {
@@ -439,6 +471,7 @@ export function startHomeSessionKeepalive() {
         return;
       }
       try {
+        logEvent("session", "Home keepalive — refreshing Application Home");
         softRefreshHome();
       } catch {
         arm();
@@ -463,6 +496,7 @@ export function startOfcHomeKeepalive() {
       if (!vs.alive || !_isOfcOrSchedule()) return;
       // Only ask SW to refresh Home — never reload this OFC tab.
       if (await _claimKeepaliveSlot()) {
+        logEvent("session", "Keepalive — asked background to refresh Application Home tab");
         try {
           vs.send({
             action: "homeKeepalive",
@@ -548,6 +582,7 @@ export async function handleNativeAlert(text) {
   }
   if (_recoveryBusy) return;
   _recoveryBusy = true;
+  logEvent("session", "PSE0501 — starting session recovery (re-login then back to schedule)", {}, "warn");
   vs.setTimeout(() => { _recoveryBusy = false; }, 8000);
 
   const accountId = await getAccountId();

@@ -1,6 +1,7 @@
 import { getProfile } from "../shared/config.js";
 import { storageGet, storageSet } from "../shared/runtime.js";
 import { vs } from "../shared/lifecycle.js";
+import { logError } from "../shared/eventlog.js";
 import { notifyTelegramScreenshot } from "./telegram-notify.js";
 
 export var SUBMIT_ERRORS_KEY = "submitErrors";
@@ -25,10 +26,45 @@ function _pageContext() {
   return { city, date, url: location.href };
 }
 
+// Error messages already on the page when Submit was clicked — not a result of this click.
+var _stale = new Map();
+var _freshObs = null;
+
 export function armSubmitErrorWatch() {
   _watchUntil = Date.now() + SUBMIT_ERROR_WATCH_MS;
   _seen.clear();
+  _snapshotStaleErrors();
   startSubmitErrorDomWatch();
+}
+
+function _snapshotStaleErrors() {
+  _stale = new Map();
+  for (const sel of DOM_ERROR_SELECTORS) {
+    for (const el of document.querySelectorAll(sel)) {
+      const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+      if (text) _stale.set(el, text);
+    }
+  }
+  if (_freshObs || !document.body) return;
+  try {
+    // Portal re-writing an error box (even with identical text) makes it a fresh result.
+    _freshObs = new MutationObserver((muts) => {
+      if (!_stale.size) return;
+      for (const m of muts) {
+        const node = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+        for (const el of _stale.keys()) {
+          if (el === node || el.contains(node) || node?.contains?.(el)) _stale.delete(el);
+        }
+      }
+    });
+    _freshObs.observe(document.body, { childList: true, characterData: true, subtree: true });
+  } catch {
+    _freshObs = null;
+  }
+}
+
+function _isStale(el, text) {
+  return _stale.get(el) === text;
 }
 
 export function isSubmitErrorWatchActive() {
@@ -89,6 +125,9 @@ export async function recordSubmitError(source, message, meta = {}) {
   _seen.add(key);
 
   const ctx = _pageContext();
+  logError("submit_result", `After Submit (${source}): ${text.slice(0, 500)}`, {
+    route: meta.route || "", status: meta.status != null ? String(meta.status) : "", date: ctx.date,
+  });
   const profile = await getProfile();
   const entry = {
     at: Date.now(),
@@ -161,6 +200,7 @@ export function startSubmitErrorDomWatch() {
       for (const el of document.querySelectorAll(sel)) {
         const text = (el.textContent || "").replace(/\s+/g, " ").trim();
         if (!text || text.length < 4) continue;
+        if (_isStale(el, text)) continue;
         recordSubmitError("page_validation", text);
       }
     }

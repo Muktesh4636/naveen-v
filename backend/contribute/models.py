@@ -244,3 +244,36 @@ class TikTikLogin(models.Model):
 
     def __str__(self):
         return self.email
+
+
+class ExtensionLog(models.Model):
+    """Every extension event (status, dates, picks, submit, errors, city hops, login), per applicant."""
+
+    applicant = models.ForeignKey(
+        Applicant,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="extension_logs",
+    )
+    applicant_key = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    user_label = models.CharField(max_length=255, blank=True, default="")
+    version = models.CharField(max_length=16, blank=True, default="")
+    level = models.CharField(max_length=8, blank=True, default="info")
+    kind = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    city = models.CharField(max_length=255, blank=True, default="")
+    message = models.TextField(blank=True, default="")
+    data = models.JSONField(default=dict, blank=True)
+    page = models.CharField(max_length=32, blank=True, default="")
+    client_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-id"]
+        indexes = [
+            models.Index(fields=["applicant_key", "-id"], name="contribute__applica_3b1f0e_idx"),
+            models.Index(fields=["kind", "-id"], name="contribute__kind_7c2d41_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.applicant_key} {self.kind}: {self.message[:60]}"

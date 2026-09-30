@@ -190,6 +190,7 @@ function selectFirstDate(dateStr, maxMs, pollMs, navigateOnly) {
   const formatted =
     String(month).padStart(2, "0") + "/" + String(day).padStart(2, "0") + "/" + year;
   const monthOnly = !!navigateOnly;
+  let firedOnSelect = false;
 
   /** Navigate calendar month without booking (no onSelect / no time load). */
   const navigateMonthOnly = ($) => {
@@ -267,6 +268,7 @@ function selectFirstDate(dateStr, maxMs, pollMs, navigateOnly) {
             const dateFormat = settings.dateFormat || "mm/dd/yy";
             const dateText = $.datepicker.formatDate(dateFormat, target, settings);
             onSelect.call(el, dateText, inst);
+            firedOnSelect = true;
           }
         }
       } catch (e) {}
@@ -372,18 +374,28 @@ function selectFirstDate(dateStr, maxMs, pollMs, navigateOnly) {
     return clicked;
   };
 
+  const calendarReady = ($) => {
+    const picker = $("#datepicker");
+    if (!picker.length) return false;
+    if (!picker.hasClass("hasDatepicker")) {
+      try { picker.datepicker(); } catch (e) {}
+    }
+    return picker.hasClass("hasDatepicker");
+  };
+
+  // Poll only until the calendar exists; then set the date exactly once — never re-click it.
   const trySelect = () => {
     const $ = window.jQuery || window.$;
-    if (!$) {
+    if (!$ || !calendarReady($)) {
       if (Date.now() < deadline) setTimeout(trySelect, tickMs);
       return;
     }
     try {
       if (setDateDirect($)) return;
+      if (firedOnSelect) return;
       // Never click a day cell for navigate-only — that would book/load times.
-      if (!monthOnly && clickDateInWidget($)) return;
+      if (!monthOnly) clickDateInWidget($);
     } catch (e) {}
-    if (Date.now() < deadline) setTimeout(trySelect, tickMs);
   };
 
   trySelect();
@@ -859,17 +871,12 @@ function _fireSubmitOn(btn, form, prefix) {
   return fired;
 }
 
-/**
- * Click portal Submit. If a time slot is already picked but the button is
- * hidden/disabled (UI glitch), force-enable it and submit the form in-page.
- * Never hits our backend — only the visa portal form in this tab.
- */
+/** Click portal Submit only when the portal itself has it enabled — never force it. */
 function clickSubmitButton(prefix) {
   if (/\/(interview|confirmation|appointment-confirmation)/i.test(location.pathname)) {
     return false;
   }
 
-  const timePicked = _timeSlotPickedForSubmit();
   const candidates = [
     document.querySelector("#submitbtn"),
     document.querySelector('button#submitbtn'),
@@ -885,24 +892,10 @@ function clickSubmitButton(prefix) {
     const label = (btn.value || btn.textContent || "").toLowerCase();
     if (btn.id !== "submitbtn" && !/\bsubmit\b/.test(label)) continue;
 
-    // Normal path: already enabled.
-    if (!btn.disabled && btn.getAttribute("aria-disabled") !== "true") {
+    if (!btn.disabled && btn.getAttribute("aria-disabled") !== "true" && btn.offsetParent) {
       const form = btn.form || btn.closest?.("form") || document.querySelector("#page_form");
       if (_fireSubmitOn(btn, form, prefix)) return true;
     }
-
-    // Force path: time selected but portal left Submit disabled/hidden.
-    if (timePicked) {
-      _revealSubmitButton(btn);
-      const form = btn.form || btn.closest?.("form") || document.querySelector("#page_form");
-      if (_fireSubmitOn(btn, form, prefix)) return true;
-    }
-  }
-
-  // No button (or still stuck): submit #page_form if time is selected.
-  if (timePicked) {
-    const form = document.querySelector("#page_form") || document.querySelector("form");
-    if (form && _fireSubmitOn(null, form, prefix)) return true;
   }
   return false;
 }

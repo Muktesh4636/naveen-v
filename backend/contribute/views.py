@@ -5,6 +5,7 @@ import re
 import threading
 from datetime import datetime, timedelta, timezone as dt_timezone
 
+from django.core.cache import cache
 from django.db import transaction
 from django.http import JsonResponse
 from django.utils import timezone
@@ -16,10 +17,11 @@ from .models import (
     ApplicantTikTikPrefs,
     Contribution,
     DashboardSnapshot,
+    ExtensionLog,
     HumanClickSample,
     TikTikCityAlert,
 )
-from .telegram import notify_available_slots, relay_extension_alert
+from .telegram import relay_extension_alert
 from .tik_tik_auth import link_applicant_to_tik_tik
 
 logger = logging.getLogger(__name__)
@@ -218,14 +220,7 @@ def contribute(request):
             raw=post,
         )
         created += 1
-        # Alert Telegram groups only when real dates are present.
-        try:
-            visa = (applicant.visa_class if applicant else "") or str(
-                (profile or {}).get("visa") or ""
-            )
-            notify_available_slots(post, visa_class=visa)
-        except Exception:
-            logger.exception("Telegram notify failed")
+        # No Telegram on dates — dates often vanish; alerts go out only on Submit click.
 
     _link_tik_tik_from_body(body, applicant)
     contribs = _count_contributions_24h(applicant)
@@ -591,8 +586,10 @@ def _alert_matches_local(alert, local_from: str, local_to: str) -> bool:
 
 # Slot alerts stay fresh this long for other extensions to pick up.
 _CITY_ALERT_TTL = timedelta(seconds=120)
-# Collapse duplicate alerts for the same city within this window.
-_CITY_ALERT_DEDUP = timedelta(seconds=1)
+# One hot alert per city per minute — repeat Submit retries must not re-yank everyone.
+_CITY_ALERT_DEDUP = timedelta(seconds=60)
+# After a city is cooled (Submit disabled there), ignore new alerts for it this long.
+_CITY_COOL_SECONDS = 180
 
 
 @csrf_exempt
@@ -640,6 +637,11 @@ def tik_tik_coord(request):
         date_from = _clean_iso_date(body.get("dateFrom") or body.get("rangeFrom"))
         date_to = _clean_iso_date(body.get("dateTo") or body.get("rangeTo"))
         best_date = _clean_iso_date(body.get("bestDate")) or date_from
+        # Alerts without a picked date come from blind Submit retries — ignore.
+        if not best_date:
+            return JsonResponse({"success": True, "ignored": "no date"})
+        if cache.get(f"tt:cool:{city_id}"):
+            return JsonResponse({"success": True, "ignored": "cooled"})
 
         since = timezone.now() - _CITY_ALERT_DEDUP
         recent = (
@@ -664,13 +666,10 @@ def tik_tik_coord(request):
             if best_date and (not recent.best_date or best_date < recent.best_date):
                 recent.best_date = best_date
                 changed = True
-            if applicant:
-                recent.source_applicant = applicant
-                changed = True
-            # Refresh freshness so late pollers still get pulled in.
-            recent.created_at = timezone.now()
-            fields = ["created_at", "day_count", "city_name", "source_applicant", "date_from", "date_to", "best_date"]
-            recent.save(update_fields=fields)
+            if changed:
+                # Do not refresh created_at — a repeating reporter must not keep the alert alive.
+                fields = ["day_count", "city_name", "date_from", "date_to", "best_date"]
+                recent.save(update_fields=fields)
             return JsonResponse(
                 {
                     "success": True,
@@ -767,10 +766,9 @@ def tik_tik_coord(request):
         if already:
             return JsonResponse({"success": True, "forceCity": force_payload})
 
+        # Client already acted on this alert — never re-send it (caused repeat city reloads).
         if last_alert_id >= alert.id:
-            age = timezone.now() - alert.created_at
-            if age > timedelta(seconds=90):
-                return JsonResponse({"success": True, "forceCity": None})
+            return JsonResponse({"success": True, "forceCity": None})
 
         return JsonResponse({"success": True, "forceCity": force_payload})
 
@@ -784,7 +782,87 @@ def tik_tik_coord(request):
         deleted, _ = TikTikCityAlert.objects.filter(
             city_id=city_id, created_at__gte=since
         ).delete()
+        cache.set(f"tt:cool:{city_id}", 1, timeout=_CITY_COOL_SECONDS)
         logger.info("Tik Tik city cool %s deleted=%s", city_id, deleted)
         return JsonResponse({"success": True, "deleted": int(deleted or 0), "cityId": city_id})
 
     return JsonResponse({"success": False, "error": "action must be alert, cool, or poll"}, status=400)
+
+
+_LOG_MAX_BATCH = 200
+_LOG_RETENTION = timedelta(days=14)
+
+
+def _find_applicant(profile: dict) -> Applicant | None:
+    """Lookup only — log ingest must never create or rewrite applicants."""
+    aid = _normalize_applicant_id(profile.get("id") or profile.get("applicantId") or "")
+    if aid:
+        row = Applicant.objects.filter(applicant_id=aid).order_by("-id").first()
+        if row:
+            return row
+    email = str(profile.get("email") or "").strip().lower()
+    if email:
+        return Applicant.objects.filter(email__iexact=email).order_by("-id").first()
+    return None
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def extension_logs(request):
+    """
+    Batch of extension events. POST { profile, version, events: [
+      { t: epoch_ms, kind, level, msg, city, page, data } ] }
+    """
+    if request.method == "OPTIONS":
+        return JsonResponse({}, status=204)
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({"success": False, "error": "invalid json"}, status=400)
+    if not isinstance(body, dict) or not isinstance(body.get("events"), list):
+        return JsonResponse({"success": False, "error": "events required"}, status=400)
+
+    profile = body.get("profile") if isinstance(body.get("profile"), dict) else {}
+    applicant = _find_applicant(profile)
+    key = (
+        _normalize_applicant_id(profile.get("id") or "")
+        or str(profile.get("email") or "").strip().lower()[:64]
+    )
+    label = str(profile.get("name") or profile.get("email") or key)[:255]
+    version = str(body.get("version") or "")[:16]
+
+    rows = []
+    for ev in body["events"][:_LOG_MAX_BATCH]:
+        if not isinstance(ev, dict):
+            continue
+        client_at = None
+        try:
+            ms = int(ev.get("t") or 0)
+            if ms > 0:
+                client_at = datetime.fromtimestamp(ms / 1000, tz=dt_timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError):
+            client_at = None
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        rows.append(
+            ExtensionLog(
+                applicant=applicant,
+                applicant_key=key,
+                user_label=label,
+                version=version,
+                level=str(ev.get("level") or "info")[:8],
+                kind=str(ev.get("kind") or "event")[:32],
+                city=str(ev.get("city") or "")[:255],
+                message=str(ev.get("msg") or "")[:4000],
+                data=data,
+                page=str(ev.get("page") or "")[:32],
+                client_at=client_at,
+            )
+        )
+    if rows:
+        ExtensionLog.objects.bulk_create(rows)
+
+    if not cache.get("extlog:pruned"):
+        cache.set("extlog:pruned", 1, timeout=3600)
+        ExtensionLog.objects.filter(created_at__lt=timezone.now() - _LOG_RETENTION).delete()
+
+    return JsonResponse({"success": True, "saved": len(rows)})

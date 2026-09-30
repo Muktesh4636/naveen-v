@@ -1,5 +1,6 @@
 import { getProfile, getSetting, TELEGRAM_RELAY_URL } from "../shared/config.js";
 import { vs } from "../shared/lifecycle.js";
+import { logEvent } from "../shared/eventlog.js";
 
 var _dedup = new Map();
 var DEDUP_MS = 45_000;
@@ -64,6 +65,7 @@ async function _relayText(text, { kind = "alert", dedupKey = "", skipDedup = fal
 
   // Fire-and-forget: booking must never wait on Telegram. keepalive survives the post-Submit navigation.
   try {
+    logEvent("telegram", `Telegram message sent: ${String(text).replace(/<[^>]+>/g, "").replace(/\s+/g, " ").slice(0, 200)}`);
     fetch(TELEGRAM_RELAY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

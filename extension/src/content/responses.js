@@ -16,10 +16,15 @@ import {
   isOpsFrozen,
   noteCityRotateResponse,
   pauseCityRotateForWait,
-  armAiFastSubmit,
   setTikTikStatus,
   triggerAutoSubmitIfArmed,
   clickSubmitDual,
+  submitAlreadyClickedHere,
+  resetSubmitClickLock,
+  setAutoTimePickBusy,
+  hopCityAfterSubmitDisabled,
+  sendDateClickOnce,
+  dateClickInProgress,
   isSubmitButtonEnabled,
   waitForSubmitEnabled,
   thawOps,
@@ -38,11 +43,11 @@ import {
   AI_TIME_DOM_WAIT_MS,
   AI_BOOK_POLL_MS,
   AI_BOOK_SLOT_INDEX,
-  AI_SUBMIT_ARM_MS,
   AI_MULTI_SLOT_SUBMIT_WAIT_MS,
 } from "./ai-submit.js";
 import { getPosts, getProfile, getSetting, setPosts } from "../shared/config.js";
 import { storageSet, extensionAlive } from "../shared/runtime.js";
+import { logEvent, logError } from "../shared/eventlog.js";
 import { vs } from "../shared/lifecycle.js";
 import { T } from "../shared/token.js";
 
@@ -226,7 +231,8 @@ var _datePickWatchdog = null;
 /** Date whose time slots already loaded — never re-click it (each click reloads times). */
 var _entriesLoadedFor = "";
 var DATE_RECLICK_GAP_MS = 900;
-var DATE_RECLICK_MAX = 2;
+// Date is clicked once only — never re-sent (no-times watchdog moves on if it didn't load).
+var DATE_RECLICK_MAX = 0;
 
 function scheduleDatePickWatchdog(dateStr, ai) {
   if (_datePickWatchdog) vs.clear(_datePickWatchdog);
@@ -405,6 +411,8 @@ const DATE_PICKER_SELECTOR = [
 
 export async function autoSelectFirstDate(scheduleDays, hasError = false, pre = null) {
   if (hasError) return null;
+  // Still working the date already clicked here — don't click another on a repeat dates response.
+  if (dateClickInProgress()) return null;
   const [range, ai] = pre
     ? [pre.range, pre.ai]
     : await Promise.all([getDateRangeConfig(), getArmedAiConfig()]);
@@ -424,13 +432,25 @@ export async function autoSelectFirstDate(scheduleDays, hasError = false, pre = 
   // Out of range: jump calendar only — never book / load times.
   if (!picked && range && normalized.length) {
     const inRange = normalized.filter((d) => dateInRange(d, range.from, range.to));
+    logEvent("date_pick", inRange.length
+      ? `No date picked — all ${inRange.length} in-range date(s) already tried`
+      : `No date picked — none inside range ${range.from}→${range.to}`, {
+      dates: normalized.slice(0, 20), range: `${range.from}→${range.to}`,
+    });
     if (!inRange.length) {
       await jumpCalendarMonthOnly(normalized[0], range);
       return null;
     }
   }
 
-  if (!picked) return null;
+  if (!picked) {
+    if (!range && normalized.length) {
+      logEvent("date_pick", "No date picked — Auto Submit/date range off, or all dates already tried", {
+        dates: normalized.slice(0, 20),
+      });
+    }
+    return null;
+  }
 
   const untried = (range
     ? normalized.filter((d) => dateInRange(d, range.from, range.to))
@@ -439,6 +459,9 @@ export async function autoSelectFirstDate(scheduleDays, hasError = false, pre = 
   const idx = Math.max(0, untried.indexOf(String(picked).slice(0, 10)));
 
   setTikTikStatus(`Selecting date #${idx + 1} of ${untried.length} untried: ${picked} (fast)…`);
+  logEvent("date_pick", `Picking date ${picked} (#${idx + 1} of ${untried.length} untried)`, {
+    date: picked, untried, range: range ? `${range.from}→${range.to}` : "",
+  });
   noteDatePicked(picked);
   _activeBookDate = String(picked).slice(0, 10);
   // Only need the input — do not wait for the open calendar popup.
@@ -446,12 +469,7 @@ export async function autoSelectFirstDate(scheduleDays, hasError = false, pre = 
     await vs.waitFor(DATE_PICKER_SELECTOR, { attempts: 80, interval: AI_BOOK_POLL_MS });
   }
 
-  vs.send({
-    action: "selectFirstDate",
-    date: picked,
-    maxMs: ai || range ? AI_DATE_SELECT_MS : 8000,
-    pollMs: AI_BOOK_POLL_MS,
-  });
+  if (!sendDateClickOnce(picked, ai || range ? AI_DATE_SELECT_MS : 8000)) return null;
 
   scheduleDatePickWatchdog(picked, ai || range);
   scheduleTimePickWatchdog(picked, AI_BOOK_SLOT_INDEX);
@@ -495,17 +513,13 @@ export async function autoSelectFirstTime(scheduleEntries, hasError = false) {
     await new Promise((r) => vs.setTimeout(r, AI_BOOK_POLL_MS));
   }
 
-  // 1 slot → wait up to 10s; multiple → 1s each then try next (2nd, 3rd, …).
-  const waitPerSlot = ranked.length === 1
-    ? AI_SUBMIT_ARM_MS
-    : AI_MULTI_SLOT_SUBMIT_WAIT_MS;
+  // Give the portal a moment to react to the time click; disabled → next time, no Submit click.
+  const waitPerSlot = AI_MULTI_SLOT_SUBMIT_WAIT_MS;
 
-  setTikTikStatus(
-    ranked.length === 1
-      ? `1 time slot — try highest avail, wait ≤${waitPerSlot / 1000}s for Submit…`
-      : `${ranked.length} time slots — try highest→2nd→3rd… (${waitPerSlot / 1000}s each for Submit)`
-  );
+  setTikTikStatus(`${ranked.length} time slot(s) — Submit clicked only if the portal enables it`);
 
+  setAutoTimePickBusy(true);
+  try {
   for (let i = 0; i < ranked.length; i++) {
     if (!vs.alive || isOpsFrozen() || isInterviewPage()) return;
 
@@ -529,34 +543,42 @@ export async function autoSelectFirstTime(scheduleEntries, hasError = false) {
     });
 
     if (!picked && !isTimeSlotPicked()) {
+      logError("time_pick", `Could not click time ${time} on ${date || _activeBookDate}`, { slotIndex, avail });
       setTikTikStatus(`Could not click ${time} — trying next…`);
       continue;
     }
+    logEvent("time_pick", `Picked time ${time} on ${date || _activeBookDate} (${rankLabel}, ${avail} available)`, { slotIndex, avail });
 
     setTikTikStatus(
       `Selected ${time} (${rankLabel}) — waiting ≤${waitPerSlot / 1000}s for Submit to enable…`
     );
 
+    const waitStart = Date.now();
     const enabled = await waitForSubmitEnabled(waitPerSlot);
+    logEvent(enabled ? "submit" : "submit_result",
+      enabled
+        ? `Submit enabled after ${Date.now() - waitStart}ms on ${time}`
+        : `Submit stayed disabled ${waitPerSlot / 1000}s on ${time}`,
+      { date: date || _activeBookDate, time }, enabled ? "info" : "warn");
     if (enabled) {
-      setTikTikStatus(`Submit enabled on ${time} — clicking…`);
-      if (ai) {
-        await armAiFastSubmit(ai.accountId);
-      } else {
-        clickSubmitDual();
-      }
-      return;
+      if (submitAlreadyClickedHere()) return;
+      setTikTikStatus(`Submit enabled on ${time} — clicking once…`);
+      if (clickSubmitDual()) return;
+      if (submitAlreadyClickedHere()) return;
     }
 
     if (i < ranked.length - 1) {
       setTikTikStatus(
-        `Submit still disabled on ${time} — trying next (${i + 2}/${ranked.length})…`
+        `Submit disabled on ${time} — not clicking; trying next time (${i + 2}/${ranked.length})…`
       );
     }
   }
+  } finally {
+    setAutoTimePickBusy(false);
+  }
 
   setTikTikStatus(
-    `Tried all ${ranked.length} time slot(s); Submit never enabled — this date won't be retried.`
+    `Tried all ${ranked.length} time slot(s); Submit stayed disabled — no click; changing city in 15–20s.`
   );
   const select = document.querySelector("#post_select");
   const postId = select ? String(select.value || "") : "";
@@ -566,9 +588,7 @@ export async function autoSelectFirstTime(scheduleEntries, hasError = false) {
     "";
   const failedDate = _activeBookDate || ranked[0]?.entry?.Date;
   if (failedDate) markDateFailed(failedDate, postId);
-  // Next untried date on this city; if none left, city is not hot → hop.
-  const moved = await moveToNextDateOrHop("Submit disabled on this date");
-  if (!moved) markCityNoSubmit(postId, postName);
+  hopCityAfterSubmitDisabled(postId, postName);
 }
 
 export async function handleEvent(event) {
@@ -585,6 +605,7 @@ export async function handleEvent(event) {
   recordSubmitAjaxResponse(parsed);
   if (parsed.retryAfter !== void 0) {
     const wait = Number(parsed.retryAfter);
+    logError("error", `Portal rate limit (429) — wait ${wait || "default"}s`, { cgiBlock: !!parsed.cgiBlock });
     showBlockMessage(parsed.cgiBlock, wait);
     if (wait) {
       showWaitTime(wait);
@@ -632,6 +653,17 @@ export async function handleEvent(event) {
       .filter(Boolean)
       .sort();
     const dayCount = normalizedDates.length;
+    // Fresh dates from the portal — a new Submit may be clicked for them.
+    if (dayCount) resetSubmitClickLock();
+    if (parsed.response.HasError) {
+      logError("dates", `Dates request error: ${String(parsed.response.ErrorString || "").replace(/<[^>]+>/g, " ").trim().slice(0, 300)}`, {
+        postId: String(parsed.params.postId || ""),
+      });
+    } else {
+      logEvent("dates", dayCount ? `${dayCount} date(s): ${normalizedDates.slice(0, 15).join(", ")}` : "No dates", {
+        postId: String(parsed.params.postId || ""), count: dayCount, dates: normalizedDates.slice(0, 40),
+      });
+    }
     if (dayCount) {
       setTikTikStatus(
         `${dayCount} date${dayCount === 1 ? "" : "s"} available — see list below`
@@ -769,6 +801,16 @@ export async function handleEvent(event) {
   ];
   if (scheduleEntriesTails.includes(parsed.tail)) {
     const targetDate = parsed.params.Date.split("T")[0];
+    {
+      const all = (parsed.response.ScheduleEntries || []).filter((e) => e && e.Time);
+      if (parsed.response.HasError) {
+        logError("times", `Time slots error for ${targetDate}: ${String(parsed.response.ErrorString || "").replace(/<[^>]+>/g, " ").trim().slice(0, 300)}`);
+      } else {
+        logEvent("times", all.length
+          ? `${all.length} time slot(s) on ${targetDate}: ${all.slice(0, 8).map((e) => `${normalizeScheduleTime(e.Time)}(${e.EntriesAvailable ?? "?"})`).join(", ")}`
+          : `No time slots on ${targetDate}`, { date: targetDate, count: all.length });
+      }
+    }
     _entriesLoadedFor = targetDate;
     if (_datePickWatchdog) {
       vs.clear(_datePickWatchdog);
