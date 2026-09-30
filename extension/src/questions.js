@@ -1,4 +1,8 @@
-import { startCloudflareWatch } from "./content/cloudflare-tick.js";
+import {
+  isCloudflareChallenge,
+  isCloudflareSolved,
+  startCloudflareWatch,
+} from "./content/cloudflare-tick.js";
 import { retirePrevious, vs } from "./shared/lifecycle.js";
 import { storageGet, storageSet, watchExtensionContext } from "./shared/runtime.js";
 
@@ -98,6 +102,13 @@ async function loadTikTikCreds() {
 }
 
 var _filling = false;
+var _nextClickedAt = 0;
+var _continueClickedAt = 0;
+var CLICK_COOLDOWN_MS = 15_000;
+
+function _verifyBlocking() {
+  return isCloudflareChallenge() && !isCloudflareSolved();
+}
 
 async function fillFromTikTik(cfg) {
   if (!cfg || _filling) return;
@@ -131,12 +142,21 @@ async function fillFromTikTik(cfg) {
     }
 
     await sleep(rand(600, 1400));
+    // Sign in fails silently while "Verify you are human" is unticked — wait for the user.
+    if (_verifyBlocking()) return;
+    const now = Date.now();
     if (filled) {
       const cont = document.querySelector("button#continue");
-      if (cont) cont.click();
+      if (cont && now - _continueClickedAt > CLICK_COOLDOWN_MS) {
+        _continueClickedAt = now;
+        cont.click();
+      }
     } else if (pass && pass.value) {
       const next = document.querySelector("button#next");
-      if (next) next.click();
+      if (next && now - _nextClickedAt > CLICK_COOLDOWN_MS) {
+        _nextClickedAt = now;
+        next.click();
+      }
     }
   } finally {
     _filling = false;
@@ -180,16 +200,20 @@ function storeAnswers() {
   });
 }
 
-function waitForPageLoad() {
+var _storeBound = false;
+
+// The sign-in page swaps email/password and security-question steps without a
+// full reload, so keep checking instead of filling once at load.
+function loginTick() {
   if (!chrome.runtime?.id) return;
   const ready = document.querySelector("button#continue, button#next, #password, #kba1_response");
-  if (ready) {
-    fillAnswers();
+  if (!ready) return;
+  fillAnswers();
+  if (!_storeBound && document.querySelector("button#continue")) {
+    _storeBound = true;
     storeAnswers();
-  } else {
-    setTimeout(waitForPageLoad, 400);
   }
 }
-window.addEventListener("load", waitForPageLoad);
-setTimeout(waitForPageLoad, 300);
+setTimeout(loginTick, 300);
+setInterval(loginTick, 1500);
 startCloudflareWatch();

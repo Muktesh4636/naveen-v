@@ -113,8 +113,9 @@ async function _loadCreds() {
   const all = store[AI_SUBMIT_KEY] || {};
   const id = store.profile?.id ? String(store.profile.id) : null;
   let cfg = id ? all[id] : null;
-  if (!cfg) {
-    cfg = Object.values(all).find((c) => c?.loginId && c?.loginPass) || null;
+  // Current applicant may have city prefs but no saved login — use any saved login.
+  if (!cfg?.loginId || !cfg?.loginPass) {
+    cfg = Object.values(all).find((c) => c?.loginId && c?.loginPass) || cfg;
   }
   return cfg || {};
 }
@@ -166,6 +167,7 @@ async function _typeHuman(el, text) {
 
 var _loginTyping = false;
 var _securityTyping = false;
+var _loginClickedAt = 0;
 
 function _click(el) {
   if (!el || el.disabled) return false;
@@ -221,7 +223,11 @@ async function _fillLogin(cfg) {
       || [...document.querySelectorAll("button, input[type='submit']")]
         .find((b) => /sign in|log in|continue/i.test((b.textContent || b.value || "")));
     if (btn && (pass?.value || cfg.loginPass)) {
+      // Sign in is rejected while "Verify you are human" is unticked — wait for the user.
+      if (isCloudflareChallenge() && !isCloudflareSolved()) return true;
+      if (Date.now() - _loginClickedAt < 15_000) return true;
       await _sleep(_rand(600, 1400));
+      _loginClickedAt = Date.now();
       _click(btn);
       return true;
     }
