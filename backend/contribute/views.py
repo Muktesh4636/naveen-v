@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import re
+import threading
 from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.db import transaction
@@ -270,7 +271,7 @@ def telegram_relay(request):
         except ValueError:
             return JsonResponse({"success": False, "error": "bad image_base64"}, status=400)
 
-    sent = relay_extension_alert(
+    kwargs = dict(
         text=str(body.get("text") or ""),
         caption=str(body.get("caption") or ""),
         kind=str(body.get("kind") or "alert"),
@@ -279,7 +280,16 @@ def telegram_relay(request):
         notify_muktesh=body.get("notify_muktesh", True) is not False,
         photo_bytes=photo_bytes,
     )
-    return JsonResponse({"success": sent > 0, "sent": sent})
+
+    def _send():
+        try:
+            relay_extension_alert(**kwargs)
+        except Exception:
+            logger.exception("Telegram relay failed")
+
+    # Reply immediately; Telegram sends (one per chat) run in the background.
+    threading.Thread(target=_send, daemon=True).start()
+    return JsonResponse({"success": True, "queued": True})
 
 
 @csrf_exempt

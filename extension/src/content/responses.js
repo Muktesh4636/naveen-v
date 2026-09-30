@@ -1,7 +1,6 @@
 import { showBlockMessage } from "./cloudflare.js";
 import { showWaitTime, showWaiting, slotsAlert } from "./scheduling-controls.js";
 import { showDates, showScheduleEntries } from "./scheduling-panels.js";
-import { notifyTelegramSlots, notifyTelegramCityScreenshot, notifyTelegramCalendarScreenshot, notifyTelegramTimeScreenshot } from "./telegram-notify.js";
 import { pollAndPickTimeSlot, domShowsEntryTimes, isTimeSlotPicked, pickTimeSlotDual } from "./time-select.js";
 import { submitContribution } from "./reporting.js";
 import { recordSubmitAjaxResponse } from "./submit-errors.js";
@@ -32,6 +31,8 @@ import {
   tryNextDateOnThisCity,
   markCityNoSubmit,
   isCityNoSubmit,
+  markDateFailed,
+  isDateFailed,
   AI_DATE_SELECT_MS,
   AI_BOOK_SELECT_MS,
   AI_TIME_DOM_WAIT_MS,
@@ -76,16 +77,17 @@ export function parseEvent(event) {
     response: event.data.response
   };
 }
+/** Sound only — Telegram fires on Submit click, not when dates appear (dates often vanish). */
 export async function alertOnAvailability(scheduleDays, meta = {}) {
   if (!scheduleDays?.length) return;
-  await notifyTelegramSlots(scheduleDays, meta);
   if (!await getSetting("audioAlert")) return;
   slotsAlert();
 }
 
-async function pickDateToSelect(scheduleDays, hasError = false) {
+async function pickDateToSelect(scheduleDays, hasError = false, preRange) {
   if (hasError) return null;
   if (isInterviewPage()) return null;
+  const autoFirst = await getSetting("autoSelectFirstDate");
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -101,21 +103,21 @@ async function pickDateToSelect(scheduleDays, hasError = false) {
       if (!y || !m || !day) return false;
       return new Date(y, m - 1, day) >= today;
     })
+    .filter((d) => !isDateFailed(d.Date))
     .sort((a, b) => String(a.Date).localeCompare(String(b.Date)));
 
   // From–To set (Consular or OFC): only book dates inside the range.
-  const range = await getDateRangeConfig();
+  const range = preRange !== undefined ? preRange : await getDateRangeConfig();
   if (range) {
     const inRange = normalized.filter((d) => dateInRange(d.Date, range.from, range.to));
     if (!inRange.length) return null;
-    const canSelect =
-      range.submitArmed || !!(await getSetting("autoSelectFirstDate"));
+    const canSelect = range.submitArmed || !!autoFirst;
     if (!canSelect) return null;
     const idx = pickPreferredDateIndex(inRange.length);
     return inRange[idx]?.Date || null;
   }
 
-  if (!await getSetting("autoSelectFirstDate")) return null;
+  if (!autoFirst) return null;
   if (!normalized.length) return null;
   const idx = pickPreferredDateIndex(normalized.length);
   return normalized[idx]?.Date || null;
@@ -221,23 +223,35 @@ function isCalendarDateSelected(dateStr) {
 
 var _datePickWatchdog = null;
 
+/** Date whose time slots already loaded — never re-click it (each click reloads times). */
+var _entriesLoadedFor = "";
+var DATE_RECLICK_GAP_MS = 900;
+var DATE_RECLICK_MAX = 2;
+
 function scheduleDatePickWatchdog(dateStr, ai) {
   if (_datePickWatchdog) vs.clear(_datePickWatchdog);
+  const target = String(dateStr || "").slice(0, 10);
   const deadline = Date.now() + (ai ? AI_DATE_SELECT_MS : 8000);
+  let resends = 0;
 
   const tick = () => {
+    _datePickWatchdog = null;
     if (!vs.alive || Date.now() > deadline) return;
-    if (isCalendarDateSelected(dateStr)) return;
+    if (_entriesLoadedFor === target) return;
+    if (_activeBookDate && _activeBookDate !== target) return;
+    if (isCalendarDateSelected(target)) return;
+    if (resends >= DATE_RECLICK_MAX) return;
+    resends++;
     vs.send({
       action: "selectFirstDate",
-      date: dateStr,
+      date: target,
       maxMs: ai ? AI_DATE_SELECT_MS : 8000,
       pollMs: AI_BOOK_POLL_MS,
     });
-    _datePickWatchdog = vs.setTimeout(tick, AI_BOOK_POLL_MS);
+    _datePickWatchdog = vs.setTimeout(tick, DATE_RECLICK_GAP_MS);
   };
 
-  _datePickWatchdog = vs.setTimeout(tick, 80);
+  _datePickWatchdog = vs.setTimeout(tick, DATE_RECLICK_GAP_MS);
 }
 
 function normalizeScheduleTime(raw) {
@@ -310,6 +324,7 @@ async function moveToNextDateOrHop(reason) {
   if (_movingToNextDate || isSubmitPendingConfirm()) return false;
   _movingToNextDate = true;
   try {
+    if (_activeBookDate) markDateFailed(_activeBookDate);
     stopTimePickWatchdog();
     _cachedScheduleEntries = null;
     _cachedEntriesDate = null;
@@ -388,11 +403,12 @@ const DATE_PICKER_SELECTOR = [
   "#datepicker",
 ].join(", ");
 
-export async function autoSelectFirstDate(scheduleDays, hasError = false) {
+export async function autoSelectFirstDate(scheduleDays, hasError = false, pre = null) {
   if (hasError) return null;
-  const range = await getDateRangeConfig();
-  const ai = await getArmedAiConfig();
-  const picked = await pickDateToSelect(scheduleDays, hasError);
+  const [range, ai] = pre
+    ? [pre.range, pre.ai]
+    : await Promise.all([getDateRangeConfig(), getArmedAiConfig()]);
+  const picked = await pickDateToSelect(scheduleDays, hasError, range);
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -416,16 +432,19 @@ export async function autoSelectFirstDate(scheduleDays, hasError = false) {
 
   if (!picked) return null;
 
-  const inRange = range
+  const untried = (range
     ? normalized.filter((d) => dateInRange(d, range.from, range.to))
-    : normalized;
-  const idx = pickPreferredDateIndex(inRange.length);
+    : normalized
+  ).filter((d) => !isDateFailed(d));
+  const idx = Math.max(0, untried.indexOf(String(picked).slice(0, 10)));
 
-  setTikTikStatus(`Selecting date #${idx + 1}: ${picked} (fast)…`);
+  setTikTikStatus(`Selecting date #${idx + 1} of ${untried.length} untried: ${picked} (fast)…`);
   noteDatePicked(picked);
   _activeBookDate = String(picked).slice(0, 10);
   // Only need the input — do not wait for the open calendar popup.
-  await vs.waitFor(DATE_PICKER_SELECTOR, { attempts: 80, interval: AI_BOOK_POLL_MS });
+  if (!document.querySelector(DATE_PICKER_SELECTOR)) {
+    await vs.waitFor(DATE_PICKER_SELECTOR, { attempts: 80, interval: AI_BOOK_POLL_MS });
+  }
 
   vs.send({
     action: "selectFirstDate",
@@ -537,16 +556,19 @@ export async function autoSelectFirstTime(scheduleEntries, hasError = false) {
   }
 
   setTikTikStatus(
-    `Tried all ${ranked.length} time slot(s); Submit never enabled.`
+    `Tried all ${ranked.length} time slot(s); Submit never enabled — this date won't be retried.`
   );
-  // Dates/slots were there but Submit never showed — don't treat as hot; hop.
   const select = document.querySelector("#post_select");
   const postId = select ? String(select.value || "") : "";
   const postName =
     select?.selectedOptions?.[0]?.textContent?.trim() ||
     select?.options?.[select.selectedIndex]?.textContent?.trim() ||
     "";
-  markCityNoSubmit(postId, postName);
+  const failedDate = _activeBookDate || ranked[0]?.entry?.Date;
+  if (failedDate) markDateFailed(failedDate, postId);
+  // Next untried date on this city; if none left, city is not hot → hop.
+  const moved = await moveToNextDateOrHop("Submit disabled on this date");
+  if (!moved) markCityNoSubmit(postId, postName);
 }
 
 export async function handleEvent(event) {
@@ -602,6 +624,7 @@ export async function handleEvent(event) {
   if (SCHEDULE_DAYS_TAILS.includes(parsed.tail)) {
     // New dates loaded — allow date/slot pick again (e.g. after city change).
     thawOps();
+    _entriesLoadedFor = "";
     // Paint the date list first — storage / auto-select can wait.
     showDates(parsed);
     const normalizedDates = (parsed.response.ScheduleDays || [])
@@ -622,18 +645,11 @@ export async function handleEvent(event) {
     }
     noteCityRotateResponse();
 
-    // Broadcast ASAP (before heavy awaits) so other users can FAST force-switch.
     if (!parsed.response.HasError && dayCount > 0) {
       const postId = String(parsed.params.postId || "");
-      const bestDate = normalizedDates[0];
-      const dateTo = normalizedDates[normalizedDates.length - 1];
-      noteTikTikHudSlots(postId, true, "");
-      setTikTikStatus(
-        `${dayCount} date${dayCount === 1 ? "" : "s"} — alerting others FAST…`
-      );
+      // Dates only — "Dates seen". City turns hot (HUD + other users) only on Submit click.
       if (!isCityNoSubmit(postId)) {
-        // Dates only — local HUD. Do NOT force-alert others until Submit is enabled.
-        noteTikTikHudSlots(postId, true, "");
+        noteTikTikHudSlots(postId, "dates", "");
       } else {
         noteTikTikHudSlots(postId, false, "");
       }
@@ -641,16 +657,19 @@ export async function handleEvent(event) {
       noteTikTikHudSlots(String(parsed.params.postId || ""), false, "");
     }
 
-    const ai = await getArmedAiConfig();
-    const range = await getDateRangeConfig();
+    const [ai, range] = await Promise.all([getArmedAiConfig(), getDateRangeConfig()]);
     const rangeOrAi = ai || range;
-    const rotating = await getCitiesRotateConfig();
-    // While city rotation is on, skip the long manual recheck wait.
-    if (!rotating) {
-      getSetting("defaultWaitTime").then((defaultWait) => {
-        showWaitTime(defaultWait);
-      });
-    }
+
+    // Book first: pick the date before any storage writes / alerts.
+    const pickedDate = isSubmitPendingConfirm()
+      ? null
+      : await autoSelectFirstDate(parsed.response.ScheduleDays, parsed.response.HasError, { ai, range });
+    if (pickedDate) haltCityRotateForBooking();
+
+    getCitiesRotateConfig().then((rotating) => {
+      // While city rotation is on, skip the long manual recheck wait.
+      if (!rotating) getSetting("defaultWaitTime").then((w) => showWaitTime(w));
+    });
 
     const posts = await getPosts();
     const post = posts.find((post2) => post2.ID === parsed.params.postId);
@@ -682,28 +701,24 @@ export async function handleEvent(event) {
         }
       }
       if (!isCityNoSubmit(postId)) {
-        // Dates only — show in HUD. Force-switch alert waits until Submit works.
-        noteTikTikHudSlots(postId, true, post?.Name || "");
+        noteTikTikHudSlots(postId, "dates", post?.Name || "");
       } else {
         noteTikTikHudSlots(postId, false, post?.Name || "");
       }
     }
 
-    await alertOnAvailability(parsed.response.ScheduleDays, {
+    // Sound only, never awaited.
+    alertOnAvailability(parsed.response.ScheduleDays, {
       postId: parsed.params.postId,
       postName: post?.Name,
       hasError: parsed.response.HasError,
-    });
-
-    await notifyTelegramCityScreenshot(parsed.response.ScheduleDays, {
-      postId: parsed.params.postId,
-      postName: post?.Name,
-      hasError: parsed.response.HasError,
-    });
+    }).catch(() => {});
 
     // If range has a matching date, keep city hop paused while booking.
     // While Submit is pending confirmation, NEVER resume hop from a date reload.
-    if (isSubmitPendingConfirm()) {
+    if (pickedDate) {
+      haltCityRotateForBooking();
+    } else if (isSubmitPendingConfirm()) {
       haltCityRotateForBooking();
       setTikTikStatus("Submit pending — staying on this city (date reload ignored)…");
     } else if (rangeOrAi && !parsed.response.HasError) {
@@ -713,9 +728,10 @@ export async function handleEvent(event) {
         rangeOrAi.to
       );
       if (inRange.length) {
-        haltCityRotateForBooking();
+        // pickedDate is null here → every in-range date was already tried.
+        resumeCityRotateAfterBooking();
         setTikTikStatus(
-          `${inRange.length} date${inRange.length === 1 ? "" : "s"} in range — selecting (city hold)…`
+          `All ${inRange.length} in-range date${inRange.length === 1 ? "" : "s"} here already tried — next city…`
         );
       } else {
         resumeCityRotateAfterBooking();
@@ -724,19 +740,11 @@ export async function handleEvent(event) {
       // No slots / error — hop OK
       resumeCityRotateAfterBooking();
     } else if (dayCount > 0 && !parsed.response.HasError) {
-      // Optimistic hold above — no range; release unless date auto-select will run.
-      const willAuto = await getSetting("autoSelectFirstDate");
-      if (!willAuto) resumeCityRotateAfterBooking();
+      // No date picked (auto-select off, or all dates already tried) — release hold.
+      resumeCityRotateAfterBooking();
     }
 
-    const pickedDate = isSubmitPendingConfirm()
-      ? null
-      : await autoSelectFirstDate(parsed.response.ScheduleDays, parsed.response.HasError);
-    if (pickedDate) {
-      // Stay held through time pick + Submit
-      haltCityRotateForBooking();
-      await notifyTelegramCalendarScreenshot(post?.Name, pickedDate);
-    } else if (rangeOrAi && !parsed.response.HasError && !isSubmitPendingConfirm()) {
+    if (!pickedDate && rangeOrAi && !parsed.response.HasError && !isSubmitPendingConfirm()) {
       const days = (parsed.response.ScheduleDays || [])
         .map((d) => normalizeScheduleDate(d?.Date))
         .filter(Boolean)
@@ -761,9 +769,20 @@ export async function handleEvent(event) {
   ];
   if (scheduleEntriesTails.includes(parsed.tail)) {
     const targetDate = parsed.params.Date.split("T")[0];
+    _entriesLoadedFor = targetDate;
+    if (_datePickWatchdog) {
+      vs.clear(_datePickWatchdog);
+      _datePickWatchdog = null;
+    }
     cacheScheduleEntries(parsed.response.ScheduleEntries, targetDate);
     // Ranked try in autoSelectFirstTime owns picks; skip competing watchdog.
     stopTimePickWatchdog();
+
+    // Book first: start time pick → Submit before storage / UI work.
+    const isActiveDate = !_activeBookDate || targetDate === _activeBookDate;
+    const timePick = isActiveDate
+      ? autoSelectFirstTime(parsed.response.ScheduleEntries, parsed.response.HasError)
+      : null;
 
     const posts = await getPosts();
     const post = posts.filter((post2) => post2.Days && post2.Updated).sort((a, b) => b.Updated - a.Updated).find((post2) => post2.Days.some((day) => day.Date === targetDate));
@@ -775,7 +794,7 @@ export async function handleEvent(event) {
       }
     }
     const entries = (parsed.response.ScheduleEntries || []).filter((e) => e && e.Time);
-    if (_activeBookDate && targetDate !== _activeBookDate) {
+    if (!isActiveDate) {
       await submitContribution();
       return;
     }
@@ -793,18 +812,13 @@ export async function handleEvent(event) {
         `${open.length || entries.length} time slot${(open.length || entries.length) === 1 ? "" : "s"} on ${targetDate}${availLabel}`
       );
     }
-    await autoSelectFirstTime(parsed.response.ScheduleEntries, parsed.response.HasError);
+    await timePick;
     if (isSubmitPendingConfirm()) {
       haltCityRotateForBooking();
       setTikTikStatus("Submit pending — staying on this city (time reload ignored)…");
     } else if (open.length) {
       // Keep hold while time → Submit runs
       haltCityRotateForBooking();
-      await notifyTelegramTimeScreenshot(
-        post?.Name,
-        parsed.params.Date,
-        open.length
-      );
     } else {
       // Times missing or all full — try the other dates on this city first.
       await moveToNextDateOrHop("No time slots on this date");

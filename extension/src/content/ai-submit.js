@@ -450,9 +450,12 @@ var _submitPendingTimer = null;
 var _submitConfirmWatch = null;
 /** Max wait after Submit for confirmation before resuming city hop (not 1 min). */
 var SUBMIT_PENDING_MAX_MS = 20_000;
-/** Dates that already failed Submit on the current city (YYYY-MM-DD). */
-var _failedSubmitDates = new Set();
-var _failedSubmitDatesCity = "";
+/**
+ * Dates tried and failed (no times / Submit disabled / Submit error), per city.
+ * Survives city hops so a bad date is not retried on revisit. "postId|YYYY-MM-DD" → expiry ms.
+ */
+var FAILED_DATE_TTL_MS = 10 * 60 * 1000;
+var _failedDates = new Map();
 var _lastPickedDateIso = "";
 
 /** Cities where slots/dates showed but Submit never appeared — skip from hot rotate. */
@@ -511,9 +514,13 @@ export function markCityNoSubmit(postId, name = "") {
   }
 }
 
-/** Broadcast hot city only when Submit is actually enabled (bookable). */
-export function reportHotCityIfSubmitReady() {
-  if (!isSubmitButtonEnabled() || !isTimeSlotPicked()) return;
+var _hotReportedAt = new Map();
+
+/**
+ * Submit was clicked — only now is the city hot: HUD "Hot · Submit" + broadcast
+ * to other users. Dates alone never mark a city hot.
+ */
+export function markCityHotOnSubmit() {
   const select = document.querySelector("#post_select");
   const postId = select ? String(select.value || "") : "";
   if (!postId || isCityNoSubmit(postId)) return;
@@ -521,6 +528,12 @@ export function reportHotCityIfSubmitReady() {
     select?.selectedOptions?.[0]?.textContent?.trim() ||
     select?.options?.[select.selectedIndex]?.textContent?.trim() ||
     postId;
+  try {
+    noteHudCitySlots(postId, true, postName);
+  } catch {}
+  const now = Date.now();
+  if (now - (_hotReportedAt.get(postId) || 0) < 30_000) return;
+  _hotReportedAt.set(postId, now);
   reportCitySlotsFound({
     postId,
     postName,
@@ -544,19 +557,34 @@ function _clearSubmitPending() {
 }
 
 function _clearFailedSubmitDates() {
-  _failedSubmitDates.clear();
-  _failedSubmitDatesCity = "";
+  // Kept across city hops on purpose — entries expire after FAILED_DATE_TTL_MS.
+  const now = Date.now();
+  for (const [k, until] of _failedDates) {
+    if (until <= now) _failedDates.delete(k);
+  }
+}
+
+export function markDateFailed(dateIso, postId) {
+  const d = String(dateIso || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+  const city = String(postId || _currentPostId() || "");
+  _failedDates.set(`${city}|${d}`, Date.now() + FAILED_DATE_TTL_MS);
+}
+
+export function isDateFailed(dateIso, postId) {
+  const d = String(dateIso || "").slice(0, 10);
+  const city = String(postId || _currentPostId() || "");
+  const until = _failedDates.get(`${city}|${d}`);
+  if (!until) return false;
+  if (until <= Date.now()) {
+    _failedDates.delete(`${city}|${d}`);
+    return false;
+  }
+  return true;
 }
 
 function _markSubmitDateFailed(dateIso) {
-  const d = String(dateIso || "").slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
-  const city = String(document.querySelector("#post_select")?.value || "");
-  if (city !== _failedSubmitDatesCity) {
-    _failedSubmitDates.clear();
-    _failedSubmitDatesCity = city;
-  }
-  _failedSubmitDates.add(d);
+  markDateFailed(dateIso);
 }
 
 /** Remember the date we just selected (for submit-fail retry). */
@@ -600,10 +628,11 @@ export async function tryNextDateOnThisCity(reason = "No time slots") {
   const posts = await getPosts();
   const post = posts.find((p) => String(p.ID) === postId);
   const inRange = filterDaysInAiRange(post?.Days || [], range.from, range.to);
-  const remaining = inRange.filter((d) => !_failedSubmitDates.has(String(d.Date).slice(0, 10)));
+  // Walk forward through untried dates in order — each date is tried once.
+  const remaining = inRange.filter((d) => !isDateFailed(d.Date, postId));
   if (!remaining.length) return null;
 
-  const idx = pickPreferredDateIndex(remaining.length);
+  const idx = 0;
   const next = remaining[idx];
   if (!next?.Date) return null;
 
@@ -647,6 +676,7 @@ export async function noteSubmitClicked(accountId) {
 
   _submitPending = true;
   haltCityRotateForBooking();
+  markCityHotOnSubmit();
   armSubmitErrorWatch();
   updateAiStatus("Submit clicked — waiting for confirmation (Auto Submit + City Change stay ON)…");
 
@@ -1226,7 +1256,12 @@ export async function probeAutoSubmitForCurrentCity() {
   const post = posts.find((p) => String(p.ID) === String(postId));
   const days = post?.Days;
   if (Array.isArray(days) && days.length) {
-    const inRange = filterDaysInAiRange(days, ai.from, ai.to);
+    const allInRange = filterDaysInAiRange(days, ai.from, ai.to);
+    const inRange = allInRange.filter((d) => !isDateFailed(d.Date, postId));
+    if (allInRange.length && !inRange.length) {
+      updateAiStatus("Auto Submit: all in-range dates here already tried — waiting for next city.");
+      return;
+    }
     if (inRange.length) {
       haltCityRotateForBooking();
       const idx = pickPreferredDateIndex(inRange.length);
@@ -2258,8 +2293,8 @@ function _clickSubmitLocal(btn) {
 /** Content-script + MAIN-world Submit — force when time picked even if button looks disabled. */
 export function clickSubmitDual() {
   const btn = _findSubmitButton();
-  reportHotCityIfSubmitReady();
   const ok = _clickSubmitLocal(btn);
+  if (isTimeSlotPicked()) markCityHotOnSubmit();
   vs.send({
     action: "forceClickSubmit",
     prefix: T,

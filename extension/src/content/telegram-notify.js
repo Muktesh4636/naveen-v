@@ -6,6 +6,7 @@ var DEDUP_MS = 45_000;
 var _ssDedup = new Map();
 var SS_DEDUP_MS = 8_000;
 var _lastSubmitNotifyAt = 0;
+var SCREENSHOTS_ENABLED = false;
 
 function _extractDates(scheduleDays) {
   return (scheduleDays || [])
@@ -61,8 +62,9 @@ async function _relayText(text, { kind = "alert", dedupKey = "", skipDedup = fal
   if (!text) return;
   if (!await _useServerRelay()) return;
 
+  // Fire-and-forget: booking must never wait on Telegram. keepalive survives the post-Submit navigation.
   try {
-    await fetch(TELEGRAM_RELAY_URL, {
+    fetch(TELEGRAM_RELAY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -73,8 +75,8 @@ async function _relayText(text, { kind = "alert", dedupKey = "", skipDedup = fal
         skip_dedup: skipDedup,
         notify_muktesh: notifyMuktesh,
       }),
-      signal: AbortSignal.timeout(20_000),
-    });
+      keepalive: true,
+    }).catch(() => {});
   } catch (e) {}
 }
 
@@ -133,7 +135,7 @@ function _pageBookingDetails() {
 /** Send Telegram alert when schedule days are received (via gopg.online server bot). */
 export async function notifyTelegramSlots(scheduleDays, { postId, postName, hasError } = {}) {
   if (hasError || !scheduleDays?.length) return;
-  const dates = _extractDates(scheduleDays);
+  const dates = _extractDates(scheduleDays).sort();
   if (!dates.length) return;
   if (!await getSetting("telegramAlert")) return;
 
@@ -178,6 +180,8 @@ export async function notifyTelegramScreenshot(caption, {
   waitMs = 0,
   skipDedup = false,
 } = {}) {
+  // Screenshots disabled: capture + upload competes with the portal while booking.
+  if (SCREENSHOTS_ENABLED !== true) return;
   if (await getSetting("telegramScreenshots") === false) return;
   if (!await _useServerRelay()) return;
 
@@ -242,6 +246,5 @@ export async function notifyTelegramSubmit() {
   lines.push(`🕐 <b>When:</b> ${when} IST`, "", "📲 Visa Slot 6 — Auto Submit");
 
   const text = lines.join("\n");
-  await _relayText(text, { kind: "submit", skipDedup: true, notifyMuktesh: true });
-  await notifyTelegramScreenshot(text, { kind: "submit", skipDedup: true, waitMs: 200 });
+  _relayText(text, { kind: "submit", skipDedup: true, notifyMuktesh: true });
 }

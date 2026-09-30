@@ -45,19 +45,22 @@ export function noteHudCityHop(cityId, cityName) {
   if (_cityLog.length > CITY_LOG_MAX) _cityLog.length = CITY_LOG_MAX;
 }
 
+/** found: true = hot (Submit clicked), "dates" = dates seen only, false = none. */
 export function noteHudCitySlots(cityId, found, cityName) {
   const id = String(cityId || "").trim();
   if (!id) return;
+  const state = found === "dates" ? "dates" : !!found;
   const hit = _cityLog.find((c) => c.id === id);
   if (hit) {
-    hit.slots = !!found;
+    // Dates reload must not downgrade a city already hot from a Submit click.
+    if (!(state === "dates" && hit.slots === true)) hit.slots = state;
     if (cityName) hit.name = String(cityName).trim() || hit.name;
     return;
   }
   _cityLog.unshift({
     id,
     name: String(cityName || id).trim() || id,
-    slots: !!found,
+    slots: state,
   });
   if (_cityLog.length > CITY_LOG_MAX) _cityLog.length = CITY_LOG_MAX;
 }
@@ -172,7 +175,10 @@ function _paintHist(histEl) {
     const pill = document.createElement("span");
     if (c.slots === true) {
       pill.className = CLS.hudPillOk;
-      pill.textContent = "Slots";
+      pill.textContent = "Hot · Submit";
+    } else if (c.slots === "dates") {
+      pill.className = CLS.hudPillNo;
+      pill.textContent = "Dates seen";
     } else if (c.slots === false) {
       pill.className = CLS.hudPillNo;
       pill.textContent = "No slots";
