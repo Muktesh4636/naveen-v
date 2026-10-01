@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Visa Slot 6",
-  "version": "2.1.48",
-  "description": "Crowdsourced Visa Slot Availability",
+  "name": "Tik Tik",
+  "version": "2.1.51",
+  "description": "Tik Tik works with your the.gopg.online account.",
   "permissions": ["storage", "scripting", "webRequest", "tabs"],
   "icons": {
     "128": "images/icon-128.png"
@@ -11,7 +11,7 @@
     "service_worker": "service-worker.js"
   },
   "action": {
-    "default_title": "Visa Slot 6",
+    "default_title": "Tik Tik",
     "default_popup": "popup/index.html"
   },
   "content_scripts": [

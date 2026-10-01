@@ -42,7 +42,7 @@ function _ensureHud() {
       <div class="cf-hud-body">
         <div class="cf-hud-brand">
           <span class="cf-hud-icon" aria-hidden="true">🛡</span>
-          <span class="cf-hud-title">Visa Slot 6 Shield</span>
+          <span class="cf-hud-title">Tik Tik Shield</span>
           <span class="cf-hud-chip" data-cf-chip>Active</span>
         </div>
         <div class="cf-hud-msg" data-cf-msg>${MESSAGES.scanning}</div>
@@ -55,7 +55,7 @@ function _ensureHud() {
 }
 
 export async function updateCloudflareHud(state, sub) {
-  // Never show the top "Visa Slot 6 Shield" banner — click logic stays silent.
+  // Never show the top "Tik Tik Shield" banner — click logic stays silent.
   hideCloudflareHud();
   _lastState = state || "";
 }

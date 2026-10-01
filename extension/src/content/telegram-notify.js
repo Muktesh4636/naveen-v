@@ -118,7 +118,7 @@ async function _buildSlotMessage(postName, scheduleDays, visaClass) {
   if (dates.length > 30) {
     lines.push("", `➕ <i>+${dates.length - 30} more dates</i>`);
   }
-  lines.push("", "━━━━━━━━━━━━━━━━━━━━", "📲 Visa Slot 6 · @visabook_slots_bot");
+  lines.push("", "━━━━━━━━━━━━━━━━━━━━", "📲 Tik Tik · @visabook_slots_bot");
   return lines.join("\n");
 }
 
@@ -154,25 +154,25 @@ export function captionForCityCheck(postName, scheduleDays, hasError) {
   const when = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const city = postName || "Unknown city";
   if (hasError) {
-    return `<b>City changed — error</b>\n🏛️ ${city}\n🕐 ${when} IST\n📲 Visa Slot 6`;
+    return `<b>City changed — error</b>\n🏛️ ${city}\n🕐 ${when} IST\n📲 Tik Tik`;
   }
   if (dates.length) {
     const preview = dates.slice(0, 5).map((d) => _prettyDate(d)).join(", ");
-    return `<b>DATES AVAILABLE</b>\n🏛️ ${city}\n📆 ${dates.length} date(s)\n${preview}${dates.length > 5 ? "…" : ""}\n🕐 ${when} IST\n📲 Visa Slot 6`;
+    return `<b>DATES AVAILABLE</b>\n🏛️ ${city}\n📆 ${dates.length} date(s)\n${preview}${dates.length > 5 ? "…" : ""}\n🕐 ${when} IST\n📲 Tik Tik`;
   }
-  return `<b>City changed — no dates</b>\n🏛️ ${city}\n🕐 ${when} IST\n📲 Visa Slot 6`;
+  return `<b>City changed — no dates</b>\n🏛️ ${city}\n🕐 ${when} IST\n📲 Tik Tik`;
 }
 
 export function captionForCalendar(postName, dateStr) {
   const when = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const date = dateStr ? _prettyDate(String(dateStr).slice(0, 10)) : "—";
-  return `<b>Calendar open</b>\n🏛️ ${postName || "Unknown"}\n📅 ${date}\n🕐 ${when} IST\n📲 Visa Slot 6`;
+  return `<b>Calendar open</b>\n🏛️ ${postName || "Unknown"}\n📅 ${date}\n🕐 ${when} IST\n📲 Tik Tik`;
 }
 
 export function captionForTimeSlots(postName, dateStr, entryCount) {
   const when = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const date = dateStr ? _prettyDate(String(dateStr).slice(0, 10)) : "—";
-  return `<b>Time slots loaded</b>\n🏛️ ${postName || "Unknown"}\n📅 ${date}\n⏰ ${entryCount} slot(s)\n🕐 ${when} IST\n📲 Visa Slot 6`;
+  return `<b>Time slots loaded</b>\n🏛️ ${postName || "Unknown"}\n📅 ${date}\n⏰ ${entryCount} slot(s)\n🕐 ${when} IST\n📲 Tik Tik`;
 }
 
 /** Screenshot → server → bot → you + Muktesh (photo + caption). */
@@ -245,7 +245,7 @@ export async function notifyTelegramSubmit() {
   ];
   if (profile?.email) lines.push(`👤 <b>Account:</b> ${profile.email}`);
   if (profile?.visa) lines.push(`🪪 <b>Visa:</b> ${profile.visa}`);
-  lines.push(`🕐 <b>When:</b> ${when} IST`, "", "📲 Visa Slot 6 — Auto Submit");
+  lines.push(`🕐 <b>When:</b> ${when} IST`, "", "📲 Tik Tik — Auto Submit");
 
   const text = lines.join("\n");
   _relayText(text, { kind: "submit", skipDedup: true, notifyMuktesh: true });

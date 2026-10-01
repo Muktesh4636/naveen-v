@@ -105,7 +105,7 @@ async function _notifyTelegram(entry) {
   if (entry.route) lines.push(`🔗 <b>Route:</b> ${entry.route}`);
   if (entry.status) lines.push(`🌐 <b>HTTP:</b> ${entry.status}`);
   if (entry.email) lines.push(`👤 <b>Account:</b> ${entry.email}`);
-  lines.push(`🕐 <b>When:</b> ${when} IST`, "", "📲 Visa Slot 6");
+  lines.push(`🕐 <b>When:</b> ${when} IST`, "", "📲 Tik Tik");
   const caption = lines.join("\n");
   await notifyTelegramScreenshot(caption, {
     kind: "submit_error",
